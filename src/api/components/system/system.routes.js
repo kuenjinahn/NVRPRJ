@@ -28,11 +28,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/db', [
+  app.get('/api/system/db',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.lastModifiedDb,
-  ]);
+    SystemController.lastModifiedDb
+  );
 
   /**
    * @swagger
@@ -50,11 +50,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/db/download', [
+  app.get('/api/system/db/download',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.downloadDb,
-  ]);
+    SystemController.downloadDb
+  );
 
   /**
    * @swagger
@@ -72,11 +72,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/log', [
+  app.get('/api/system/log',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getLog,
-  ]);
+    SystemController.getLog
+  );
 
   /**
    * @swagger
@@ -94,11 +94,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.delete('/api/system/log', [
+  app.delete('/api/system/log',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.clearLog,
-  ]);
+    SystemController.clearLog
+  );
 
   /**
    * @swagger
@@ -116,11 +116,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/log/download', [
+  app.get('/api/system/log/download',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.downloadLog,
-  ]);
+    SystemController.downloadLog
+  );
 
   /**
    * @swagger
@@ -145,11 +145,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/changelog', [
+  app.get('/api/system/changelog',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getChangelog,
-  ]);
+    SystemController.getChangelog
+  );
 
   /**
    * @swagger
@@ -167,11 +167,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/disk', [
+  app.get('/api/system/disk',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getDiskLoad,
-  ]);
+    SystemController.getDiskLoad
+  );
 
   /**
    * @swagger
@@ -189,11 +189,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/npm', [
+  app.get('/api/system/npm',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.fetchNpm,
-  ]);
+    SystemController.fetchNpm
+  );
 
   /**
    * @swagger
@@ -526,34 +526,34 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/uptime',
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getUptime
-  );
+  // app.get('/api/system/uptime',
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.onlyMasterCanDoThisAction,
+  //   SystemController.getUptime
+  // );
 
-  // Recording cleanup routes
-  app.get('/api/system/cleanup/info',
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getCleanupInfo
-  );
+  // // Recording cleanup routes
+  // app.get('/api/system/cleanup/info',
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.onlyMasterCanDoThisAction,
+  //   SystemController.getCleanupInfo
+  // );
 
-  app.post('/api/system/cleanup/manual',
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.manualCleanup
-  );
+  // app.post('/api/system/cleanup/manual',
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.onlyMasterCanDoThisAction,
+  //   SystemController.manualCleanup
+  // );
 
-  app.post('/api/system/cleanup/start',
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.startCleanup
-  );
+  // app.post('/api/system/cleanup/start',
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.onlyMasterCanDoThisAction,
+  //   SystemController.startCleanup
+  // );
 
-  app.post('/api/system/cleanup/stop',
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.stopCleanup
-  );
+  // app.post('/api/system/cleanup/stop',
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.onlyMasterCanDoThisAction,
+  //   SystemController.stopCleanup
+  // );
 };
