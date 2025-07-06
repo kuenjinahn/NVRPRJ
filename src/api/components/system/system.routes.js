@@ -258,7 +258,7 @@ export const routesConfig = (app) => {
   app.put('/api/system/http/restart', [
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.restarHttpServer,
+    SystemController.restartHttpServer,
   ]);
 
   /**

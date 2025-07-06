@@ -320,7 +320,7 @@ export const restartFtpServer = async (req, res) => {
   }
 };
 
-export const restarHttpServer = async (req, res) => {
+export const restartHttpServer = async (req, res) => {
   try {
     MotionController.closeHttpServer();
     await setTimeoutAsync(1000);
