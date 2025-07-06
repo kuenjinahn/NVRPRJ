@@ -1,0 +1,20 @@
+{
+  "singleQuote": true,
+  "arrowParens": "always",
+  "printWidth": 120,
+  "endOfLine": "auto",
+  "trailingComma": "none",
+  "bracketSpacing": true,
+  "semi": true,
+  "useTabs": false,
+  "tabWidth": 2,
+  "proseWrap": "preserve",
+  "htmlWhitespaceSensitivity": "css",
+  "embeddedLanguageFormatting": "auto",
+  "requirePragma": false,
+  "insertPragma": false,
+  "quoteProps": "as-needed",
+  "jsxSingleQuote": false,
+  "jsxBracketSameLine": false,
+  "insertFinalNewline": true
+}

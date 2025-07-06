@@ -1,0 +1,4 @@
+CAMERA_UI_OPTS=-D -C -T -S "/home/pi/Desktop/nvr/outputs/nvr"
+CUI_STORAGE_PATH="/home/pi/Desktop/nvr/outputs/nvr"
+
+DISABLE_OPENCOLLECTIVE=true

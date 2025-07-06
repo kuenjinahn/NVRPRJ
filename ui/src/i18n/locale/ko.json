@@ -1,0 +1,47 @@
+{
+  "event": {
+    "report": {
+      "title": "이벤트 보고서",
+      "form": {
+        "title": "보고서 제목",
+        "title_placeholder": "보고서 제목을 입력하세요",
+        "type": "보고서 유형",
+        "type_placeholder": "보고서 유형을 선택하세요",
+        "start_date": "시작 날짜",
+        "start_date_placeholder": "시작 날짜를 선택하세요",
+        "end_date": "종료 날짜",
+        "end_date_placeholder": "종료 날짜를 선택하세요",
+        "videos": "대상 영상",
+        "videos_placeholder": "대상 영상을 선택하세요",
+        "content": "보고서 내용",
+        "content_placeholder": "보고서 내용을 입력하세요",
+        "generate": "보고서 생성"
+      },
+      "preview": "보고서 미리보기",
+      "preview_section": {
+        "basic_info": "기본 정보",
+        "type": "보고서 유형",
+        "period": "기간",
+        "selected_videos": "선택된 영상",
+        "content": "보고서 내용"
+      },
+      "types": {
+        "daily": "일간 보고서",
+        "weekly": "주간 보고서",
+        "monthly": "월간 보고서",
+        "custom": "사용자 정의 보고서"
+      },
+      "videos": {
+        "camera1": "카메라 1",
+        "camera2": "카메라 2",
+        "camera3": "카메라 3"
+      },
+      "validation": {
+        "title": "보고서 제목을 입력해주세요.",
+        "type": "보고서 유형을 선택해주세요.",
+        "dates": "시작 날짜와 종료 날짜를 모두 선택해주세요.",
+        "videos": "하나 이상의 영상을 선택해주세요."
+      }
+    }
+  }
+}
