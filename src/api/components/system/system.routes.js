@@ -365,11 +365,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/ftp/status', [
+  app.get('/api/system/ftp/status',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getFtpServerStatus,
-  ]);
+    SystemController.getFtpServerStatus
+  );
 
   /**
    * @swagger
@@ -387,11 +387,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.put('/api/system/ftp/restart', [
+  app.put('/api/system/ftp/restart',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.restartFtpServer,
-  ]);
+    SystemController.restartFtpServer
+  );
 
   /**
    * @swagger
@@ -409,11 +409,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.put('/api/system/ftp/stop', [
+  app.put('/api/system/ftp/stop',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.stopFtpServer,
-  ]);
+    SystemController.stopFtpServer
+  );
 
   /**
    * @swagger
@@ -431,11 +431,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/mqtt/status', [
+  app.get('/api/system/mqtt/status',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getMqttClientStatus,
-  ]);
+    SystemController.getMqttClientStatus
+  );
 
   /**
    * @swagger
@@ -453,11 +453,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.put('/api/system/mqtt/restart', [
+  app.put('/api/system/mqtt/restart',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.restartMqttClient,
-  ]);
+    SystemController.restartMqttClient
+  );
 
   /**
    * @swagger
@@ -475,11 +475,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.put('/api/system/mqtt/stop', [
+  app.put('/api/system/mqtt/stop',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.stopMqttClient,
-  ]);
+    SystemController.stopMqttClient
+  );
 
   /**
    * @swagger
@@ -504,11 +504,11 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.put('/api/system/update', [
+  app.put('/api/system/update',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.updateSystem,
-  ]);
+    SystemController.updateSystem
+  );
 
   /**
    * @swagger
@@ -526,34 +526,34 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/system/uptime', 
+  app.get('/api/system/uptime',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getUptime,
+    SystemController.getUptime
   );
 
   // Recording cleanup routes
-  app.get('/api/system/cleanup/info', 
+  app.get('/api/system/cleanup/info',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.getCleanupInfo,
+    SystemController.getCleanupInfo
   );
 
-  app.post('/api/system/cleanup/manual', 
+  app.post('/api/system/cleanup/manual',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.manualCleanup,
+    SystemController.manualCleanup
   );
 
-  app.post('/api/system/cleanup/start', 
+  app.post('/api/system/cleanup/start',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.startCleanup,
+    SystemController.startCleanup
   );
 
-  app.post('/api/system/cleanup/stop', 
+  app.post('/api/system/cleanup/stop',
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.onlyMasterCanDoThisAction,
-    SystemController.stopCleanup,
+    SystemController.stopCleanup
   );
 };
