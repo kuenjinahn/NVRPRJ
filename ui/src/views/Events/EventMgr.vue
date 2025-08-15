@@ -8,15 +8,6 @@
           .tw-flex.tw-items-center
             .tab-bar-container.tw-flex.tw-rounded-lg
               v-btn.tab-btn(
-                :color="currentTab === 'search' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
-                @click="changeTab('search')"
-                text
-                height="75"
-                width="200"
-              )
-                v-icon.tw-mr-2(size="24") {{ icons['mdiPlayCircle'] }}
-                span 이벤트조회
-              v-btn.tab-btn(
                 :color="currentTab === 'setting' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
                 @click="changeTab('setting')"
                 text
@@ -24,25 +15,7 @@
                 width="200"
               )
                 v-icon.tw-mr-2(size="24") {{ icons['mdiFormatListBulleted'] }}
-                span 이벤트설정
-              v-btn.tab-btn(
-                :color="currentTab === 'statistic' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
-                @click="changeTab('statistic')"
-                text
-                height="75"
-                width="200"
-              )
-                v-icon.tw-mr-2(size="24") {{ icons['mdiChartLine'] }}
-                span 분석통계
-              v-btn.tab-btn(
-                :color="currentTab === 'zone' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
-                @click="changeTab('zone')"
-                text
-                height="75"
-                width="200"
-              )
-                v-icon.tw-mr-2(size="24") {{ icons['mdiMapMarkerRadius'] }}
-                span 감시영역설정
+                span 시스템 설정
         router-view
 </template>
 
@@ -66,7 +39,7 @@ export default {
       mdiFileDocument,
       mdiMapMarkerRadius
     },
-    currentTab: 'search'
+    currentTab: 'setting'
   }),
 
   async mounted() {

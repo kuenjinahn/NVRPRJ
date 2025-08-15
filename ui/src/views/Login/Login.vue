@@ -1,187 +1,489 @@
-<template lang="pug">
-.tw-w-full.tw-flex.tw-flex-col.tw-justify-center.tw-items-center(style="min-height: 100vh")
- 
-  .login
-    .tw-flex.tw-flex-col.tw-p-0
-      .login-header.tw-flex.tw-justify-between.tw-items-center
-        .tw-block
-          h2.tw-leading-10.tw-font-black {{ $t('스마트댐 모니터링 시스템') }}
-          span.subtitle.tw-font-medium {{ $t(' ') }} 
-            strong.text-primary
-        .tw-ml-auto
+<template>
+  <div class="login-container">
+    <!-- Left Sidebar Container -->
+    <div class="sidebar-container">
+      <div class="sidebar-content">
+        <!-- Logo Section -->
+        <div class="logo-section">
+          <div class="logo-container">
+          <v-img
+            src="@/assets/img/logo.png"
+            alt="Welcome to SDMS "
+            width="40"
+            height="50"
+            class="logo-image"
+          />
+        </div>
+        </div>
 
-      v-form.login-content.tw-mt-5(ref="form" v-model="valid" lazy-validation @submit.prevent="signin")
-        
-        span.login-input-label {{ $t('아이디') }}
-        v-text-field.tw-mb-0.login-input.tw-text-white(
-          required 
-          v-model="user.userId" 
-          :rules="rules.userId" 
-          solo 
-          background-color="rgba(var(--cui-menu-default-rgb), 1)" 
-          color="var(--cui-primary)" 
-          :label="$t('user')"
-        )
+        <!-- Login Form Section -->
+        <div class="login-form-section">
+          <v-card class="login-card" elevation="0">
+            <v-card-text class="pa-4">
+              <div class="login-form">
+                <!-- Username Input -->
+                <v-text-field
+                  v-model="user.userId"
+                  label="아이디"
+                  prepend-inner-icon="mdi-account"
+                  outlined
+                  dense
+                  class="login-input"
+                  hide-details="auto"
+                />
+                
+                <!-- Password Input -->
+                <v-text-field
+                  v-model="user.password"
+                  label="패스워드"
+                  prepend-inner-icon="mdi-lock"
+                  :type="showPassword ? 'text' : 'password'"
+                  outlined
+                  dense
+                  class="login-input"
+                  hide-details="auto"
+                  @keyup.enter="handleLogin"
+                >
+                  <template v-slot:append>
+                    <v-icon
+                      @click="showPassword = !showPassword"
+                      class="password-toggle"
+                    >
+                      {{ showPassword ? 'mdi-eye-off' : 'mdi-eye' }}
+                    </v-icon>
+                  </template>
+                </v-text-field>
 
-        span.login-input-label {{ $t('패스워드') }}
-        v-text-field.tw-mb-0.login-input(
-          required 
-          autocomplete="current-password" 
-          v-model="user.password" 
-          :rules="rules.password" 
-          solo 
-          background-color="rgba(var(--cui-menu-default-rgb), 1)" 
-          color="var(--cui-primary)" 
-          :label="$t('password')" 
-          type="password"
-        )
-        
-        v-btn.login-btn.tw-text-white.tw-mt-2(
-          block 
-          depressed 
-          color="var(--cui-primary)" 
-          height="48px" 
-          type="submit"
-        ) {{ $t('로그인') }}
-              
-  span.tw-text-xs.text-muted {{ $t('수자원공사') }} - v{{ $t('1.0') }}
+                <!-- Login Button -->
+                <v-btn
+                  @click="handleLogin"
+                  color="primary"
+                  block
+                  large
+                  class="login-btn"
+                  :loading="isLoading"
+                >
+                  로그인
+                </v-btn>
+              </div>
+            </v-card-text>
+          </v-card>
+        </div>
+
+        <!-- Footer Section -->
+        <div class="sidebar-footer">
+          <div class="contact-info">
+            <div class="info-item">
+              <span class="info-label">주소:</span>
+              <span class="info-value">서울특별시 강남구</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Tel:</span>
+              <span class="info-value">02-0000-0000</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">E-Mail:</span>
+              <span class="info-value">0000@0000.com</span>
+            </div>
+          </div>
+          <div class="copyright">
+            Copyright© 0000. All rights reserved.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="main-content">
+      <!-- Image Slideshow -->
+      <div class="slideshow-container">
+        <v-carousel
+          v-model="currentSlide"
+          :show-arrows="false"
+          :show-indicators="false"
+          height="100vh"
+          width="100%"
+          class="slideshow-carousel"
+          cycle
+          interval="5000"
+        >
+          <v-carousel-item
+            v-for="(image, index) in slideshowImages"
+            :key="index"
+            class="slideshow-item"
+          >
+            <v-img
+              :src="image.src"
+              :alt="image.alt"
+              height="100%"
+              width="100%"
+              cover
+              class="slideshow-image"
+            >
+              <div class="image-overlay">
+                <div class="overlay-content">
+                  <h1 class="main-title">댐 열화상카메라 스마트 모니터링 시스템</h1>
+                </div>
+              </div>
+            </v-img>
+          </v-carousel-item>
+        </v-carousel>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script>
-import { version } from '../../../../package.json';
-import { mdiEye, mdiEyeOff } from '@mdi/js';
-
+import { mapActions } from 'vuex';
 import { getConfig } from '@/api/config.api';
-
 export default {
   name: 'Login',
-
   data() {
     return {
-      loading: false,
-      loadRestart: false,
-
-      icons: {
-        mdiEye,
-        mdiEyeOff,
-      },
-
+      currentSlide: 0,
+      isLoading: false,
       showPassword: false,
-
-      rules: {
-        userId: [(v) => !!v || this.$t('userId_is_required')],
-        password: [(v) => !!v || this.$t('password_is_required')],
-      },
-
       user: {
         userId: 'akj',
-        password: 'test123',
+        password: 'test123'
       },
-
-      valid: true,
-
-      moduleName: 'camera.ui',
-      version: version,
+      slideshowImages: [
+        {
+          src: 'https://images.unsplash.com/photo-1578662996442-48f60103fc96?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2070&q=80',
+          alt: 'Dam and Mountains'
+        },
+        {
+          src: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2070&q=80',
+          alt: 'Mountain Landscape'
+        },
+        {
+          src: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2071&q=80',
+          alt: 'Forest and Water'
+        }
+      ]
     };
   },
-
-  computed: {
-    restarted() {
-      return Boolean(localStorage.getItem('restarted') === 'true');
-    },
-    updated() {
-      return Boolean(localStorage.getItem('updated') === 'true');
-    },
-    uiConfig() {
-      return this.$store.state.config.ui;
-    },
-  },
-
-  created() {
-    this.loadRestart = this.restarted;
-
-    this.moduleName = this.uiConfig?.env?.moduleName || 'camera.ui';
-    this.version = this.uiConfig.version || version;
-  },
-
-  mounted() {
-    if (this.restarted) {
-      localStorage.setItem('restarted', false);
-      window.location.reload(true);
-    }
-  },
-
   methods: {
-    async signin() {
-      this.loading = true;
-
-      const valid = this.$refs.form.validate();
-
-      if (valid) {
-        try {
-          await this.$store.dispatch('auth/login', { ...this.user });
-
-          await getConfig();
-
-          this.$router.push('/dashboard');
-        } catch (err) {
-          this.loading = false;
-          console.log(err);
-
-          if (err.response && (err.response.status === 401 || err.response.status === 403)) {
-            this.$toast.error(this.$t('cannot_login'));
-          } else {
-            this.$toast.error(err.message);
-          }
-        }
-      } else {
-        this.loading = false;
+    ...mapActions('auth', ['login']),
+    
+    async handleLogin() {
+      if (!this.user.userId || !this.user.password) {
+        this.$toast.error('아이디와 패스워드를 입력해주세요.');
+        return;
       }
-    },
-  },
+
+      this.isLoading = true;
+      try {
+        // 실제 로그인 API 호출
+        await this.$store.dispatch('auth/login', { ...this.user });
+
+        await getConfig();
+
+        this.$router.push('/first-start');
+      } catch (error) {
+        console.error('Login error:', error);
+        
+        // 에러 메시지 처리
+        let errorMessage = '로그인에 실패했습니다.';
+        if (error.response && error.response.data && error.response.data.message) {
+          errorMessage = error.response.data.message;
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        this.$toast.error(errorMessage);
+      } finally {
+        this.isLoading = false;
+      }
+    }
+  }
 };
 </script>
 
-<style scoped>
-.login {
+<style lang="scss" scoped>
+.login-container {
+  display: flex;
+  height: 100vh;
+  background: #f5f5f5;
+}
+
+// Sidebar Container
+.sidebar-container {
+  min-width: 340px;
+  background: white;
+  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+}
+
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px;
+}
+
+// Logo Section
+.logo-section {
+  margin-bottom: 20px;
+  
+  .logo-container {
+    display: flex;
+    align-items: center;
+    transform: scale(0.7);
+    transform-origin: left center;
+    
+    .logo-image {
+      border-radius: 10%;
+      background: #f3f5f6;
+      padding: 8px;
+    }
+    
+    .logo-text {
+      margin-left: 12px;
+      font-size: 18px;
+      font-weight: 600;
+      color: #232323;
+    }
+  }
+}
+
+// Login Form Section
+.login-form-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+  
+  .login-card {
+    width: 100%;
+    background-color: white!important;
+    border: 1px solid #666;
+    border-radius: 10px;
+    padding: 20px;
+    .login-form {
+      .login-input {
+        margin-bottom: 20px;
+        
+        ::v-deep .v-input__control {
+          .v-input__slot {
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            background-color: white !important;
+            
+            &:hover {
+              border-color: #1976d2;
+            }
+            
+            &.v-input--is-focused {
+              border-color: #1976d2;
+            }
+          }
+          
+          .v-text-field__slot {
+            input {
+              color: #000000 !important;
+            }
+            
+            label {
+              color: #666666 !important;
+            }
+          }
+        }
+      }
+      
+      .login-btn {
+        margin-top: 20px;
+        height: 48px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 16px;
+        text-transform: none;
+        background-color: #95594c!important;
+        color: #f3f5f6 !important;
+        &:hover {
+          background: linear-gradient(135deg, #1565c0, #0d47a1);
+        }
+      }
+      
+      .password-toggle {
+        cursor: pointer;
+        color: #666;
+        
+        &:hover {
+          color: #1976d2;
+        }
+      }
+    }
+  }
+}
+
+// Footer Section
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid #e0e0e0;
+  
+  .contact-info {
+    margin-bottom: 15px;
+    
+    .info-item {
+      display: flex;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #666;
+      
+      .info-label {
+        font-weight: 600;
+        min-width: 60px;
+        margin-right: 8px;
+      }
+      
+      .info-value {
+        color: #333;
+      }
+    }
+  }
+  
+  .copyright {
+    font-size: 11px;
+    color: #999;
+    text-align: center;
+  }
+}
+
+// Main Content Area
+.main-content {
+  flex: 1;
+  height: 100vh;
+  background: #000;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slideshow-container {
+  height: 100vh;
   width: 100%;
-  max-width: 350px;
-  margin: 10px;
-  background: rgb(var(--cui-bg-card-rgb));
-  border-radius: 4px;
-  padding: 2rem;
-}
+  position: relative;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  
+  .slideshow-carousel {
+    height: 100%;
+    width: 100%;
 
-.login-btn {
-  text-transform: none;
-  text-indent: unset;
-  letter-spacing: unset;
-  border-radius: 4px;
-}
-
-.login-input-label {
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-@media (max-width: 400px) {
-  .login {
-    width: 90%;
-    max-width: unset;
+    margin: 0 !important;
+    margin-left: -190px !important;
+    padding: 0 0 !important;
+    
+          .slideshow-item {
+        position: relative;
+        height: 100%;
+        width: 100%;
+        
+        .slideshow-image {
+          position: relative;
+          height: 100%;
+          width: 100%;
+        
+                  .image-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+          
+          .overlay-content {
+            text-align: center;
+            color: white;
+            
+            .main-title {
+              font-size: 3rem;
+              font-weight: 700;
+              margin-bottom: 1rem;
+              text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+              line-height: 1.2;
+            }
+            
+            .sub-title {
+              font-size: 1.5rem;
+              font-weight: 400;
+              text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+            }
+          }
+        }
+      }
+    }
   }
 }
 
-@media (max-height: 500px) {
-  .logo {
-    display: none;
+// 반응형 디자인
+@media (max-width: 1024px) {
+  .sidebar-container {
+    width: 350px;
   }
+}
 
-  .login-header {
-    margin-top: 0 !important;
+@media (max-width: 768px) {
+  .login-container {
+    flex-direction: column;
   }
+  
+  .sidebar-container {
+    width: 100%;
+    height: auto;
+    min-height: 400px;
+  }
+  
+  .main-content {
+    height: calc(100vh - 400px);
+  }
+  
+  .slideshow-container {
+    .image-overlay {
+      .overlay-content {
+        .main-title {
+          font-size: 2rem;
+        }
+        
+        .sub-title {
+          font-size: 1.2rem;
+        }
+      }
+    }
+  }
+}
 
-  .subtitle {
-    display: none;
+@media (max-width: 480px) {
+  .sidebar-content {
+    padding: 15px;
+  }
+  
+  .slideshow-container {
+    .image-overlay {
+      .overlay-content {
+        .main-title {
+          font-size: 1.5rem;
+        }
+        
+        .sub-title {
+          font-size: 1rem;
+        }
+      }
+    }
   }
 }
 </style>

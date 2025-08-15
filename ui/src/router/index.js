@@ -63,6 +63,48 @@ export const routes = [
     component: () => import(/* webpackChunkName: "start" */ '@/views/Start/Start.vue'),
   },
   {
+    path: '/first-start',
+    name: 'FirstStart',
+    meta: {
+      auth: {
+        requiresAuth: true,
+        requiredLevel: [/*"cameras:access", */ 'dashboard:access'],
+      },
+      config: {
+        fixedNavbar: true,
+        showFooter: true,
+        showNavbar: true,
+        showSidebar: true,
+      },
+      navigation: {
+        main: true,
+        icon: 'mdi-view-dashboard',
+      },
+    },
+    component: () => import(/* webpackChunkName: "dashboard" */ '@/views/Dashboard/FirstStart.vue'),
+  },
+  {
+    path: '/admin-result',
+    name: 'AdminResult',
+    meta: {
+      auth: {
+        requiresAuth: true,
+        requiredLevel: ['admin-result:access'],
+      },
+      config: {
+        fixedNavbar: true,
+        showFooter: true,
+        showNavbar: true,
+        showSidebar: true,
+      },
+      navigation: {
+        main: true,
+        icon: 'mdi-view-dashboard',
+      },
+    },
+    component: () => import(/* webpackChunkName: "dashboard" */ '@/views/admin/AdminResult.vue'),
+  },
+  {
     path: '/dashboard',
     name: 'Dashboard',
     meta: {
@@ -185,7 +227,7 @@ export const routes = [
     children: [
       {
         path: '',
-        redirect: 'search'
+        redirect: 'setting'
       },
       {
         path: 'search',

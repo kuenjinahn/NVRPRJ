@@ -1,270 +1,575 @@
-<template lang="pug">
-.tw-flex.tw-flex-col.tw-overflow-y-auto.main-navi.main-navi-show
-  .tw-flex.tw-flex-row.tw-justify-center.tw-items-center
-    .logo.tw-cursor-pointer.tw-flex.tw-items-center.tw-justify-center(@click="$router.push('/dashboard')")
-      img.tw-w-full.tw-h-full.tw-object-contain(:src="require('@/assets/img/logo.png')" title="NVR" alt="camera.ui")
-  
-  .tw-flex.tw-flex-col.tw-h-full.tw-items-center.tw-pt-6(key="nav")
-    .tw-flex.tw-items-center.tw-justify-center.sidebar-nav-items(v-for="menu in additionalMenus" :key="menu.name")
-      v-btn.tw-justify-center.sidebar-nav-item(
-        @click="handleMenuClick(menu)"
-        :class="menu.route && $route.path.startsWith(menu.route) ? 'sidebar-nav-item-active v-btn--active' : ''"
-        plain 
-        block 
-        tile
-      )
-        v-icon(height="28px" width="28px") {{ icons[menu.icon] }}
-        span.sidebar-nav-item-text {{ menu.name }}
-    
-    .tw-mt-auto.tw-mb-4.tw-flex.tw-justify-center.tw-w-full
-      v-btn.tw-justify-center.sidebar-nav-item.logout-btn(@click="signout" plain block tile)
-        v-icon(height="28px" width="28px") {{ icons['mdi-logout'] }}
-        span.sidebar-nav-item-text {{ $t('signout') }}
+<template>
+  <div class="sidebar-container">
+    <v-navigation-drawer
+      v-model="drawer"
+      app
+      :width="sidebarWidth"
+      class="dashboard-sidebar"
+      elevation="0"
+      :permanent="true"
+      style="max-height: 100vh !important;"
+    >
+   
+    <!-- Header with Logo -->
+    <div class="sidebar-header">
+      <div class="logo-container">
+        <v-img
+          src="@/assets/img/logo.png"
+          alt="Welcome to SDMS "
+          width="40"
+          height="40"
+          class="logo-image"
+          @click="moveFirstStart"
+        />
+        <span class="logo-text"></span>
+      </div>
+    </div>
 
-  v-dialog(
-    v-model="dialog"
-    max-width="400"
-    persistent
-  )
-    v-card.preparing-dialog
-      v-card-title.dialog-title
-        v-icon.mr-2(color="var(--cui-primary)" size="28") {{ icons['mdi-alert-circle'] }}
-        span 준비중
-      v-card-text.dialog-content
-        .message-text 현재 기능 준비중입니다.
-        .sub-message-text 빠른 시일 내에 서비스하도록 하겠습니다.
-      v-card-actions.dialog-actions
-        v-spacer
-        v-btn(
-          color="var(--cui-primary)"
-          text
-          @click="dialog = false"
-        ) 확인
+    <!-- User Profile Section -->
+    <div class="user-profile-section">
+      <v-card class="user-card" elevation="0">
+        <v-card-text class="pa-4">
+          <div class="d-flex align-center">
+            <v-avatar size="30" class="mr-3">
+              <v-img src="@/assets/img/no_user.png" />
+            </v-avatar>
+            <div class="user-info">
+              <div class="user-name">{{ userName }} 님</div>
+            </div>
+            <v-spacer />
+                  <v-btn
+                    @click="logout"
+                    class="logout-btn"
+                  >
+                    <v-icon>{{ icons.mdiLogoutVariant }}</v-icon>
+                  </v-btn>
+          </div>
+        </v-card-text>
+      </v-card>
+    </div>
+
+    <!-- Location Display -->
+    <div class="location-section">
+      <v-card class="location-card" elevation="0">
+        <v-card-text class="pa-3 text-center">
+          <div class="location-text">{{ weather.location }}</div>
+        </v-card-text>
+      </v-card>
+      
+    </div>
+
+    <!-- Navigation Menu -->
+    <v-list class="navigation-menu" dense>
+      <v-list-item
+        v-for="item in filteredNavigationItems"
+        :key="item.name"
+        :to="item.path"
+        class="nav-item"
+        active-class="nav-item-active"
+      >
+        <v-list-item-icon class="mr-3">
+          <v-icon>{{ item.icon }}</v-icon>
+        </v-list-item-icon>
+        <v-list-item-content>
+          <v-list-item-title>{{ item.title }}</v-list-item-title>
+        </v-list-item-content>
+      </v-list-item>
+    </v-list>
+
+    <!-- Footer Section -->
+    <v-spacer />
+    <div class="sidebar-footer">
+      <div class="social-icons">
+        <v-btn icon small class="social-btn">
+          <v-icon>mdi-instagram</v-icon>
+        </v-btn>
+        <v-btn icon small class="social-btn">
+          <v-icon>mdi-blog</v-icon>
+        </v-btn>
+        <v-btn
+          small
+          outlined
+          class="admin-btn"
+          @click="goToAdmin"
+        >
+          <v-icon left>{{ icons.mdiAccount }}</v-icon>
+          Admin
+        </v-btn>
+      </div>
+      
+      <div class="contact-info">
+        <div class="contact-title">시스템문의</div>
+        <div class="contact-detail">Tel. 000-0000-0000</div>
+        <div class="contact-detail">E-Mail. 0000@daum.com</div>
+      </div>
+      
+      <div class="copyright">
+        Copyright © 0000. All rights reserved.
+      </div>
+    </div>
+  </v-navigation-drawer>
+    
+    <!-- Sidebar Toggle Button - Outside sidebar -->
+    <v-btn
+      @click="toggleSidebar"
+      :class="['sidebar-toggle-btn', { 'sidebar-closed': !drawer }]"
+      icon
+      fab
+      small
+      elevation="4"
+    >
+      <v-icon>{{ drawer ? icons.mdiChevronLeftCircle : icons.mdiChevronRightCircle }}</v-icon>
+    </v-btn>
+  </div>
 </template>
 
 <script>
-import { mdiViewDashboard, mdiLogoutVariant, mdiCctv, mdiVideo, mdiRuler, mdiBell, mdiAccountGroup } from '@mdi/js';
+import { getUser } from '@/api/users.api.js';
 import { bus } from '@/main';
-import { routes } from '@/router';
+import { mdiChevronLeftCircle, mdiChevronRightCircle, mdiLogoutVariant, mdiAccount } from '@mdi/js';
 
 export default {
   name: 'Sidebar',
-
   data() {
     return {
-      icons: {
-        'mdi-view-dashboard': mdiViewDashboard,
-        'mdi-logout': mdiLogoutVariant,
-        'mdi-video': mdiCctv,
-        'mdi-record': mdiVideo,
-        'mdi-ruler': mdiRuler,
-        'mdi-alert': mdiBell,
-        'mdi-account': mdiAccountGroup,
+      drawer: true,
+      sidebarWidth: 300,
+      userName: 'system',
+      userPermissionLevel: 2, // 기본값은 일반 사용자
+      weather: {
+        location: '수자원공사 섬진강댐'
       },
-      dialog: false,
-      additionalMenus: [
-        { name: '대시보드', icon: 'mdi-view-dashboard', route: '/dashboard' },
-        { name: '영상관리', icon: 'mdi-video', route: '/cameras' },
-        { name: '녹화관리', icon: 'mdi-record', route: '/recordings' },
-        { name: '계측관리', icon: 'mdi-ruler', route: '/events' },
-        { name: '경보관리', icon: 'mdi-alert', route: '/alerts' },
-        { name: '사용자관리', icon: 'mdi-account', route: '/user-management' },
-      ],
-      navigation: routes
-        .map((route) => {
-          if (route.meta.navigation) {
-            return {
-              name: route.name,
-              to: route.path,
-              redirect: route.meta.redirectTo,
-              ...route.meta.navigation,
-              ...route.meta.auth,
-            };
-          }
-        })
-        .filter((route) => route),
+      icons: {
+        mdiChevronLeftCircle,
+        mdiChevronRightCircle,
+        mdiLogoutVariant,
+        mdiAccount
+      },
+      allNavigationItems: [
+        {
+          name: 'dashboard',
+          title: '열화상카메라 모니터링',
+          path: '/dashboard',
+          icon: 'mdi-view-dashboard',
+          permissionRequired: null // 모든 사용자 접근 가능
+        },
+        {
+          name: 'alert-status',
+          title: '열화상이미지 분석결과',
+          path: '/alerts/status',
+          icon: 'mdi-view-dashboard',
+          permissionRequired: null // 모든 사용자 접근 가능
+        },
+        {
+          name: 'recordings',
+          title: '녹화영상관리',
+          path: '/recordings',
+          icon: 'mdi-record',
+          permissionRequired: null // 모든 사용자 접근 가능
+        },
+        {
+          name: 'cameras',
+          title: '카메라 관리',
+          path: '/cameras',
+          icon: 'mdi-cctv',
+          permissionRequired: 1 // 관리자만 접근 가능
+        },
+        {
+          name: 'users',
+          title: '사용자관리',
+          path: '/user-management',
+          icon: 'mdi-account-group',
+          permissionRequired: 1 // 관리자만 접근 가능
+        },
+        {
+          name: 'events',
+          title: '설정',
+          path: '/events',
+          icon: 'mdi-account-group',
+          permissionRequired: 1 // 관리자만 접근 가능
+        }
+      ]
     };
   },
-
   computed: {
-    filteredNavigation() {
-      return this.navigation.filter(item => item.name === 'carames').map(item => ({
-        ...item,
-        name: '영상관리'
-      }));
-    },
+    filteredNavigationItems() {
+      return this.allNavigationItems.filter(item => {
+        // permissionRequired가 null이면 모든 사용자 접근 가능
+        if (item.permissionRequired === null) {
+          return true;
+        }
+        // permissionRequired가 있으면 해당 권한 레벨 이상만 접근 가능
+        return this.userPermissionLevel == item.permissionRequired;
+      });
+    }
   },
+  
+  async mounted() {
+    await this.loadUserInfo();
+    await this.loadWeatherLocation();
+    // 사이드바 표시 상태 설정
+    this.drawer = true;
 
+    // bus 이벤트 리스너 등록
+    bus.$on('sidebarOpen', this.openSidebar);
+    bus.$on('sidebarClose', this.closeSidebar);
+    bus.$on('sidebarToggle', this.toggleSidebar);
+    bus.$on('sidebarSetState', this.setSidebarState);
+  },
   methods: {
-    hideNavi() {
-      bus.$emit('showOverlay', false);
-      bus.$emit('extendSidebar', true);
+    moveFirstStart() {
+      this.$router.push('/first-start');
     },
-    async signout() {
+    async loadUserInfo() {
+      // 사용자 정보 로드 로직
+      const user = await getUser(this.$store.state.auth.user.id);
+      if (user.data) {
+        this.userName = user.data.userName || 'system';
+        this.userPermissionLevel = user.data.permissionLevel || 2;
+      }
+    },
+    async loadWeatherLocation() {
+      try {
+        // 기존 날씨 위치 정보 로드 로직 활용
+        const { getEventSetting } = await import('@/api/eventSetting.api.js');
+        const data = await getEventSetting();
+        if (data && data.system_json) {
+          const system = JSON.parse(data.system_json);
+          this.weather.location = system.location_info || system.address || '수자원공사 섬진강댐';
+        }
+      } catch (error) {
+        console.error('위치 정보를 불러오는데 실패했습니다:', error);
+        this.weather.location = '수자원공사 섬진강댐';
+      }
+    },
+    async logout() {
       await this.$store.dispatch('auth/logout');
       this.$router.push('/');
     },
-    showPreparingMessage() {
-      this.dialog = true;
+    goToAdmin() {
+      this.$router.push('/admin-result');
     },
-    handleMenuClick(menu) {
-      const preparingMenus = [];
-      if (preparingMenus.includes(menu.name)) {
-        this.showPreparingMessage();
-      } else if (menu.route) {
-        this.$router.push(menu.route);
+    toggleSidebar() {
+      this.drawer = !this.drawer;
+      this.sidebarWidth = this.drawer ? 300 : 0;
+      
+      // 사이드바가 닫힐 때 transform을 사용하여 숨김
+      const sidebar = document.querySelector('.dashboard-sidebar');
+      if (sidebar) {
+        if (!this.drawer) {
+          sidebar.style.transform = 'translateX(-300px)';
+        } else {
+          sidebar.style.transform = 'translateX(0)';
+        }
+      }
+      
+      // 사이드바 상태 변경을 다른 컴포넌트에 알림
+      bus.$emit('sidebarToggled', this.drawer);
+    },
+    
+    // 글로벌 함수들
+    openSidebar() {
+      if (!this.drawer) {
+        this.toggleSidebar();
       }
     },
-  },
+    
+    closeSidebar() {
+      if (this.drawer) {
+        this.toggleSidebar();
+      }
+    },
+    
+    setSidebarState(state) {
+      this.drawer = state;
+      this.sidebarWidth = state ? 300 : 0;
+      
+      const sidebar = document.querySelector('.dashboard-sidebar');
+      if (sidebar) {
+        if (!state) {
+          sidebar.style.transform = 'translateX(-300px)';
+        } else {
+          sidebar.style.transform = 'translateX(0)';
+        }
+      }
+      
+      bus.$emit('sidebarToggled', state);
+    }
+  }
 };
 </script>
 
-<style scoped>
-.main-navi {
-  background: rgba(var(--cui-bg-nav-rgb));
-  border-right: 1px solid rgba(var(--cui-bg-nav-border-rgb));
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 227px;
-  min-width: 227px;
-  max-width: 227px;
-  transition: 0.2s all;
-  z-index: 999;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  padding-top: 10px;
+<style lang="scss" scoped>
+.sidebar-container {
+  position: relative;
 }
 
-.main-navi::-webkit-scrollbar {
-  width: 0px;
-  display: none;
-}
-
-.main-navi-show {
-  width: 227px;
-  min-width: 227px;
-  margin-left: 0 !important;
-  transform: translateX(0);
-}
-
-.logo {
-  width: 187px;
-  height: 78px;
-  transition: 0.2s all;
-  padding: 8px;
-  display: flex;
-  justify-content: center;
-}
-
-.sidebar-nav-items {
-  height: 80px !important;
-  width: 100%;
-  display: flex;
-  justify-content: flex-start;
-  padding-left: 20px;
-}
-
-.sidebar-nav-item {
-  color: rgba(255, 255, 255, 0.6);
-  transition: 0.2s all;
-  border-radius: 12px !important;
-  height: 80px !important;
-  width: 191px !important;
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  flex-direction: row;
-  padding: 0 20px;
-  margin-left: 0 !important;
-}
-
-.sidebar-nav-item-active,
-.sidebar-nav-item:hover {
-  color: rgba(255, 255, 255, 1);
-}
-
-.sidebar-nav-item-text {
-  font-weight: 600 !important;
-  font-size: 16px !important;
-  text-transform: none !important;
-  letter-spacing: normal !important;
-  margin-left: 12px;
-}
-
-.sidebar-nav-item v-icon {
-  font-size: 28px !important;
-}
-
-.logout-btn {
-  margin-top: auto;
-  color: rgba(255, 255, 255, 0.6) !important;
-  width: 191px !important;
-  height: 80px !important;
-  flex-direction: row;
-  padding: 0 20px;
-}
-
-.logout-btn:hover {
-  color: rgba(255, 255, 255, 1) !important;
-}
-
-.tw-mt-auto.tw-mb-4.tw-flex.tw-justify-center.tw-w-full {
-  padding-left: 20px;
-  justify-content: flex-start !important;
-}
-
-@media (max-width: 960px) {
-  .main-navi {
-    transform: translateX(-227px);
+.dashboard-sidebar {
+  background: #f3f5f6 !important;
+  border-right: none !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  height: 100vh !important;
+  z-index: 999 !important;
+  transform: translateX(0) !important;
+  transition: all 0.3s ease !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  
+  .sidebar-header {
+    padding: 20px;
+    border-bottom: 1px solid #f3f5f6;
+    
+    .logo-container {
+      display: flex;
+      align-items: center;
+      transform: scale(0.8);
+      transform-origin: left center;
+      
+      .logo-image {
+        border-radius: 10%;
+        background: #f3f5f6;
+        padding: 8px;
+      }
+      
+      .logo-text {
+        margin-left: 12px;
+        font-size: 18px;
+        font-weight: 600;
+        color: #232323;
+      }
+    }
   }
+  
+  .user-profile-section {
+    padding: 0 16px 30px;
+    width: 100% !important;
+    .user-card {
+      background-color: #ffffff !important;
+      border-radius: 8px;
+      
+      .user-info {
+        .user-name {
+          font-weight: 500;
+          color: #333;
+        }
+      }
+      
+      .logout-btn {
+        color: #333 !important;
+        background-color: transparent !important;
+        min-width: 36px !important;
+        min-height: 36px !important;
+      
+        &:hover {
+          color: #1976d2 !important;
+          background-color: rgba(25, 118, 210, 0.1) !important;
+        }
+        
+        .v-icon {
+          color: #333 !important;
+          font-size: 20px !important;
+        }
+        
+        &::before {
+          background-color: transparent !important;
+        }
+      }
+    }
+  }
+  
+  .location-section {
+    padding: 0 16px 30px;
+    border-bottom: 1px solid #e0e0e0;
+    
+    .location-card {
+      background-color: #3ac343 !important;
+      border-radius: 8px;
+      
+      .location-text {
+        font-weight: 500;
+        color: #ffffff;
+        font-size: 14px;
+      }
+    }
+  }
+  
+  .navigation-menu {
+    padding: 0 8px 120px 8px;
+    background: #f3f5f6 !important;
+    flex: 1 !important;
+    .nav-item {
+      margin: 4px 0;
+      border-radius: 8px;
+      color: #363636 !important;
+      &:hover {
+        background: #f5f5f5;
+      }
+      
+      &.nav-item-active {
+        background: #e3f2fd;
+        color: #363636 !important;
+        
+        .v-icon {
+          color: #1976d2;
+        }
+      }
+      
+      .v-list-item__icon {
+        margin-right: 12px;
+      }
+      
+      .v-list-item__title {
+        font-size: 14px;
+        font-weight: 500;
+      }
+    }
+  }
+  
+  .sidebar-footer {
+    padding: 16px;
+    border-top: 1px solid #e0e0e0;
+    position: absolute !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    background: #f3f5f6 !important;
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+    
+    .social-icons {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      flex-direction: column;
+      
+      .social-btn {
+        margin: 0 4px;
+        color: #666;
+        
+        &:hover {
+          color: #1976d2;
+        }
+      }
+      
+      .admin-btn {
+          font-size: 12px;
+          height: 28px;
+          text-align: center;
+          margin-top: 8px;
+        }
+    }
+    
+    .contact-info {
+      text-align: left;
+      margin-bottom: 12px;
+      
+      .contact-title {
+        font-weight: 600;
+        color: #333;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+      
+      .contact-detail {
+        color: #666;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+    }
+    
+    .copyright {
+      text-align: left;
+      color: #999;
+      font-size: 11px;
+      line-height: 1.3;
+      margin-bottom: 0 !important;
+      padding-bottom: 16px !important;
+    }
+  }
+}
 
-  .main-navi-show {
+// 반응형 디자인
+@media (max-width: 960px) {
+  .dashboard-sidebar {
+    transform: translateX(-300px);
+  }
+  
+  .dashboard-sidebar.show {
     transform: translateX(0);
   }
+  
+  .sidebar-toggle-btn {
+    left: 0 !important;
+    border-radius: 0 24px 24px 0 !important;
+  }
+  
+  .sidebar-toggle-btn.sidebar-closed {
+  left: 0 !important;
+  border-radius: 0 24px 24px 0 !important;
 }
 
-.preparing-dialog {
-  border-radius: 12px !important;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1) !important;
+// 사이드바가 닫힐 때 메인 콘텐츠 영역 조정
+:global(.content) {
+  transition: margin-left 0.3s ease !important;
 }
 
-.dialog-title {
-  background-color: #f8f9fa;
-  border-top-left-radius: 12px;
-  border-top-right-radius: 12px;
-  padding: 20px 24px !important;
-  font-size: 1.25rem !important;
-  font-weight: 600 !important;
-  color: #2c3e50;
+:global(.content.sidebar-closed) {
+  margin-left: 0 !important;
+  width: 100vw !important;
+  min-width: 100vw !important;
+  max-width: 100vw !important;
+}
 }
 
-.dialog-content {
-  padding: 24px !important;
+@media (max-width: 768px) {
+  .dashboard-sidebar {
+    width: 280px !important;
+  }
 }
 
-.message-text {
-  font-size: 1.1rem;
-  font-weight: 500;
-  color: #2c3e50;
-  margin-bottom: 8px;
+@media (max-width: 480px) {
+  .dashboard-sidebar {
+    width: 260px !important;
+  }
 }
 
-.sub-message-text {
-  font-size: 0.95rem;
-  color: #6c757d;
+.sidebar-toggle-btn {
+  position: fixed !important;
+  left: 300px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  z-index: 1000 !important;
+  background: white !important;
+  color: #666 !important;
+  transition: left 0.3s ease !important;
+  width: 24px !important;
+  height: 48px !important;
+  min-width: 24px !important;
+  min-height: 48px !important;
+  border-radius: 0 24px 24px 0 !important;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2) !important;
+  border: none !important;
+  
+  &:hover {
+    background: #f5f5f5 !important;
+    color: #333 !important;
+  }
+  
+  .v-icon {
+    font-size: 16px !important;
+    color: #666 !important;
+  }
+  
+  &:hover .v-icon {
+    color: #333 !important;
+  }
 }
 
-.dialog-actions {
-  padding: 16px 24px !important;
-  border-top: 1px solid #edf2f7;
-}
-
-.v-btn {
-  text-transform: none !important;
-  font-weight: 600 !important;
-  font-size: 0.95rem !important;
-  padding: 0 20px !important;
+.sidebar-toggle-btn.sidebar-closed {
+  left: 0 !important;
 }
 </style>

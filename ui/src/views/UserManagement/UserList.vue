@@ -33,13 +33,13 @@
       no-data-text="데이터가 없습니다"
       class="elevation-1"
     )
-      template(v-slot:item.role="{ item }")
+      template(v-slot:item.permissionLevel="{ item }")
         v-chip(
-          :color="getRoleColor(item.role)"
+          :color="getPermissionColor(item.permissionLevel)"
           small
           label
           text-color="white"
-        ) {{ item.role }}
+        ) {{ getPermissionText(item.permissionLevel) }}
       
       template(v-slot:item.actions="{ item }")
         .tw-flex.tw-items-center.tw-gap-2.tw-justify-center
@@ -103,6 +103,15 @@
               :rules="passwordConfirmRules"
               :required="!editedItem.id"
             )
+            v-select(
+              v-model="editedItem.permissionLevel"
+              label="권한 레벨"
+              :items="permissionOptions"
+              item-text="text"
+              item-value="value"
+              :rules="[v => !!v || '권한 레벨은 필수입니다']"
+              required
+            )
         v-card-actions.dialog-actions
           v-spacer
           v-btn.cancel-btn(
@@ -125,7 +134,7 @@
               color="white"
             )
             v-icon.tw-mr-2(v-else size="20") {{ editedIndex === -1 ? icons['mdiPlus'] : icons['mdiContentSave'] }}
-            span {{ editedIndex === -1 ? '추가하기' : '수정하기' }}
+            span {{ editedIndex === -1 ? '추가하기' : '수정' }}
 
     // 삭제 확인 다이얼로그
     v-dialog(
@@ -151,7 +160,7 @@
 </template>
 
 <script>
-import { mdiDelete, mdiPencil, mdiPlus } from '@mdi/js';
+import { mdiDelete, mdiPencil, mdiPlus, mdiContentSave } from '@mdi/js';
 import { getUsers, addUser, changeUser, removeUser } from '@/api/users.api';
 
 export default {
@@ -161,7 +170,8 @@ export default {
     icons: {
       mdiDelete,
       mdiPencil,
-      mdiPlus
+      mdiPlus,
+      mdiContentSave
     },
     search: '',
     loading: false,
@@ -169,10 +179,11 @@ export default {
     deleteDialog: false,
     valid: false,
     headers: [
-      { text: 'No', value: 'id', align: 'center', width: '80px' },
+      { text: 'No', value: 'index', align: 'center', width: '80px' },
       { text: '아이디', value: 'userId', align: 'center' },
       { text: '이름', value: 'userName', align: 'center' },
       { text: '직급', value: 'userDept', align: 'center' },
+      { text: '권한', value: 'permissionLevel', align: 'center' },
       { text: '관리', value: 'actions', sortable: false, align: 'center', width: '400px' }
     ],
     users: [],
@@ -182,15 +193,14 @@ export default {
       userName: '',
       userDept: '',
       password: '',
-      passwordConfirm: ''
+      passwordConfirm: '',
+      permissionLevel: 2
     },
-    defaultItem: {
-      userId: 'akj2995',
-      userName: '안근진2',
-      userDept: '경영기획실실',
-      password: 'test1234',
-      passwordConfirm: 'test1234'
-    },
+
+    permissionOptions: [
+      { text: '관리자', value: 1 },
+      { text: '사용자', value: 2 }
+    ],
     isProcessing: false
   }),
 
@@ -199,7 +209,7 @@ export default {
       return this.editedIndex === -1 ? '사용자 추가' : '사용자 수정'
     },
     filteredUsers() {
-      return this.users.filter(user => {
+      const filtered = this.users.filter(user => {
         const matchesSearch = !this.search || 
           user.userId.toLowerCase().includes(this.search.toLowerCase()) ||
           user.userName.toLowerCase().includes(this.search.toLowerCase()) ||
@@ -207,6 +217,12 @@ export default {
         
         return matchesSearch;
       });
+      
+      // 순번 추가
+      return filtered.map((user, index) => ({
+        ...user,
+        index: index + 1
+      }));
     },
     passwordConfirmRules() {
       return [
@@ -247,12 +263,22 @@ export default {
 
     showAddUserDialog() {
       this.editedIndex = -1
-      this.editedItem = Object.assign({}, this.defaultItem)
+      // 깊은 복사를 위해 새로운 객체 생성
+      this.editedItem = {
+        userId: '',
+        userName: '',
+        userDept: '',
+        password: '',
+        passwordConfirm: '',
+        permissionLevel: 2
+      }
       this.dialog = true
     },
 
     editUser(item) {
-      this.editedIndex = this.users.indexOf(item)
+      // userId로 원본 users 배열에서 해당 사용자를 찾아서 인덱스 설정
+      const originalIndex = this.users.findIndex(user => user.userId === item.userId)
+      this.editedIndex = originalIndex
       this.editedItem = {
         ...item,
         password: '****',
@@ -264,7 +290,15 @@ export default {
     closeDialog() {
       this.dialog = false
       this.$nextTick(() => {
-        this.editedItem = Object.assign({}, this.defaultItem)
+        // 깊은 복사를 위해 새로운 객체 생성
+        this.editedItem = {
+          userId: '',
+          userName: '',
+          userDept: '',
+          password: '',
+          passwordConfirm: '',
+          permissionLevel: 2
+        }
         this.editedIndex = -1
         if (this.$refs.form) {
           this.$refs.form.reset()
@@ -281,7 +315,8 @@ export default {
           // 수정
           const payload = {
             userName: this.editedItem.userName,
-            userDept: this.editedItem.userDept
+            userDept: this.editedItem.userDept,
+            permissionLevel: this.editedItem.permissionLevel
           }
           if (this.editedItem.password && this.editedItem.password !== '****') {
             payload.password = this.editedItem.password
@@ -294,7 +329,8 @@ export default {
             userId: this.editedItem.userId,
             userName: this.editedItem.userName,
             userDept: this.editedItem.userDept,
-            password: this.editedItem.password
+            password: this.editedItem.password,
+            permissionLevel: this.editedItem.permissionLevel
           })
           this.$toast.success('사용자가 추가되었습니다.')
         }
@@ -326,13 +362,20 @@ export default {
       }
     },
 
-    getRoleColor(role) {
+    getPermissionColor(permissionLevel) {
       const colors = {
-        '관리자': 'error',
-        '매니저': 'warning',
-        '일반사용자': 'success'
+        1: 'error',    // 관리자
+        2: 'success'   // 사용자
       }
-      return colors[role] || 'grey'
+      return colors[permissionLevel] || 'grey'
+    },
+
+    getPermissionText(permissionLevel) {
+      const texts = {
+        1: '관리자',
+        2: '사용자'
+      }
+      return texts[permissionLevel] || '알 수 없음'
     }
   }
 }

@@ -156,21 +156,38 @@
                   )
                     template(v-slot:prepend-inner)
                       v-icon.text-muted mdi-map-marker
-                
+                              
                 v-col(cols="12" md="6")
-                  label.form-input-label 파일 삭제 일수
-                  v-text-field(
-                    v-model="settings.system.recodingFileDeleteDays"
-                    type="number"
-                    suffix="일"
-                    placeholder="30"
-                    prepend-inner-icon="mdi-delete-clock"
+                  label.form-input-label 지도 이미지 추가
+                  v-file-input(
+                    v-model="mapImageFile"
+                    accept="image/*"
+                    prepend-inner-icon="mdi-map"
                     background-color="var(--cui-bg-card)"
                     color="var(--cui-text-default)"
                     solo
+                    hide-details
+                    @change="handleMapImageChange"
+                    placeholder="지도 이미지를 선택하세요"
                   )
                     template(v-slot:prepend-inner)
-                      v-icon.text-muted mdi-delete-clock
+                      v-icon.text-muted mdi-map
+                
+                v-col(cols="12" v-if="mapImagePreview")
+                  .map-preview-container
+                    label.form-input-label 선택된 지도 이미지 미리보기
+                    v-img(
+                      :src="mapImagePreview"
+                      max-height="200"
+                      contain
+                      class="map-preview-image"
+                    )
+                    v-btn(
+                      color="error"
+                      small
+                      @click="removeMapImage"
+                      class="mt-2"
+                    ) 이미지 제거
 </template>
 
 <script>
@@ -228,7 +245,9 @@ export default {
       mdiVideo,
       mdiDeleteClock
     },
-    currentMenu: 'object',
+    currentMenu: 'system',
+    mapImageFile: null,
+    mapImagePreview: null,
     menus: [
       // {
       //   id: 'temperature',
@@ -236,12 +255,6 @@ export default {
       //   subtitle: '온도 감지 및 알림 설정',
       //   icon: mdiThermometer
       // },
-      {
-        id: 'object',
-        title: '객체 설정',
-        subtitle: '객체 감지 설정',
-        icon: mdiAccountGroup
-      },
       {
         id: 'system',
         title: '시스템',
@@ -301,12 +314,13 @@ export default {
         trackingDuration: 10,
         enableTracking: true
       },
-      system: {
-        location_info: '',
-        address: '',
-        recodingBitrate: '1024k',
-        recodingFileDeleteDays: 30,
-      },
+              system: {
+          location_info: '',
+          address: '',
+          recodingBitrate: '1024k',
+          recodingFileDeleteDays: 30,
+          map: null
+        },
       site: {
         name: '',
         location: '',
@@ -341,6 +355,11 @@ export default {
       const object = data.object_json ? JSON.parse(data.object_json) : {};
       const system = data.system_json ? JSON.parse(data.system_json) : {};
 
+      // 저장된 지도 이미지가 있으면 미리보기 설정
+      if (system.map) {
+        this.mapImagePreview = system.map;
+      }
+
       this.settings = {
         temperature: {
           threshold: temp.threshold ?? 20,
@@ -367,7 +386,8 @@ export default {
           location_info: system.location_info ?? '',
           address: system.address ?? '',
           recodingBitrate: system.recodingBitrate ?? '1024k',
-          recodingFileDeleteDays: system.recodingFileDeleteDays ?? 30
+          recodingFileDeleteDays: system.recodingFileDeleteDays ?? 30,
+          map: system.map ?? null
         },
         site: {
           name: '',
@@ -404,7 +424,8 @@ export default {
           location_info: '',
           address: '',
           recodingBitrate: '1024k',
-          recodingFileDeleteDays: 30
+          recodingFileDeleteDays: 30,
+          map: null
         },
         site: {
           name: '',
@@ -417,6 +438,54 @@ export default {
   },
 
   methods: {
+    handleMapImageChange(file) {
+      if (file) {
+        // 파일 크기 체크 (16MB 제한)
+        const maxSize = 16 * 1024 * 1024; // 16MB
+        if (file.size > maxSize) {
+          this.$toast && this.$toast.error('파일 크기가 16MB를 초과합니다. 더 작은 이미지를 선택해주세요.');
+          this.mapImageFile = null;
+          return;
+        }
+
+        // 이미지 파일 타입 체크
+        if (!file.type.startsWith('image/')) {
+          this.$toast && this.$toast.error('이미지 파일만 선택할 수 있습니다.');
+          this.mapImageFile = null;
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          // Base64 인코딩된 이미지 데이터
+          const base64Data = e.target.result;
+          this.mapImagePreview = base64Data;
+          this.settings.system.map = base64Data;
+          
+          console.log('이미지 Base64 인코딩 완료:', {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type,
+            base64Length: base64Data.length
+          });
+        };
+        
+        reader.onerror = () => {
+          this.$toast && this.$toast.error('이미지 파일 읽기에 실패했습니다.');
+          this.mapImageFile = null;
+        };
+        
+        // Base64로 인코딩
+        reader.readAsDataURL(file);
+      }
+    },
+
+    removeMapImage() {
+      this.mapImageFile = null;
+      this.mapImagePreview = null;
+      this.settings.system.map = null;
+    },
+
     async saveSettings() {
       try {
         // 1. 현재 DB에 설정이 있는지 확인
@@ -615,6 +684,48 @@ export default {
         background-color: rgba(var(--cui-primary-rgb), 0.2) !important;
         color: var(--cui-primary) !important;
       }
+    }
+  }
+}
+
+.map-preview-container {
+  margin-top: 16px;
+  
+  .map-preview-image {
+    border: 1px solid var(--cui-border-color);
+    border-radius: 8px;
+    margin-top: 8px;
+  }
+}
+
+.v-file-input {
+  margin-bottom: 16px;
+  
+  .v-input__slot {
+    background-color: var(--cui-bg-card) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+
+    &:hover {
+      border-color: rgba(255, 255, 255, 0.24) !important;
+    }
+
+    &.v-input--is-focused {
+      border-color: var(--cui-primary) !important;
+      border-width: 2px !important;
+    }
+  }
+
+  .v-label {
+    color: rgba(255, 255, 255, 0.7) !important;
+  }
+
+  input {
+    color: rgba(255, 255, 255, 0.87) !important;
+  }
+
+  .v-input__append-inner {
+    .v-icon {
+      color: rgba(255, 255, 255, 0.54) !important;
     }
   }
 }

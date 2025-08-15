@@ -14,6 +14,7 @@
             dense
             outlined
             class="mb-4"
+            :disabled="true"
             @click="customizing = false"
           )
           .video-container(
@@ -802,6 +803,7 @@ export default {
         camera.live = camera.settings.camview.live || false;
         camera.refreshTimer = camera.settings.camview.refreshTimer || 60;
         camera.url = camera.videoConfig.source.replace(/\u00A0/g, ' ').split('-i ')[1];
+        camera.videoType = camera.videoConfig?.videoType || 1;
         if (!camera.url.startsWith('/')) {
           const protocol = camera.url.split('://')[0];
           const url = new URL(camera.url.replace(protocol, 'http'));
@@ -809,7 +811,14 @@ export default {
         }
       }
       this.cameraList = response.data.result;
-      if (this.cameraList.length > 0) {
+      
+      // videoType이 1인 카메라를 디폴트로 선택
+      const thermalCamera = this.cameraList.find(camera => camera.videoType === 1);
+      if (thermalCamera) {
+        this.selectedCameraName = thermalCamera.name;
+        this.updateSelectedCamera(this.selectedCameraName);
+      } else if (this.cameraList.length > 0) {
+        // videoType이 1인 카메라가 없으면 첫 번째 카메라 선택
         this.selectedCameraName = this.cameraList[0].name;
         this.updateSelectedCamera(this.selectedCameraName);
       }

@@ -233,6 +233,8 @@ export default {
         Authorization: `Bearer ${this.currentUser.access_token}`,
       };
       this.$socket.client.open();
+    } else {
+      console.warn('No access token available, socket connection will not be established');
     }
   },
   methods: {
@@ -251,10 +253,13 @@ export default {
     reconnectSocket() {
       // 로그인 성공 시 호출: 최신 토큰으로 소켓 재연결
       if (this.currentUser?.access_token) {
+        console.log('Reconnecting socket with fresh token...');
         this.$socket.client.io.opts.extraHeaders = {
           Authorization: `Bearer ${this.currentUser.access_token}`,
         };
         this.$socket.client.open();
+      } else {
+        console.warn('No access token available for socket reconnection');
       }
     },
     disconnectSocket() {

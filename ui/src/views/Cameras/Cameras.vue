@@ -43,6 +43,12 @@
           span.white--text {{ item.model || 'IP Camera' }}
         template(v-slot:item.address="{ item }")
           span.white--text {{ item.url }}
+        template(v-slot:item.videoType="{ item }")
+          v-chip(
+            :color="item.videoType === 1 ? 'orange' : 'blue'"
+            dark
+            small
+          ) {{ item.videoType === 1 ? '열화상' : '실화상' }}
         template(v-slot:item.lastNotification="{ item }")
           .text-font-disabled {{ item.lastNotification ? item.lastNotification.time : $t('no_data') }}
         template(v-slot:item.liveFeed="{ item }")
@@ -133,11 +139,25 @@
               :disabled="isProcessing"
             )
           .form-group
-            .input-label 열화상 주소
+            .input-label 영상구분
+            v-select(
+              v-model="videoType"
+              :items="videoTypeOptions"
+              item-text="text"
+              item-value="value"
+              placeholder="영상구분을 선택해주세요"
+              :rules="[v => !!v || '영상구분을 선택해주세요']"
+              outlined
+              hide-details="auto"
+              class="url-input"
+              :disabled="isProcessing"
+            )
+          .form-group
+            .input-label 영상 주소
             v-text-field(
               v-model="videoUrl"
               placeholder="rtsp://username:password@camera-ip:port/stream"
-              :rules="[v => !!v || '열화상 주소를 입력해주세요']"
+              :rules="[v => !!v || '영상 주소를 입력해주세요']"
               outlined
               hide-details="auto"
               class="url-input"
@@ -299,6 +319,14 @@ export default {
         class: 'tw-pl-3 tw-pr-1',
         cellClass: 'tw-pl-3 tw-pr-1',
       },
+      {
+        text: '영상구분',
+        value: 'videoType',
+        align: 'center',
+        sortable: false,
+        class: 'tw-pl-3 tw-pr-1',
+        cellClass: 'tw-pl-3 tw-pr-1',
+      },
       // {
       //   text: 'Last Motion',
       //   value: 'lastNotification',
@@ -333,6 +361,11 @@ export default {
     selectedCamera: null,
     videoUrl: '',
     videoTitle: '',
+    videoType: 1,
+    videoTypeOptions: [
+      { text: '열화상', value: 1 },
+      { text: '실화상', value: 2 }
+    ],
     valid: true,
     isEditMode: false,
     originalName: '',
@@ -372,41 +405,7 @@ export default {
     this.listMode = 1;
     this.backupHeaders = [...this.headers];
 
-    this.loading = true;
-    try {
-      const response = await getCameras();
-      if (response?.data?.result) {
-        const rawCameras = response.data.result;
-        const processedCameras = [];
-        
-        for (const camera of rawCameras) {
-          try {
-            if (!camera?.name) {
-              console.warn('Skipping camera without name:', camera);
-              continue;
-            }
-
-            const settingsResponse = await getCameraSettings(camera.name);
-            const processedCamera = {
-              ...camera,
-              settings: settingsResponse?.data.settings || {},
-              url: camera.videoConfig?.source?.replace(/\u00A0/g, ' ').split('-i ')[1] || ''
-            };
-            
-            processedCameras.push(processedCamera);
-          } catch (err) {
-            console.error(`Error processing camera ${camera?.name || 'unknown'}:`, err);
-          }
-        }
-
-        this.cameras = processedCameras;
-      }
-    } catch (err) {
-      console.error('Error loading cameras:', err);
-      this.$toast.error(err.message || '카메라 목록을 불러오는데 실패했습니다.');
-    } finally {
-      this.loading = false;
-    }
+    await this.refreshCameraList();
 
     ['resize', 'orientationchange'].forEach((event) => {
       window.addEventListener(event, this.onResize);
@@ -443,13 +442,13 @@ export default {
       const removeHeaders = [];
 
       if (this.windowWidth() < 415) {
-        removeHeaders.push('model', 'address', 'lastNotification', 'liveFeed');
+        removeHeaders.push('model', 'address', 'videoType', 'lastNotification', 'liveFeed');
       } else if (this.windowWidth() < 650) {
-        removeHeaders.push('model', 'address', 'lastNotification');
+        removeHeaders.push('model', 'address', 'videoType', 'lastNotification');
       } else if (this.windowWidth() <= 800) {
-        removeHeaders.push('model', 'lastNotification');
+        removeHeaders.push('model', 'videoType', 'lastNotification');
       } else if (this.windowWidth() < 900) {
-        removeHeaders.push('model');
+        removeHeaders.push('model', 'videoType');
 
         /*if (!this.toggleView) {
           this.toggleView = true;
@@ -486,6 +485,7 @@ export default {
       this.isEditMode = false;
       this.videoTitle = '';
       this.videoUrl = '';
+      this.videoType = 1;
       this.addVideoDialog = true;
     },
     showEditVideoDialog(camera) {
@@ -493,6 +493,7 @@ export default {
       this.originalName = camera.name;
       this.videoTitle = camera.name;
       this.videoUrl = camera.videoConfig.source.split('-i ')[1];
+      this.videoType = camera.videoConfig.videoType || 1;
       this.addVideoDialog = true;
     },
     closeAddVideoDialog() {
@@ -500,6 +501,7 @@ export default {
         this.addVideoDialog = false;
         this.videoUrl = '';
         this.videoTitle = '';
+        this.videoType = 1;
         this.valid = true;
         this.isEditMode = false;
         this.originalName = '';
@@ -531,7 +533,8 @@ export default {
               debug: null,
               rtspTransport: 'tcp',
               vcodec: 'mp4',
-              acodec: null
+              acodec: null,
+              videoType: this.videoType
             },
             mqtt: {},
             smtp: {
@@ -598,7 +601,8 @@ export default {
               this.cameras[index] = {
                 ...camera,
                 settings: settingsResponse?.data.settings || camera.settings,
-                url: camera.videoConfig.source.split('-i ')[1]
+                url: camera.videoConfig.source.split('-i ')[1],
+                videoType: camera.videoConfig.videoType
               };
             }
             
@@ -611,11 +615,15 @@ export default {
             this.cameras.unshift({
               ...camera,
               settings: settingsResponse?.data.settings || camera.settings,
-              url: camera.videoConfig.source.split('-i ')[1]
+              url: camera.videoConfig.source.split('-i ')[1],
+              videoType: camera.videoConfig.videoType
             });
             
             this.$toast.success('카메라가 성공적으로 추가되었습니다.');
           }
+          
+          // 카메라 목록 새로고침
+          await this.refreshCameraList();
         } catch (err) {
           console.log(err);
           this.$toast.error(err.message || (this.isEditMode ? '카메라 수정 중 오류가 발생했습니다.' : '카메라 추가 중 오류가 발생했습니다.'));
@@ -653,12 +661,64 @@ export default {
         }
         
         this.$toast.success('카메라가 성공적으로 삭제되었습니다.');
+        
+        // 카메라 목록 새로고침
+        await this.refreshCameraList();
       } catch (err) {
         console.log(err);
         this.$toast.error(err.message || '카메라 삭제 중 오류가 발생했습니다.');
       } finally {
         this.isProcessing = false;
         this.closeDeleteVideoDialog();
+      }
+    },
+    async refreshCameraList() {
+      try {
+        this.loading = true;
+        const response = await getCameras();
+        if (response?.data?.result) {
+          const rawCameras = response.data.result;
+          const processedCameras = [];
+          
+          for (const camera of rawCameras) {
+            try {
+              if (!camera?.name) {
+                console.warn('Skipping camera without name:', camera);
+                continue;
+              }
+
+              const settingsResponse = await getCameraSettings(camera.name);
+              const processedCamera = {
+                ...camera,
+                settings: settingsResponse?.data.settings || {},
+                url: camera.videoConfig?.source?.replace(/\u00A0/g, ' ').split('-i ')[1] || '',
+                videoType: camera.videoConfig?.videoType || 1
+              };
+              
+              console.log(`Camera ${camera.name} refreshed:`, {
+                name: processedCamera.name,
+                videoType: processedCamera.videoType,
+                url: processedCamera.url
+              });
+              
+              processedCameras.push(processedCamera);
+            } catch (err) {
+              console.error(`Error processing camera ${camera?.name || 'unknown'}:`, err);
+            }
+          }
+
+          this.cameras = processedCameras;
+          console.log('Refreshed cameras list:', this.cameras.map(cam => ({
+            name: cam.name,
+            videoType: cam.videoType,
+            typeText: cam.videoType === 1 ? '열화상' : '실화상'
+          })));
+        }
+      } catch (err) {
+        console.error('Error refreshing cameras:', err);
+        this.$toast.error(err.message || '카메라 목록을 새로고침하는데 실패했습니다.');
+      } finally {
+        this.loading = false;
       }
     },
   },

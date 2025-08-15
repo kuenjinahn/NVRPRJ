@@ -6,7 +6,7 @@
       v-col(cols="12")
         .tw-flex.tw-justify-between.tw-items-center
           .tw-flex.tw-items-center
-            .tab-bar-container.tw-flex.tw-rounded-lg
+            <!-- .tab-bar-container.tw-flex.tw-rounded-lg
               v-btn.tab-btn(
                 :color="currentTab === 'search' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
                 @click="changeTab('search')"
@@ -33,7 +33,7 @@
                 width="200"
               )
                 v-icon.tw-mr-2(size="24") {{ icons['mdiCog'] }}
-                span 경보설정
+                span 경보설정 -->
         router-view
 </template>
 
@@ -84,7 +84,7 @@ export default {
 
 <style lang="scss" scoped>
 .recording-mgr {
-  padding: 20px;
+  padding: 0px;
 }
 
 .tab-bar-container {

@@ -15,15 +15,6 @@
               )
                 v-icon.tw-mr-2(size="24") {{ icons['mdiAccountGroup'] }}
                 span 사용자 리스트
-              v-btn.tab-btn(
-                :color="activeView === 'history' ? 'var(--cui-primary)' : 'var(--cui-text-muted)'"
-                @click="activeView = 'history'"
-                text
-                height="75"
-                width="200"
-              )
-                v-icon.tw-mr-2(size="24") {{ icons['mdiHistory'] }}
-                span 사용자 이력관리
 
     
     v-row

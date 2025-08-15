@@ -3,39 +3,51 @@
   .cell.cell-topleft
     .topleft-inner-row
       .topleft-inner-left
-        .time-display
-          .site-time-block
+        .time-layer
+          .current-time {{ currentTime }}
+        .site-info-layer
+          .layer-title 실증현장 정보
+          .site-info-content
             .site-name(v-if="location_info") {{ location_info }}
-            .current-time {{ currentTime }}
-        .weather-widget
-          .weather-info
-            .temperature {{ weather.temperature }}°C
-            .weather-description {{ weather.description }}
-            .location {{ weather.location }}
+        .leak-status-layer
+          .layer-title 실시간누수감지상태
+          .status-buttons
+            .status-button.safe(
+              :class="{ active: selectedStatusButton === 'safe' }"
+            )
+              .status-icon ✅
+              .status-text 안전
+            .status-button.attention(
+              :class="{ active: selectedStatusButton === 'attention' }"
+            )
+              .status-icon 🛡️
+              .status-text 관심
+            .status-button.caution(
+              :class="{ active: selectedStatusButton === 'caution' }"
+            )
+              .status-icon ⚠️
+              .status-text 주의
+            .status-button.check(
+              :class="{ active: selectedStatusButton === 'check' }"
+            )
+              .status-icon 🔍
+              .status-text 점검
+            .status-button.prepare(
+              :class="{ active: selectedStatusButton === 'prepare' }"
+            )
+              .status-icon 🔔
+              .status-text 대비
       .topleft-inner-right
-        .gauge-container
-          .gauge-meter(ref="gaugeChart" style="width:100%;height:180px;min-width:180px;min-height:180px;")
-        .bottom-box
-          .table-title 경보 이력
-          .alert-table
-            .table-header
-              .header-cell 경보레벨
-              .header-cell 발생일자
-            .table-body
-              .table-row(
-                v-for="alert in alertHistory"
-                :key="alert.id"
-                :class="['alert-row', `level-${alert.level}`]"
-                )
-                .table-cell
-                  span.level-icon(:class="`level-${alert.level}`")
-                    span(v-if="alert.level == 4") ⚠️
-                    span(v-else-if="alert.level == 3") 🔶
-                    span(v-else-if="alert.level == 2") 🟡
-                    span(v-else-if="alert.level == 1") 🟦
-                    span(v-else) 🟩
-                  span.level-text {{ getLevelText(alert.level) }}
-                .table-cell {{ alert.time }}
+        .map-image-container(v-if="mapImagePreview")
+          v-img(
+            :src="mapImagePreview"
+            height="100%"
+            width="100%"
+            cover
+            class="map-preview-image"
+          )
+        .no-map-image(v-else)
+          .no-map-text 지도 이미지가 없습니다
   .cell.cell-topright
     .box-title 열화상 영상
     .video-container
@@ -54,7 +66,7 @@
   .cell.cell-bottomleft
     .bottomleft-inner-col
       .bottomleft-inner-top
-        .box-title ROI List
+        .box-title 분석영역리스트
         .table-container
           table.zone-table
             thead
@@ -73,17 +85,18 @@
                 @click="showChart(zone)"
               )
                 td {{ zone.zone_desc }}
-                td {{ zone.maxTemp }}
-                td {{ zone.minTemp }}
-                td {{ zone.avgTemp }}
+                td 최대온도: {{ zone.maxTemp }}
+                td 최소온도: {{ zone.minTemp }}
+                td 평균온도: {{ zone.avgTemp }}
+                td 경보단계: {{ zone.alertLevel }}
                 td
                   span.icon-chart 📈
                 td
                   span.icon-excel(@click.stop="downloadExcel(zone)") 📊
       .bottomleft-inner-bottom
-        .box-title Time Series Temperature
-        .chart-container
-          v-chart(:options="chartOption" autoresize ref="trendChart" style="width:100%;height:160%;background:var(--cui-bg-card);")
+          .box-title 시계열 온도 데이터
+          .chart-container
+            v-chart(:options="chartOption" autoresize ref="trendChart" class="trend-chart")
   .cell.cell-bottomright
     .box-title 실화상 영상
     .video-container
@@ -157,6 +170,9 @@ data() {
     gaugeChart: null,
     location_info: '',
     address: '',
+    mapImagePreview: null,
+    selectedStatusButton: null,
+    latestAlertInfo: null,
   };
 },
 computed: {
@@ -189,7 +205,6 @@ computed: {
     const minTemps = temps.map(t => Number(t.min));
     const maxTemps = temps.map(t => Number(t.max));
     const avgTemps = temps.map(t => Number(t.avg));
-
     console.log('Processed data:', {
       times: times.length,
       minTemps: minTemps.length,
@@ -295,6 +310,7 @@ computed: {
   }
 },
 mounted() {
+  if (this.$sidebar) this.$sidebar.close();
   this.updateTime();
   this.timeInterval = setInterval(this.updateTime, 1000);
   
@@ -306,10 +322,10 @@ mounted() {
   if (!this.$socket.client.connected) {
     this.$socket.client.connect();
   }
-  this.initGaugeChart();
   this.initializeData();
   this.loadAlertHistory();
   this.loadSiteName();
+  this.loadMapImage();
 },
 beforeDestroy() {
   if (this.timeInterval) {
@@ -423,8 +439,32 @@ methods: {
         camera.url = camera.videoConfig.source.replace(/\u00A0/g, ' ').split('-i ')[1];
       }
       this.cameraList = response.data.result;
-      this.thermalCamera = this.cameraList[0] || null;
-      this.visibleCamera = this.cameraList[1] || null;
+      
+      // videoType에 따라 카메라 분류
+      this.thermalCamera = null;
+      this.visibleCamera = null;
+      
+      for (const camera of this.cameraList) {
+        const videoType = camera.videoConfig?.videoType || 1;
+        if (videoType === 1) {
+          // 열화상 카메라
+          if (!this.thermalCamera) {
+            this.thermalCamera = camera;
+          }
+        } else if (videoType === 2) {
+          // 실화상 카메라
+          if (!this.visibleCamera) {
+            this.visibleCamera = camera;
+          }
+        }
+      }
+      
+      // videoType이 없는 경우 기존 로직으로 fallback
+      if (!this.thermalCamera && !this.visibleCamera && this.cameraList.length > 0) {
+        this.thermalCamera = this.cameraList[0] || null;
+        this.visibleCamera = this.cameraList[1] || null;
+      }
+      
       this.videoKeyThermal = this.thermalCamera ? this.thermalCamera.name + '_' + Date.now() : '';
       this.videoKeyVisible = this.visibleCamera ? this.visibleCamera.name + '_' + Date.now() : '';
     } catch (err) {
@@ -629,6 +669,27 @@ methods: {
               }]
             });
           }
+          
+          // 기본적으로 최신 경보 레벨에 해당하는 버튼 선택 (level에 1을 더함)
+          const latestLevel = Number(this.alertHistory[0].level) + 1;
+          const buttonMapping = {
+            1: 'safe',
+            2: 'attention', 
+            3: 'caution',
+            4: 'check',
+            5: 'prepare'
+          };
+          
+          const defaultButton = buttonMapping[latestLevel] || 'prepare';
+          this.selectedStatusButton = defaultButton; // 버튼 타입 설정
+          
+          // 최신 경보 정보 설정
+          this.latestAlertInfo = {
+            level: this.getLevelText(this.alertHistory[0].level),
+            maxTemp: this.alertHistory[0].maxTemp,
+            minTemp: this.alertHistory[0].minTemp,
+            time: this.alertHistory[0].time
+          };
         }
       } catch (error) {
         console.error('알림 이력 조회 실패:', error);
@@ -679,6 +740,7 @@ methods: {
       });
     },
     getLevelText(level) {
+      const adjustedLevel = Number(level) + 1;
       const levels = {
         '1': '주의',
         '2': '경고',
@@ -686,7 +748,7 @@ methods: {
         '4': '심각',
         '5': '비상'
       };
-      return levels[level] || level;
+      return levels[adjustedLevel] || adjustedLevel;
     },
     async loadSiteName() {
       try {
@@ -702,6 +764,76 @@ methods: {
         this.address = '';
       }
     },
+
+    async loadMapImage() {
+      try {
+        console.log('loadMapImage ...start')
+        const data = await getEventSetting();
+        if (data && data.system_json) {
+          const system = JSON.parse(data.system_json);
+
+          this.mapImagePreview = system.map || null;
+          
+        }
+      } catch (e) {
+        this.mapImagePreview = null;
+      }
+    },
+    // selectStatusButton(buttonType) {
+    //   this.selectedStatusButton = buttonType;
+    //   
+    //   // 버튼 타입을 경보 레벨로 매핑
+    //   const levelMapping = {
+    //     'safe': 1,
+    //     'attention': 2,
+    //     'caution': 3,
+    //     'check': 4,
+    //     'prepare': 5
+    //   };
+    //   
+    //   const targetLevel = levelMapping[buttonType];
+    //   
+    //   // 해당 레벨의 가장 최신 경보 찾기
+    //   const latestAlert = this.alertHistory.find(alert => Number(alert.level) === targetLevel);
+    //   
+    //   if (latestAlert) {
+    //     this.latestAlertInfo = {
+    //       level: this.getLevelText(latestAlert.level),
+    //       maxTemp: latestAlert.maxTemp,
+    //       minTemp: latestAlert.minTemp,
+    //       time: latestAlert.time
+    //     };
+    //   } else {
+    //     // 해당 레벨의 경보가 없으면 전체에서 가장 최신 경보 표시
+    //     if (this.alertHistory.length > 0) {
+    //       const latest = this.alertHistory[0];
+    //       this.latestAlertInfo = {
+    //         level: this.getLevelText(latest.level),
+    //         maxTemp: latest.maxTemp,
+    //         minTemp: latest.minTemp,
+    //         time: latest.time
+    //       };
+    //     } else {
+    //       this.latestAlertInfo = null;
+    //     }
+    //   }
+    // },
+    getStatusButtonText(buttonType) {
+      switch (buttonType) {
+        case 'safe':
+          return '안전';
+        case 'attention':
+          return '관심';
+        case 'caution':
+          return '주의';
+        case 'check':
+          return '점검';
+        case 'prepare':
+          return '대비';
+        default:
+          return '';
+      }
+    }
   },
 };
 </script>
@@ -713,14 +845,14 @@ methods: {
   grid-template-rows: 1fr 1fr;
   gap: 16px;
   height: calc(100vh - 32px);
-  background: #222;
+  background: #222736;
   padding: 16px;
   overflow: hidden;
 }
 
 .cell {
-  background: #333;
-  border: 2px solid #555;
+  background: #2a3042;
+  border: 1px solid #2a3042;
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -806,7 +938,7 @@ methods: {
 .bottomleft-inner-bottom {
   flex: 1;
   border-radius: 0 0 8px 8px;
-  background: transparent;
+  background: #2a3042;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -849,50 +981,199 @@ methods: {
   height: 100%;
 }
 
-.time-display {
-  background: #0066cc;
+.time-layer {
+  background: #3659e2;
   color: white;
-  padding: 20px;
+  padding: 15px;
   text-align: center;
-  border-radius: 8px 8px 0 0;
-  height: 50%;
+  border-radius: 8px 0 0 0;
+  height: 15%;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  
+  
+  .current-time {
+    font-size: 20px;
+    color: white;
+  }
 }
 
-.weather-widget {
-  background: #1a1a1a;
+.site-info-layer {
+  background: #2a3042;
   color: white;
-  padding: 20px;
-  text-align: center;
-  border-radius: 0 0 8px 8px;
+  padding: 0px;
+  border-top: 1px solid #2a3042;
   height: 50%;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   flex-shrink: 0;
+  margin: 5px 0;
+  .layer-title {
+    background: #666;
+    color: white;
+    font-weight: bold;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    text-align: left;
+  }
+  
+  .site-info-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    
+    .site-name {
+      font-size: 16px;
+      font-weight: bold;
+      text-align: center;
+      line-height: 1.3;
+      word-break: break-all;
+    }
+  }
 }
 
-.weather-info {
-  width: 100%;
-}
-
-.temperature {
-  font-size: 2em;
-  font-weight: bold;
-  margin-bottom: 10px;
-}
-
-.weather-description {
-  font-size: 1.2em;
-  margin-bottom: 5px;
-}
-
-.location {
-  font-size: 1em;
-  color: #888;
+.leak-status-layer {
+  background: #2a3042;
+  color: white;
+  padding: 0px;
+  border-top: 1px solid #2a3042;
+  border-radius: 0 0 0 8px;
+  height: 30%;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  margin: 5px 0 !important;
+  
+  .layer-title {
+    background: #666;
+    color: white;
+    font-weight: bold;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: 14px;
+    text-align: left;
+  }
+  
+  .status-buttons {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    margin-top: -20px;
+    padding: 0px 10px;
+    align-items: center;
+    justify-content: center;
+    
+    .status-button {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 4px;
+      border-radius: 6px;
+      transition: all 0.3s ease;
+      
+      &.safe {
+        background: transparent;
+        border-color: transparent;
+        
+        &.active {
+          background: #4caf50;
+          border: 2px solid #fff;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+      }
+      
+      &.attention {
+        background: transparent;
+        border-color: transparent;
+        
+        &.active {
+          background: #2196f3;
+          border: 2px solid #fff;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+      }
+      
+      &.caution {
+        background: transparent;
+        border-color: transparent;
+        
+        &.active {
+          background: #ff9800;
+          border: 2px solid #fff;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+      }
+      
+      &.check {
+        background: transparent;
+        border-color: transparent;
+        
+        &.active {
+          background: #f44336;
+          border: 2px solid #fff;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+      }
+      
+      &.prepare {
+        background: transparent;
+        border-color: transparent;
+        
+        &.active {
+          background: #e34d4d;
+          border: 2px solid #fff;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+      }
+      
+      .status-icon {
+        font-size: 18px;
+        margin-bottom: 4px;
+      }
+      
+      .status-text {
+        font-size: 12px;
+        font-weight: bold;
+        text-align: center;
+      }
+    }
+  }
+  .status-info {
+    background: #333;
+    border-radius: 0 0 8px 8px;
+    padding: 10px;
+    margin-top: 10px;
+    .info-title {
+      font-size: 14px;
+      font-weight: bold;
+      color: #fff;
+      margin-bottom: 8px;
+      text-align: left;
+    }
+    .info-content {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      .info-item {
+        display: flex;
+        justify-content: space-between;
+        .label {
+          color: #bbb;
+          font-size: 12px;
+        }
+        .value {
+          color: #fff;
+          font-size: 14px;
+          font-weight: bold;
+        }
+      }
+    }
+  }
 }
 
 .zone-table {
@@ -909,6 +1190,7 @@ methods: {
   th {
     background: #444;
     color: #fff;
+    display: none;
   }
 
   tr {
@@ -916,11 +1198,16 @@ methods: {
     transition: background-color 0.3s;
 
     &:hover {
-      background-color: #333;
+      background-color: #444d67;
     }
 
     &.selected {
-      background-color: #2c2c2c;
+      background-color: #444d67;
+    }
+
+    td:first-child {
+      background-color: #535e6c;
+      font-weight: bold;
     }
   }
 
@@ -939,13 +1226,19 @@ methods: {
   flex: 1;
   min-height: 0;
   padding: 2vw 1vw 1vw 1vw;
-  background: var(--cui-bg-card);
+  background: #2a3042;
   border-radius: 0 0 8px 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-top: 0;
-  height: 28vh;
+  height: 100%;
+
+  .trend-chart {
+    width: 100%;
+    height:215px;
+    background: #2a3042;
+  }
 
   .no-data {
     color: #888;
@@ -1078,29 +1371,39 @@ methods: {
   }
 }
 
-.site-time-block {
+// 기존 스타일은 새로운 3개 레이어 구조로 대체됨
+
+.map-image-container {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  padding: 0;
+  background: #333;
+  border-radius: 0 8px 8px 0;
+  margin-left: 3px;
+  .map-preview-image {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #222;
+    border-radius: 0 8px 8px 0;
+
+  }
 }
 
-.site-name {
-  white-space: pre-line;
-  word-break: break-all;
-  max-width: 180px;
-  font-size: 22px;
-  color: #fff;
-  line-height: 1.3;
-  text-align: left;
-  display: block;
-}
+.no-map-image {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #333;
+  border-radius: 0 8px 8px 0;
 
-.current-time {
-  font-size: 22px;
-  color: #ccc;
-  line-height: 1.2;
-  text-align: left;
-  display: block;
+  .no-map-text {
+    color: #888;
+    font-size: 16px;
+    text-align: center;
+  }
 }
 </style>

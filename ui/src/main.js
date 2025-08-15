@@ -35,6 +35,14 @@ Vue.component('Loader', Loader);
 
 Vue.mixin(permission);
 
+// 글로벌 사이드바 함수들
+Vue.prototype.$sidebar = {
+  open() { bus.$emit('sidebarOpen'); },
+  close() { bus.$emit('sidebarClose'); },
+  toggle() { bus.$emit('sidebarToggle'); },
+  setState(state) { bus.$emit('sidebarSetState', state); }
+};
+
 Vue.config.productionTip = false;
 
 const bus = new Vue();

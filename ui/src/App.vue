@@ -17,7 +17,7 @@ v-app.app(:style="$route.name === 'Camview' ? 'background: #121212 !important' :
         
         .overlay(v-if="showOverlay")
 
-        v-main.tw-relative(:class="$route.name !== 'Login' && $route.name !== 'Start' && $route.name !== '404' && ($route.meta.config && !$route.meta.config.showMinifiedNavbar && $route.meta.config.showSidebar ? 'content ' : '') + (extendSidebar ? 'extended-sidebar' : '')")
+        v-main.tw-relative(:class="getMainClasses()")
           .router-container.tw-relative(:class="$route.meta.config && $route.meta.config.fixedNavbar ? 'fixed-navbar' : ''")
             transition(name='fade' mode='out-in')
               router-view
@@ -52,6 +52,7 @@ export default {
     extendSidebar: false,
     loading: true,
     showOverlay: false,
+    sidebarOpen: true,
   }),
 
   watch: {
@@ -65,6 +66,7 @@ export default {
   mounted() {
     bus.$on('showOverlay', this.triggerOverlay);
     bus.$on('extendSidebar', this.triggerSidebar);
+    bus.$on('sidebarToggled', this.handleSidebarToggle);
 
     setTimeout(() => {
       this.loading = false;
@@ -74,6 +76,7 @@ export default {
   beforeDestroy() {
     bus.$off('showOverlay', this.triggerOverlay);
     bus.$off('extendSidebar', this.triggerSidebar);
+    bus.$off('sidebarToggled', this.handleSidebarToggle);
   },
 
   updated() {
@@ -86,6 +89,27 @@ export default {
     },
     triggerOverlay(state) {
       this.showOverlay = state;
+    },
+    handleSidebarToggle(isOpen) {
+      this.sidebarOpen = isOpen;
+    },
+    getMainClasses() {
+      const classes = [];
+      
+      if (this.$route.name !== 'Login' && this.$route.name !== 'Start' && this.$route.name !== '404' && 
+          (this.$route.meta.config && !this.$route.meta.config.showMinifiedNavbar && this.$route.meta.config.showSidebar)) {
+        classes.push('content');
+      }
+      
+      if (this.extendSidebar) {
+        classes.push('extended-sidebar');
+      }
+      
+      if (!this.sidebarOpen) {
+        classes.push('sidebar-closed');
+      }
+      
+      return classes.join(' ');
     },
   },
 };
@@ -133,10 +157,19 @@ export default {
 }
 
 .content {
-  margin-left: 227px;
-  width: calc(100vw - 227px);
-  min-width: calc(100vw - 227px);
-  max-width: calc(100vw - 227px);
+  margin-left: 300px;
+  width: calc(100vw - 300px);
+  min-width: calc(100vw - 300px);
+  max-width: calc(100vw - 300px);
+  padding-left: 0 !important;
+  transition: margin-left 0.3s ease, width 0.3s ease, min-width 0.3s ease, max-width 0.3s ease;
+}
+
+.content.sidebar-closed {
+  margin-left: 0 !important;
+  width: 100vw !important;
+  min-width: 100vw !important;
+  max-width: 100vw !important;
 }
 
 .overlay {
@@ -158,10 +191,11 @@ export default {
 }
 
 .extended-sidebar {
-  margin-left: 227px;
-  width: calc(100vw - 227px);
-  min-width: calc(100vw - 227px);
-  max-width: calc(100vw - 227px);
+  margin-left: 300px;
+  width: calc(100vw - 300px);
+  min-width: calc(100vw - 300px);
+  max-width: calc(100vw - 300px);
+  padding-left: 0 !important;
 }
 
 .fixed-navbar {
