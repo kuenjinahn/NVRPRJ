@@ -1625,7 +1625,7 @@ class VideoAlertChecker:
                         break
                     
                     # 시나리오1과 시나리오2 실행
-                    #self.scenario1_judge()
+                    self.scenario1_judge()
                     self.scenario2_judge()
                    
                     # 강제 종료 체크
