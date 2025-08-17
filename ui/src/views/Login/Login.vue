@@ -144,8 +144,8 @@ export default {
       isLoading: false,
       showPassword: false,
       user: {
-        userId: 'akj',
-        password: 'test123'
+        userId: process.env.NODE_ENV === 'development' ? 'akj' : '',
+        password: process.env.NODE_ENV === 'development' ? 'test123' : ''
       },
       slideshowImages: [
         {

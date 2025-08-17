@@ -168,9 +168,9 @@ import moment from 'moment';
 import { getRecordingHistory} from '@/api/recordingService.api.js';
 import { getCameras } from '@/api/cameras.api';
 import Hls from 'hls.js';
-const API_BASE_URL = process.env.NODE_ENV === 'development' 
-  ? 'http://localhost:9091' 
-  : 'http://20.41.121.184:9091';
+import { getApiBaseUrl } from '@/config/api.config.js';
+
+const API_BASE_URL = getApiBaseUrl();
 export default {
   name: 'RecodingCompare',
 

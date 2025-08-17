@@ -6,7 +6,6 @@ import LoggerService from '../logger/logger.service.js';
 const { log } = LoggerService;
 
 // 기본 데이터베이스 설정
-//20.41.121.184
 const dbConfig = {
   host: 'localhost',
   port: 3306,

@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "serve": "node -e \"if (process.platform === 'win32') { require('child_process').execSync('vue-cli-service serve', {stdio: 'inherit'}) } else { require('child_process').execSync('export NODE_OPTIONS=--openssl-legacy-provider && vue-cli-service serve', {stdio: 'inherit'}) }\"",
-    "build": "vue-cli-service build",
+    "start": "NODE_ENV=production node server.js",
+    "start:dev": "NODE_ENV=development node server.js",
+    "build": "cross-env NODE_ENV=production vue-cli-service build",
+    "build:dev": "cross-env NODE_ENV=development vue-cli-service build",
     "lint": "vue-cli-service lint",
     "format": "prettier --write \"src/**/*.{js,vue,css,scss,html}\" --loglevel error"
   },

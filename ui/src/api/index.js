@@ -1,11 +1,14 @@
 import axios from 'axios';
+import { getApiBaseUrl } from '@/config/api.config.js';
 
 const api = axios.create({
-  baseURL:
-    process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test'
-      ? `${location.protocol}//${location.hostname}:9091/api`
-      : `${location.origin}/api`,
+  baseURL: getApiBaseUrl(),
 });
+
+// 디버깅용 로그
+console.log(`[API Index] Base URL: ${getApiBaseUrl()}`);
+console.log(`[API Index] Current environment: ${process.env.NODE_ENV}`);
+console.log(`[API Index] Location origin: ${location.origin}`);
 
 api.interceptors.request.use(
   (config) => {
