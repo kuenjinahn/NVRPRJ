@@ -51,6 +51,11 @@ const AlertHistory = sequelize.define('AlertHistory', {
     type: DataTypes.STRING(1024),
     allowNull: true
   },
+  snapshotImages: {
+    type: DataTypes.TEXT('medium'),
+    allowNull: true,
+    defaultValue: null
+  },
   create_date: {
     type: DataTypes.DATE,
     allowNull: true
@@ -60,7 +65,7 @@ const AlertHistory = sequelize.define('AlertHistory', {
     allowNull: true
   },
   alert_info_json: {
-    type: DataTypes.TEXT,
+    type: DataTypes.TEXT('medium'),
     allowNull: true
   }
 }, {

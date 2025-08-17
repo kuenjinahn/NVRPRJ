@@ -58,8 +58,6 @@ class RecordingCleanupService {
 
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - deleteDays);
-    console.log('=====> creationTime', creationTime);
-    console.log('=====> cutoffDate', cutoffDate);
     return creationTime < cutoffDate;
   }
 
@@ -117,7 +115,6 @@ class RecordingCleanupService {
           }
         } else if (stats.isFile()) {
           // 파일인 경우 삭제 대상인지 확인
-          console.log('=====> itemPath', itemPath);
           const isVideoFile = /\.(mp4|avi|mov)$/i.test(item);
           if (isVideoFile && this.isFileExpired(itemPath, deleteDays)) {
             if (this.deleteFileAndMetadata(itemPath)) {

@@ -196,6 +196,7 @@ export const getRoiDataList = async (req, res) => {
           maxTemp: '--',
           minTemp: '--',
           avgTemp: '--',
+          alertLevel: zone.alert_level,
           temps: []
         }))
       });
@@ -266,6 +267,7 @@ export const getRoiDataList = async (req, res) => {
         maxTemp,
         minTemp,
         avgTemp,
+        alertLevel: zone.alert_level,
         temps: temps.reverse() // Reverse to get chronological order
       };
     });
@@ -279,6 +281,135 @@ export const getRoiDataList = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get ROI data list'
+    });
+  }
+};
+
+// ROI 번호와 발생 일자를 받아서 해당 시간 이전의 1분 데이터를 조회하는 API
+export const getRoiTimeSeriesData = async (req, res) => {
+  try {
+    const { roiNumber, eventDate } = req.query;
+
+    // 필수 파라미터 검증
+    if (!roiNumber || !eventDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'ROI 번호와 발생 일자는 필수입니다.'
+      });
+    }
+
+    // 발생 일자를 Date 객체로 변환
+    const eventDateTime = new Date(eventDate);
+    if (isNaN(eventDateTime.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: '유효하지 않은 날짜 형식입니다.'
+      });
+    }
+
+    // 1분 이전 시간 계산
+    const oneMinuteBefore = new Date(eventDateTime.getTime() - 60 * 1000);
+
+    console.log('ROI Time Series Data Request:', {
+      roiNumber,
+      eventDate,
+      eventDateTime: eventDateTime.toISOString(),
+      oneMinuteBefore: oneMinuteBefore.toISOString()
+    });
+
+    // ROI 번호에 해당하는 zone_type 계산
+    const zoneType = `Z${roiNumber}`;
+
+    // 데이터 필드 인덱스 계산
+    const baseIndex = 22 + (parseInt(roiNumber) * 2);
+    const minDataField = `data_${baseIndex}`;
+    const maxDataField = `data_${baseIndex + 1}`;
+
+    // VideoReceiveData에서 해당 시간 범위의 데이터 조회
+    const timeSeriesData = await VideoReceiveData.findAll({
+      where: {
+        create_date: {
+          [Op.between]: [oneMinuteBefore, eventDateTime]
+        }
+      },
+      order: [['create_date', 'ASC']],
+      attributes: ['create_date', 'data_value']
+    });
+
+    console.log(`Found ${timeSeriesData.length} records for ROI ${roiNumber}`);
+
+    // 온도 데이터 추출 및 처리
+    const temperatureData = [];
+    const allMinTemps = [];
+    const allMaxTemps = [];
+    const allAvgTemps = [];
+
+    timeSeriesData.forEach(data => {
+      try {
+        const dataValue = data.getDataValue('data_value') || {};
+        const parsedDataValue = typeof dataValue === 'string' ? JSON.parse(dataValue) : dataValue;
+
+        // 해당 ROI의 데이터 필드가 존재하는지 확인
+        if (parsedDataValue[minDataField] !== undefined && parsedDataValue[maxDataField] !== undefined) {
+          const minTemp = Number(parsedDataValue[minDataField]);
+          const maxTemp = Number(parsedDataValue[maxDataField]);
+          const avgTemp = (maxTemp + minTemp) / 2;
+
+          allMinTemps.push(minTemp);
+          allMaxTemps.push(maxTemp);
+          allAvgTemps.push(avgTemp);
+
+          temperatureData.push({
+            time: data.getDataValue('create_date'),
+            min: minTemp.toFixed(1),
+            max: maxTemp.toFixed(1),
+            avg: avgTemp.toFixed(1),
+            roiNumber: parseInt(roiNumber)
+          });
+        }
+      } catch (error) {
+        console.error('Error parsing data for record:', data.id, error);
+      }
+    });
+
+    // 통계 계산
+    let maxTemp = '--';
+    let minTemp = '--';
+    let avgTemp = '--';
+
+    if (allMinTemps.length > 0 && allMaxTemps.length > 0) {
+      maxTemp = Math.max(...allMaxTemps).toFixed(1);
+      minTemp = Math.min(...allMinTemps).toFixed(1);
+      avgTemp = (allAvgTemps.reduce((a, b) => a + b, 0) / allAvgTemps.length).toFixed(1);
+    }
+
+    // 응답 데이터 구성
+    const responseData = {
+      roiNumber: parseInt(roiNumber),
+      eventDate: eventDateTime.toISOString(),
+      timeRange: {
+        start: oneMinuteBefore.toISOString(),
+        end: eventDateTime.toISOString()
+      },
+      statistics: {
+        maxTemp,
+        minTemp,
+        avgTemp,
+        dataCount: temperatureData.length
+      },
+      timeSeriesData: temperatureData
+    };
+
+    res.json({
+      success: true,
+      result: responseData
+    });
+
+  } catch (error) {
+    console.error('Error in getRoiTimeSeriesData:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ROI 시계열 데이터 조회 중 오류가 발생했습니다.'
     });
   }
 };

@@ -77,6 +77,7 @@ export class ConfigSetup {
     return {
       ...ConfigSetup.setupUi(config),
       options: ConfigSetup.setupOptions(config?.options),
+      recordings: ConfigSetup.setupRecordings(config?.recordings),
       ssl: ConfigSetup.setupSsl(config?.ssl),
       http: ConfigSetup.setupHttp(config?.http),
       smtp: ConfigSetup.setupSmtp(config?.smtp),
@@ -205,5 +206,24 @@ export class ConfigSetup {
         // exclude cameras with invalid videoConfig, source
         .filter((camera) => camera.videoConfig?.source)
     );
+  }
+
+  static setupRecordings(recordings = {}) {
+    return {
+      path: recordings?.path || './outputs/nvr/recordings',
+      retention: recordings?.retention || 30,
+      maxFileSize: recordings?.maxFileSize || '10GB',
+      hls: {
+        enabled: recordings?.hls_enabled === 'true' || recordings?.hls?.enabled || false,
+        segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 30,
+        maxSegments: parseInt(recordings?.hls_maxSegments) || recordings?.hls?.maxSegments || 2880,
+        deleteSegments: recordings?.hls_deleteSegments === 'true' || recordings?.hls?.deleteSegments || true,
+        quality: recordings?.hls_quality || recordings?.hls?.quality || 'medium',
+        bitrate: recordings?.hls_bitrate || recordings?.hls?.bitrate || '1024k',
+        segmentSize: recordings?.hls_segmentSize || recordings?.hls?.segmentSize || '4MB',
+        autoCleanup: recordings?.hls_autoCleanup === 'true' || recordings?.hls?.autoCleanup || true,
+        cleanupInterval: parseInt(recordings?.hls_cleanupInterval) || recordings?.hls?.cleanupInterval || 3600,
+      },
+    };
   }
 }

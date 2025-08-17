@@ -120,6 +120,7 @@ const addDetectionZone = async (zoneData) => {
     zone_segment_json: JSON.stringify(zoneData.regions),
     zone_params_json: JSON.stringify(zoneData.options),
     zone_active: zoneData.active || 0,
+    alert_level: zoneData.alertLevel || 1,
     create_date: new Date(),
     update_date: new Date()
   };

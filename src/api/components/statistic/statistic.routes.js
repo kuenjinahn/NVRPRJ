@@ -62,6 +62,91 @@ export const routesConfig = (app) => {
     StatisticController.getRoiDataList,
   ]);
 
+  /**
+   * @swagger
+   * /api/statistic/roi-time-series:
+   *   get:
+   *     tags: [Statistics]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Get ROI time series data for a specific ROI number and event date
+   *     parameters:
+   *       - in: query
+   *         name: roiNumber
+   *         required: true
+   *         schema:
+   *           type: integer
+   *         description: ROI number (1-10)
+   *       - in: query
+   *         name: eventDate
+   *         required: true
+   *         schema:
+   *           type: string
+   *           format: date-time
+   *         description: Event date and time (ISO format)
+   *     responses:
+   *       200:
+   *         description: Successful
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success:
+   *                   type: boolean
+   *                 result:
+   *                   type: object
+   *                   properties:
+   *                     roiNumber:
+   *                       type: integer
+   *                     eventDate:
+   *                       type: string
+   *                     timeRange:
+   *                       type: object
+   *                       properties:
+   *                         start:
+   *                           type: string
+   *                         end:
+   *                           type: string
+   *                     statistics:
+   *                       type: object
+   *                       properties:
+   *                         maxTemp:
+   *                           type: string
+   *                         minTemp:
+   *                           type: string
+   *                         avgTemp:
+   *                           type: string
+   *                         dataCount:
+   *                           type: integer
+   *                     timeSeriesData:
+   *                       type: array
+   *                       items:
+   *                         type: object
+   *                         properties:
+   *                           time:
+   *                             type: string
+   *                           min:
+   *                             type: string
+   *                           max:
+   *                             type: string
+   *                           avg:
+   *                             type: string
+   *                           roiNumber:
+   *                             type: integer
+   *       400:
+   *         description: Bad request - missing parameters or invalid date format
+   *       401:
+   *         description: Unauthorized
+   *       500:
+   *         description: Internal server error
+   */
+  app.get('/api/statistic/roi-time-series', [
+    ValidationMiddleware.validJWTNeeded,
+    PermissionMiddleware.minimumPermissionLevelRequired('statistic:access'),
+    StatisticController.getRoiTimeSeriesData,
+  ]);
+
   const routes = app._router.stack
     .filter(r => r.route)
     .map(r => ({

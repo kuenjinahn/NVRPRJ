@@ -58,8 +58,29 @@ export const hasValidFields = (req, res, next) => {
       errors.push('Missing password field');
     }
 
-    if (req.body.permissionLevel && !req.body.permissionLevel.some((level) => validPermissions.includes(level))) {
-      errors.push('Permission level is not valid');
+    if (req.body.permissionLevel) {
+      // permissionLevel이 배열인 경우
+      if (Array.isArray(req.body.permissionLevel)) {
+        if (!req.body.permissionLevel.some((level) => validPermissions.includes(level))) {
+          errors.push('Permission level is not valid');
+        }
+      }
+      // permissionLevel이 숫자인 경우 (1: admin, 2: user)
+      else if (typeof req.body.permissionLevel === 'number') {
+        if (req.body.permissionLevel !== 1 && req.body.permissionLevel !== 2) {
+          errors.push('Permission level is not valid');
+        }
+      }
+      // permissionLevel이 문자열인 경우
+      else if (typeof req.body.permissionLevel === 'string') {
+        if (!validPermissions.includes(req.body.permissionLevel)) {
+          errors.push('Permission level is not valid');
+        }
+      }
+      // 그 외의 경우
+      else {
+        errors.push('Permission level format is not valid');
+      }
     }
 
     return errors.length > 0

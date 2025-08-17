@@ -104,7 +104,40 @@ export const routesConfig = (app) => {
    *     tags: [Users]
    *     security:
    *       - bearerAuth: []
-   *     summary: Get specific user by userId
+   *     summary: Get specific user by userId or numeric ID
+   *     parameters:
+   *       - in: path
+   *         name: userId
+   *         schema:
+   *           oneOf:
+   *             - type: string
+   *             - type: integer
+   *         required: true
+   *         description: User ID (can be numeric ID or userId string)
+   *     responses:
+   *       200:
+   *         description: Successfull
+   *       401:
+   *         description: Unauthorized
+   *       404:
+   *         description: Not found
+   *       500:
+   *         description: Internal server error
+   */
+  app.get('/api/users/:userId', [
+    ValidationMiddleware.validJWTNeeded,
+    PermissionMiddleware.minimumPermissionLevelRequired('users:access'),
+    UsersController.getById,
+  ]);
+
+  /**
+   * @swagger
+   * /api/users/{userId}:
+   *   patch:
+   *     tags: [Users]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Update specific user by userId
    *     parameters:
    *       - in: path
    *         name: userId
@@ -113,8 +146,10 @@ export const routesConfig = (app) => {
    *         required: true
    *         description: ID of the user
    *     responses:
-   *       200:
+   *       204:
    *         description: Successfull
+   *       400:
+   *         description: Bad request
    *       401:
    *         description: Unauthorized
    *       404:

@@ -19,14 +19,7 @@ export const insert = async (req, res) => {
       });
     }
 
-    const users = await UserModel.list();
-
-    if (users.some((usr) => usr.permissionLevel === 2) && req.body.permissionLevel === 2) {
-      return res.status(409).send({
-        statusCode: 409,
-        message: 'User with ADMIN permission level already exists',
-      });
-    }
+    // 관리자 중복 등록 허용 - 제한 제거
 
     let salt = crypto.randomBytes(16).toString('base64');
     let hash = crypto.createHmac('sha512', salt).update(req.body.password).digest('base64');
@@ -71,6 +64,37 @@ export const list = async (req, res, next) => {
 export const getByName = async (req, res) => {
   try {
     const user = await UserModel.findByName(req.params.name);
+
+    if (!user) {
+      return res.status(404).send({
+        statusCode: 404,
+        message: 'User not exists',
+      });
+    }
+
+    delete user.password;
+
+    res.status(200).send(user);
+  } catch (error) {
+    res.status(500).send({
+      statusCode: 500,
+      message: error.message,
+    });
+  }
+};
+
+export const getById = async (req, res) => {
+  try {
+    let user = null;
+    const userId = req.params.userId;
+
+    // Check if userId is a number (numeric ID)
+    if (!isNaN(userId) && Number.isInteger(Number(userId))) {
+      user = await UserModel.findById(Number(userId));
+    } else {
+      // Search by userId string
+      user = await UserModel.findByName(userId);
+    }
 
     if (!user) {
       return res.status(404).send({
@@ -148,12 +172,7 @@ export const removeByName = async (req, res) => {
       });
     }
 
-    if (user.permissionLevel === 2) {
-      return res.status(409).send({
-        statusCode: 409,
-        message: 'User with ADMIN permission level can not be removed',
-      });
-    }
+    // 관리자 계정 삭제 허용 - 제한 제거
 
     await UserModel.removeByName(req.params.userId);
 

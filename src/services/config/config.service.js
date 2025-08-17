@@ -45,6 +45,9 @@ export default class ConfigService {
 
   static env = {};
 
+  // Recordings configuration
+  static recordings = {};
+
   //defaults
   static ui = {
     port: uiDefaults.port,
@@ -141,6 +144,10 @@ export default class ConfigService {
 
     if (config.options) {
       ConfigService.#configOptions(config.options);
+    }
+
+    if (config.recordings) {
+      ConfigService.#configRecordings(config.recordings);
     }
 
     if (config.ssl) {
@@ -311,6 +318,20 @@ export default class ConfigService {
     if (options.videoProcessor) {
       ConfigService.ui.options.videoProcessor = options.videoProcessor;
     }
+  }
+
+  static #configRecordings(recordings = {}) {
+    // Store recordings config for access by other services
+    ConfigService.recordings = recordings;
+
+    // Log the recordings config for debugging
+    console.log('=== Recordings Config Debug ===');
+    console.log('Raw recordings config:', JSON.stringify(recordings, null, 2));
+    console.log('HLS enabled:', recordings?.hls?.enabled);
+    console.log('HLS segment duration:', recordings?.hls?.segmentDuration);
+    console.log('HLS max segments:', recordings?.hls?.maxSegments);
+    console.log('ConfigService.recordings:', ConfigService.recordings);
+    console.log('==============================');
   }
 
   static #configHTTP(http = {}) {

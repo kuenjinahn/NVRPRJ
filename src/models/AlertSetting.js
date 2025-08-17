@@ -8,7 +8,7 @@ const AlertSetting = sequelize.define('AlertSetting', {
     autoIncrement: true
   },
   alert_setting_json: {
-    type: DataTypes.STRING(2048),
+    type: DataTypes.TEXT,
     allowNull: true
   },
   fk_user_id: {

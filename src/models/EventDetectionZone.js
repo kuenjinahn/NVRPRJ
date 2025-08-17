@@ -36,6 +36,11 @@ export default (sequelize) => {
       allowNull: true,
       defaultValue: 0
     },
+    alert_level: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 1
+    },
     create_date: {
       type: DataTypes.DATE,
       allowNull: true

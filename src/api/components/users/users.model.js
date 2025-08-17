@@ -11,6 +11,10 @@ export const findByName = async (userId) => {
   return await User.findOne({ where: { userId } });
 };
 
+export const findById = async (id) => {
+  return await User.findByPk(id);
+};
+
 export const createUser = async (userData) => {
   const user = {
     userId: userData.userId,

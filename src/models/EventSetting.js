@@ -13,17 +13,17 @@ export default (sequelize) => {
       defaultValue: null
     },
     alert_json: {
-      type: DataTypes.STRING(1024),
+      type: DataTypes.STRING(2048),
       allowNull: true,
       defaultValue: null
     },
     object_json: {
-      type: DataTypes.STRING(1024),
+      type: DataTypes.STRING(2048),
       allowNull: true,
       defaultValue: null
     },
     system_json: {
-      type: DataTypes.STRING(1024),
+      type: DataTypes.TEXT('medium'),
       allowNull: true,
       defaultValue: null
     },

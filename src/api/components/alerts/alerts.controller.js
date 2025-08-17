@@ -144,8 +144,8 @@ export const getByStatus = async (req, res) => {
 
 export const getAlertSettings = async (req, res) => {
   try {
-    // (예시) userId는 인증정보에서 가져오거나 쿼리/파라미터에서 받음
-    const setting = await AlertSetting.findOne();
+    const fk_user_id = 1; // 고정값으로 설정
+    const setting = await AlertSetting.findOne({ where: { fk_user_id } });
     res.json({ result: setting });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -154,8 +154,9 @@ export const getAlertSettings = async (req, res) => {
 
 export const saveAlertSettings = async (req, res) => {
   try {
-    const { alert_setting_json, fk_user_id } = req.body.settings;
-    // console.log('----------> saveAlertSettings', req.body);
+    const { alert_setting_json } = req.body.settings;
+    const fk_user_id = 1; // 고정값으로 설정
+    console.log('----------> saveAlertSettings', req.body);
     let setting = await AlertSetting.findOne({ where: { fk_user_id } });
     if (setting) {
       // update

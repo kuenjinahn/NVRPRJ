@@ -61,11 +61,11 @@ export default class Socket {
       //check if token is valid 
       console.log("===> socket.encoded_token", socket.encoded_token);
       const token = socket.encoded_token;
-      const tokenExist = await Token.findOne({ where: { token: token, valid: true } });
 
-      if (!tokenExist) {
+      // 토큰이 없는 경우 처리
+      if (!token) {
         log.debug(
-          `${socket.decoded_token.username} (${socket.conn.remoteAddress}) disconnecting from socket, not authenticated`
+          `Unknown user (${socket.conn?.remoteAddress || 'unknown'}) disconnecting from socket, no token provided`
         );
 
         socket.emit('unauthenticated');
@@ -74,8 +74,25 @@ export default class Socket {
         return;
       }
 
+      const tokenExist = await Token.findOne({ where: { token: token, valid: true } });
+
+      if (!tokenExist) {
+        const username = socket.decoded_token?.username || 'unknown';
+        const remoteAddress = socket.conn?.remoteAddress || 'unknown';
+        log.debug(
+          `${username} (${remoteAddress}) disconnecting from socket, not authenticated`
+        );
+
+        socket.emit('unauthenticated');
+        setTimeout(() => socket.disconnect(true), 1000);
+
+        return;
+      }
+
+      const username = socket.decoded_token?.username || 'unknown';
+      const remoteAddress = socket.conn?.remoteAddress || 'unknown';
       log.debug(
-        `${socket.decoded_token.username} (${socket.conn.remoteAddress}) authenticated and connected to socket`
+        `${username} (${remoteAddress}) authenticated and connected to socket`
       );
 
       // 권한 체크 없이 항상 알림 데이터 전송
@@ -90,14 +107,18 @@ export default class Socket {
       socket.on('join_stream', (data) => {
         if (data.feed) {
           socket.join(`stream/${data.feed}`);
-          log.debug(`${socket.decoded_token.username} (${socket.conn.remoteAddress}) joined stream: ${data.feed}`);
+          const username = socket.decoded_token?.username || 'unknown';
+          const remoteAddress = socket.conn?.remoteAddress || 'unknown';
+          log.debug(`${username} (${remoteAddress}) joined stream: ${data.feed}`);
         }
       });
       console.log("===> socket.on('leave_stream')");
       socket.on('leave_stream', (data) => {
         if (data.feed) {
           socket.leave(`stream/${data.feed}`);
-          log.debug(`${socket.decoded_token.username} (${socket.conn.remoteAddress}) left stream: ${data.feed}`);
+          const username = socket.decoded_token?.username || 'unknown';
+          const remoteAddress = socket.conn?.remoteAddress || 'unknown';
+          log.debug(`${username} (${remoteAddress}) left stream: ${data.feed}`);
         }
       });
       console.log("===> socket.on('rejoin_stream')");
@@ -106,14 +127,18 @@ export default class Socket {
           socket.leave(`stream/${data.feed}`);
           socket.join(`stream/${data.feed}`);
 
-          log.debug(`${socket.decoded_token.username} (${socket.conn.remoteAddress}) re-joined stream: ${data.feed}`);
+          const username = socket.decoded_token?.username || 'unknown';
+          const remoteAddress = socket.conn?.remoteAddress || 'unknown';
+          log.debug(`${username} (${remoteAddress}) re-joined stream: ${data.feed}`);
         }
       });
       console.log("===> socket.on('refresh_stream')");
       socket.on('refresh_stream', (data) => {
         if (data.feed) {
+          const username = socket.decoded_token?.username || 'unknown';
+          const remoteAddress = socket.conn?.remoteAddress || 'unknown';
           log.debug(
-            `${socket.decoded_token.username} (${socket.conn.remoteAddress}) requested to restart stream: ${data.feed}`
+            `${username} (${remoteAddress}) requested to restart stream: ${data.feed}`
           );
           this.#handleStream(data.feed, 'restart');
         }
