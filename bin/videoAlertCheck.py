@@ -1182,7 +1182,7 @@ class VideoAlertChecker:
             values = (
                 1,  # fk_camera_id
                 now,  # alert_accur_time
-                'SCENARIO1',  # alert_type
+                alert_type,  # alert_type
                 alert_level,  # alert_level (0~3)
                 'P001',  # alert_status
                 alert_info_json,  # alert_info_json (이미 직렬화됨)
@@ -1561,7 +1561,7 @@ class VideoAlertChecker:
             values = (
                 1,  # fk_camera_id
                 now,  # alert_accur_time
-                'SCENARIO2',  # alert_type
+                alert_type,  # alert_type
                 alert_level,  # alert_level (파라미터로 전달받은 값 사용)
                 'P001',  # alert_status
                 json.dumps(alert_info, ensure_ascii=False),  # alert_info_json
