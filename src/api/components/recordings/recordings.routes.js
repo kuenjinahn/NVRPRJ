@@ -142,7 +142,7 @@ export const routesConfig = (app) => {
     //   timestamp: new Date().toISOString()
     // });
 
-    // CORS 헤더 설정
+    // CORS 헤더 설정 (HLS 스트리밍 최적화)
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', [
@@ -153,7 +153,8 @@ export const routesConfig = (app) => {
       'Authorization',
       'Range',
       'If-None-Match',
-      'If-Modified-Since'
+      'If-Modified-Since',
+      'Cache-Control'
     ].join(', '));
     res.header('Access-Control-Expose-Headers', [
       'Content-Range',
@@ -161,7 +162,8 @@ export const routesConfig = (app) => {
       'Content-Length',
       'Content-Type',
       'ETag',
-      'Last-Modified'
+      'Last-Modified',
+      'Cache-Control'
     ].join(', '));
 
     if (req.method === 'OPTIONS') {
@@ -243,10 +245,12 @@ export const routesConfig = (app) => {
     }
   });
 
-  // HLS 스트리밍 라우트 (새로 추가)
+  // HLS 스트리밍 라우트 (최적화)
   app.get('/api/recordings/hls/:id', async (req, res) => {
     const requestId = req.headers['x-request-id'] || 'unknown';
     const id = req.params.id;
+
+    logger.info(`[${requestId}] HLS playlist request for recording ID: ${id}`);
 
     try {
       // recordingHistory에서 녹화 정보 찾기
@@ -271,6 +275,15 @@ export const routesConfig = (app) => {
       const hlsPath = path.join(RECORDINGS_DIR, recording.cameraName, datePart, 'hls');
       let playlistFile = path.join(hlsPath, recording.filename);
 
+      logger.info(`[${requestId}] Searching for HLS files in: ${hlsPath}`);
+      logger.info(`[${requestId}] Expected playlist file: ${playlistFile}`);
+
+      // HLS 디렉토리 존재 확인
+      if (!fs.existsSync(hlsPath)) {
+        logger.error(`[${requestId}] HLS directory not found: ${hlsPath}`);
+        return res.status(404).json({ error: 'HLS directory not found' });
+      }
+
       // 파일이 존재하지 않으면 HLS 디렉토리에서 .m3u8 파일을 찾아서 사용
       if (!fs.existsSync(playlistFile)) {
         logger.warn(`[${requestId}] HLS playlist not found: ${playlistFile}, searching for .m3u8 files...`);
@@ -284,6 +297,14 @@ export const routesConfig = (app) => {
 
           const hlsFiles = fs.readdirSync(hlsPath);
           const m3u8Files = hlsFiles.filter(file => file.endsWith('.m3u8'));
+          const tsFiles = hlsFiles.filter(file => file.endsWith('.ts'));
+
+          logger.info(`[${requestId}] HLS directory contents:`, {
+            totalFiles: hlsFiles.length,
+            m3u8Files: m3u8Files,
+            tsFiles: tsFiles.length,
+            allFiles: hlsFiles
+          });
 
           if (m3u8Files.length > 0) {
             // 녹화 시작 시간과 가장 가까운 파일을 찾기
@@ -327,14 +348,34 @@ export const routesConfig = (app) => {
         }
       }
 
+      // 플레이리스트 파일 존재 확인
+      if (!fs.existsSync(playlistFile)) {
+        logger.error(`[${requestId}] Final playlist file not found: ${playlistFile}`);
+        return res.status(404).json({
+          error: 'HLS playlist file not found',
+          message: `Playlist file not found: ${playlistFile}`,
+          requestId: requestId,
+          recordingId: id
+        });
+      }
+
       // M3U8 파일을 읽어서 세그먼트 경로를 API 엔드포인트로 변경
       const playlistContent = fs.readFileSync(playlistFile, 'utf8');
+
+      // M3U8 파일 형식 검증
+      if (!playlistContent.trim().startsWith('#EXTM3U')) {
+        logger.error(`[${requestId}] Invalid M3U8 file format: ${playlistFile}`);
+        logger.error(`[${requestId}] File content preview: ${playlistContent.substring(0, 200)}`);
+        return res.status(400).json({ error: 'Invalid M3U8 file format' });
+      }
 
       // 세그먼트 파일 경로를 API 엔드포인트로 변경
       const modifiedPlaylist = playlistContent.replace(
         /([^\/\n]+\.ts)/g,
         `/api/recordings/hls/${id}/segments/$1`
       );
+
+      logger.info(`[${requestId}] M3U8 playlist processed successfully, segments found: ${(modifiedPlaylist.match(/\.ts/g) || []).length}`);
 
       const modifiedContent = Buffer.from(modifiedPlaylist, 'utf8');
       const fileSize = modifiedContent.length;
@@ -358,22 +399,35 @@ export const routesConfig = (app) => {
         const head = {
           'Content-Length': fileSize,
           'Content-Type': 'application/vnd.apple.mpegurl',
-          'Cache-Control': 'no-cache',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
         };
         res.writeHead(200, head);
         res.end(modifiedContent);
       }
     } catch (error) {
-      logger.error(`[${requestId}] Error streaming HLS: ${error.message}`);
-      res.status(500).json({ error: 'Error streaming HLS' });
+      logger.error(`[${requestId}] Error streaming HLS: ${error.message}`, {
+        error: error.stack,
+        recordingId: id,
+        requestUrl: req.url,
+        userAgent: req.headers['user-agent']
+      });
+      res.status(500).json({
+        error: 'Error streaming HLS',
+        message: error.message,
+        requestId: requestId
+      });
     }
   });
 
-  // HLS 세그먼트 파일 스트리밍 라우트
+  // HLS 세그먼트 파일 스트리밍 라우트 (최적화)
   app.get('/api/recordings/hls/:id/segments/:segment', async (req, res) => {
     const requestId = req.headers['x-request-id'] || 'unknown';
     const id = req.params.id;
     const segment = req.params.segment;
+
+    logger.info(`[${requestId}] HLS segment request for recording ID: ${id}, segment: ${segment}`);
 
     try {
       // recordingHistory에서 녹화 정보 찾기
@@ -398,6 +452,7 @@ export const routesConfig = (app) => {
       const hlsPath = path.join(RECORDINGS_DIR, recording.cameraName, datePart, 'hls');
       let segmentFile = path.join(hlsPath, segment);
 
+      // 세그먼트 파일 존재 확인 및 검색
       if (!fs.existsSync(segmentFile)) {
         logger.warn(`[${requestId}] HLS segment not found: ${segmentFile}, searching for segment files...`);
 
@@ -412,13 +467,17 @@ export const routesConfig = (app) => {
           const tsFiles = hlsFiles.filter(file => file.endsWith('.ts'));
 
           if (tsFiles.length > 0) {
-            // 세그먼트 번호 추출 (예: 댐영상2_2025-07-09T14-33-11_00.ts)
+            // 세그먼트 번호 추출 (예: 댐영상2_2025-07-09T14-33-11_000.ts)
             const segmentNumber = segment.match(/_(\d+)\.ts$/);
             if (segmentNumber) {
               const targetNumber = segmentNumber[1];
 
-              // 동일한 번호의 세그먼트 파일 찾기
-              const matchingSegment = tsFiles.find(file => file.includes(`_${targetNumber}.ts`));
+              // 동일한 번호의 세그먼트 파일 찾기 (3자리 숫자 패턴)
+              const matchingSegment = tsFiles.find(file => {
+                const fileNumber = file.match(/_(\d+)\.ts$/);
+                return fileNumber && fileNumber[1] === targetNumber;
+              });
+
               if (matchingSegment) {
                 segmentFile = path.join(hlsPath, matchingSegment);
                 logger.info(`[${requestId}] Using found segment file: ${matchingSegment}`);
@@ -438,6 +497,12 @@ export const routesConfig = (app) => {
           logger.error(`[${requestId}] Error searching for segment files: ${error.message}`);
           return res.status(404).json({ error: 'HLS directory not accessible' });
         }
+      }
+
+      // 최종 세그먼트 파일 존재 확인
+      if (!fs.existsSync(segmentFile)) {
+        logger.error(`[${requestId}] Final segment file not found: ${segmentFile}`);
+        return res.status(404).json({ error: 'HLS segment file not found' });
       }
 
       // TS 파일 스트리밍
@@ -464,14 +529,25 @@ export const routesConfig = (app) => {
         const head = {
           'Content-Length': fileSize,
           'Content-Type': 'video/mp2t',
-          'Cache-Control': 'public, max-age=31536000', // 1년 캐시
+          'Cache-Control': 'public, max-age=3600', // 1시간 캐시 (HLS 세그먼트용)
+          'Accept-Ranges': 'bytes',
         };
         res.writeHead(200, head);
         fs.createReadStream(segmentFile).pipe(res);
       }
     } catch (error) {
-      logger.error(`[${requestId}] Error streaming HLS segment: ${error.message}`);
-      res.status(500).json({ error: 'Error streaming HLS segment' });
+      logger.error(`[${requestId}] Error streaming HLS segment: ${error.message}`, {
+        error: error.stack,
+        recordingId: id,
+        segment: segment,
+        requestUrl: req.url,
+        userAgent: req.headers['user-agent']
+      });
+      res.status(500).json({
+        error: 'Error streaming HLS segment',
+        message: error.message,
+        requestId: requestId
+      });
     }
   });
 

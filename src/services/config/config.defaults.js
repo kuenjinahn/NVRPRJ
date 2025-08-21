@@ -215,14 +215,16 @@ export class ConfigSetup {
       maxFileSize: recordings?.maxFileSize || '10GB',
       hls: {
         enabled: recordings?.hls_enabled === 'true' || recordings?.hls?.enabled || false,
-        segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 30,
-        maxSegments: parseInt(recordings?.hls_maxSegments) || recordings?.hls?.maxSegments || 2880,
+        segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 3600, // 기본값 1시간
+        maxSegments: parseInt(recordings?.hls_maxSegments) || recordings?.hls?.maxSegments || 24, // 24시간 = 24개
         deleteSegments: recordings?.hls_deleteSegments === 'true' || recordings?.hls?.deleteSegments || true,
         quality: recordings?.hls_quality || recordings?.hls?.quality || 'medium',
         bitrate: recordings?.hls_bitrate || recordings?.hls?.bitrate || '1024k',
-        segmentSize: recordings?.hls_segmentSize || recordings?.hls?.segmentSize || '4MB',
+        segmentSize: recordings?.hls_segmentSize || recordings?.hls?.segmentSize || '4MB', // 기본값 4MB
         autoCleanup: recordings?.hls_autoCleanup === 'true' || recordings?.hls?.autoCleanup || true,
-        cleanupInterval: parseInt(recordings?.hls_cleanupInterval) || recordings?.hls?.cleanupInterval || 3600,
+        cleanupInterval: parseInt(recordings?.hls_cleanupInterval) || recordings?.hls?.cleanupInterval || 3600, // 기본값 1시간
+        segmentType: recordings?.hls_segmentType || recordings?.hls?.segmentType || 'mpegts', // 명시적으로 mpegts 타입 지정
+        flags: recordings?.hls_flags || recordings?.hls?.flags || 'delete_segments+append_list', // 세그먼트 자동 삭제 활성화
       },
     };
   }

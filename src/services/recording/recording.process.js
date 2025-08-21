@@ -229,12 +229,6 @@ class RecordingProcess {
       const filename = `${cameraName}_${timeInfo.formattedForFile}.mp4`;
       const outputPath = path.join(recordingDir, filename);
 
-      // HLS 세그먼트 파일명 패턴 (1시간 단위)
-      const segmentPattern = `${cameraName}_${timeInfo.formattedForFile}_%02d.ts`;
-      const playlistName = `${cameraName}_${timeInfo.formattedForFile}.m3u8`;
-      const segmentPath = path.join(recordingDir, segmentPattern);
-      const playlistPath = path.join(recordingDir, playlistName);
-
       // 기존 파일 확인 및 제거
       if (await fs.pathExists(outputPath)) {
         try {
@@ -284,7 +278,7 @@ class RecordingProcess {
         '-f', 'mp4',
         '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
         '-reset_timestamps', '1',
-        '-loglevel', 'error',
+        '-loglevel', 'info',  // error → info로 변경
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -293,16 +287,18 @@ class RecordingProcess {
       ], {
         windowsHide: true,
         windowsVerbatimArguments: true,
-        env: { ...process.env, FFREPORT: `file=${recordingDir}/ffmpeg-${recordingKey}.log:level=32` }
+        env: { ...process.env }  // FFREPORT 환경 변수 제거
       });
 
       // console.log('=====> ffmpeg', ffmpeg);
       let hasError = false;
       let errorMessage = '';
+      let ffmpegLogs = [];  // FFMPEG 로그 수집
 
       // FFMPEG 에러 로그 처리
       ffmpeg.stderr.on('data', (data) => {
         const message = data.toString();
+        ffmpegLogs.push(`[${new Date().toISOString()}] ${message}`);  // 로그 수집
 
         // 타임스탬프 관련 경고 메시지 필터링
         if (message.includes('Non-monotonic DTS') ||
@@ -329,6 +325,16 @@ class RecordingProcess {
       // 프로세스 종료 처리
       ffmpeg.on('close', async (code) => {
         logger.info(`Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
+
+        // FFMPEG 로그를 파일로 저장
+        try {
+          const logFilePath = path.join(recordingDir, `ffmpeg-${recordingKey}.log`);
+          const logContent = ffmpegLogs.join('\n');
+          await fs.writeFile(logFilePath, logContent, 'utf8');
+          logger.info(`FFMPEG logs saved to: ${logFilePath}`);
+        } catch (logError) {
+          logger.error(`Failed to save FFMPEG logs: ${logError.message}`);
+        }
 
         // 파일 크기 확인
         try {
@@ -493,6 +499,17 @@ class RecordingProcess {
 
       // HLS FFMPEG 프로세스 시작 (설정값 기반)
       const hlsConfig = ConfigService.recordings?.hls;
+
+      // HLS 설정 디버깅 로그
+      logger.info(`=== HLS Recording Debug ===`);
+      logger.info(`Camera: ${cameraName}, Schedule: ${scheduleId}`);
+      logger.info(`Segment Duration: ${hlsConfig?.segmentDuration || 3600}s (1시간)`);
+      logger.info(`Max Segments: ${hlsConfig?.maxSegments || 24}`);
+      logger.info(`Segment Pattern: ${segmentPattern}`);
+      logger.info(`Segment Path: ${segmentPath}`);
+      logger.info(`Playlist Path: ${playlistPath}`);
+      logger.info(`=============================`);
+
       const ffmpeg = spawn('ffmpeg', [
         '-y',
         '-rtsp_transport', 'tcp',
@@ -519,9 +536,10 @@ class RecordingProcess {
         '-hls_time', (hlsConfig?.segmentDuration || 30).toString(),
         '-hls_list_size', '0',  // 모든 세그먼트 유지 (0 = 무제한)
         '-hls_segment_filename', segmentPath,
-        '-hls_flags', 'append_list',  // delete_segments 제거하여 세그먼트 보존
+        '-hls_flags', 'delete_segments+append_list',  // 세그먼트 자동 삭제 활성화
         '-hls_allow_cache', '0',
-        '-loglevel', 'error',
+        '-hls_segment_type', 'mpegts',  // 세그먼트 타입 명시
+        '-loglevel', 'info',  // error → info로 변경하여 더 많은 정보 로깅
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -530,15 +548,17 @@ class RecordingProcess {
       ], {
         windowsHide: true,
         windowsVerbatimArguments: true,
-        env: { ...process.env, FFREPORT: `file=${recordingDir}/ffmpeg-${recordingKey}.log:level=32` }
+        env: { ...process.env }  // FFREPORT 환경 변수 제거
       });
 
       let hasError = false;
       let errorMessage = '';
+      let ffmpegLogs = [];  // FFMPEG 로그 수집
 
       // FFMPEG 에러 로그 처리
       ffmpeg.stderr.on('data', (data) => {
         const message = data.toString();
+        ffmpegLogs.push(`[${new Date().toISOString()}] ${message}`);  // 로그 수집
 
         // 타임스탬프 관련 경고 메시지 필터링
         if (message.includes('Non-monotonic DTS') ||
@@ -566,6 +586,16 @@ class RecordingProcess {
       ffmpeg.on('close', async (code) => {
         logger.info(`HLS Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
 
+        // FFMPEG 로그를 파일로 저장
+        try {
+          const logFilePath = path.join(recordingDir, `ffmpeg-${recordingKey}.log`);
+          const logContent = ffmpegLogs.join('\n');
+          await fs.writeFile(logFilePath, logContent, 'utf8');
+          logger.info(`FFMPEG logs saved to: ${logFilePath}`);
+        } catch (logError) {
+          logger.error(`Failed to save FFMPEG logs: ${logError.message}`);
+        }
+
         // 플레이리스트 파일 존재 확인
         try {
           const stats = await fs.stat(playlistPath);
@@ -592,10 +622,10 @@ class RecordingProcess {
 
             // HLS 녹화 완료 후 세그먼트 정리 수행
             const recordingInfo = this.activeRecordings.get(recordingKey);
-            if (!hasError && recordingInfo?.hlsConfig?.autoCleanup) {
+            if (!hasError && hlsConfig?.autoCleanup) {
               try {
-                const maxSegments = recordingInfo.hlsConfig?.maxSegments || 2880;
-                await this.cleanupHLSSegments(cameraName, recordingInfo.timeInfo.dateString, maxSegments);
+                const maxSegments = hlsConfig?.maxSegments || 24;
+                await this.cleanupHLSSegments(cameraName, timeInfo.dateString, maxSegments);
                 logger.info(`HLS cleanup completed for ${recordingKey}, max segments: ${maxSegments}`);
               } catch (cleanupError) {
                 logger.error(`HLS cleanup failed for ${recordingKey}:`, cleanupError);
@@ -653,7 +683,8 @@ class RecordingProcess {
         pid: ffmpeg.pid,
         startTime: Date.now(),
         isHLS: true,
-        hlsConfig
+        hlsConfig,
+        logFilePath: path.join(recordingDir, `ffmpeg-${recordingKey}.log`)  // 로그 파일 경로 저장
       };
 
       this.activeRecordings.set(recordingKey, recordingInfo);
@@ -807,7 +838,7 @@ class RecordingProcess {
     try {
       // 설정값에서 maxSegments 가져오기
       const hlsConfig = ConfigService.recordings?.hls;
-      const defaultMaxSegments = hlsConfig?.maxSegments || 2880;
+      const defaultMaxSegments = hlsConfig?.maxSegments || 24;
       const segmentsToKeep = maxSegments || defaultMaxSegments;
 
       const hlsDir = path.join(
@@ -857,7 +888,7 @@ class RecordingProcess {
         await this.cleanupHLSSegments(
           camera.name,
           recordingDate,
-          hlsConfig?.maxSegments
+          hlsConfig?.maxSegments || 24
         );
       }
 
