@@ -60,11 +60,13 @@ const getApiTarget = () => {
 
       if (webSectionMatch) {
         const webSection = webSectionMatch[1];
-        const ipMatch = webSection.match(/ip\s*=\s*([^\n\r]+)/);
-        const portMatch = webSection.match(/port\s*=\s*([^\n\r]+)/);
 
-        console.log(`[Config] IP match:`, ipMatch);
-        console.log(`[Config] Port match:`, portMatch);
+        // 주석 처리된 IP는 무시하고 실제 IP만 추출
+        const ipMatch = webSection.match(/^ip\s*=\s*([^\n\r#]+)/m);
+        const portMatch = webSection.match(/^port\s*=\s*([^\n\r#]+)/m);
+
+        console.log(`[Config] IP match result:`, ipMatch ? ipMatch[1].trim() : 'not found');
+        console.log(`[Config] Port match result:`, portMatch ? portMatch[1].trim() : 'not found');
 
         if (ipMatch && ipMatch[1]) {
           const webIp = ipMatch[1].trim();
@@ -80,7 +82,7 @@ const getApiTarget = () => {
           console.log(`[Config] Final target URL: ${target}`);
           return target;
         } else {
-          console.log(`[Config] No IP found in [WEB] section`);
+          console.log(`[Config] No valid IP found in [WEB] section`);
         }
       } else {
         console.log(`[Config] No [WEB] section found in config.ini`);
