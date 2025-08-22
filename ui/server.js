@@ -4,7 +4,6 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const fetch = require('node-fetch'); // Node.js 18+ 에서는 global fetch 사용 가능
 const app = express();
 const port = process.env.PORT || 9092;
 
@@ -219,7 +218,18 @@ app.use(['/login', '/logout', '/register', '/password'], (req, res, next) => {
 // Socket.IO 연결을 위한 프록시 설정
 app.use('/socket.io', (req, res, next) => {
   console.log(`[Socket.IO Proxy] Intercepting: ${req.method} ${req.path}`);
-  return proxyMiddleware(req, res, next);
+  console.log(`[Socket.IO Proxy] Target: ${getApiTarget()}`);
+
+  // Socket.IO 요청을 백엔드로 프록시
+  const target = getApiTarget();
+  const proxy = createProxyMiddleware({
+    target: target,
+    changeOrigin: true,
+    ws: true, // WebSocket 지원
+    logLevel: 'debug'
+  });
+
+  return proxy(req, res, next);
 });
 
 // 모든 API 요청에 대한 통합 프록시 처리
