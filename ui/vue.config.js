@@ -10,11 +10,43 @@ try {
 
 process.env.VUE_APP_SERVER_PORT = configJson.port || 9091;
 
-// 환경별 API 설정
+// config.ini에서 IP 설정을 읽어오는 함수
+const fs = require('fs');
+
 const getApiTarget = () => {
-  return process.env.NODE_ENV === 'production'
-    ? 'http://192.168.0.24:9091'
-    : 'http://localhost:9091';
+  try {
+    // config.ini 파일 경로 (상위 디렉토리의 config.ini)
+    const configPath = path.join(__dirname, '..', 'config.ini');
+
+    if (fs.existsSync(configPath)) {
+      const configContent = fs.readFileSync(configPath, 'utf8');
+
+      // [WEB] 섹션에서 IP와 포트 추출
+      const webMatch = configContent.match(/\[WEB\]\s*\n\s*ip\s*=\s*([^\n]+)/);
+      const portMatch = configContent.match(/\[WEB\]\s*\n\s*ip\s*=\s*([^\n]+)\s*\n\s*port\s*=\s*([^\n]+)/);
+
+      if (webMatch && webMatch[1]) {
+        const webIp = webMatch[1].trim();
+        let webPort = '9091'; // 기본 포트
+
+        // 포트가 설정되어 있으면 사용
+        if (portMatch && portMatch[2]) {
+          webPort = portMatch[2].trim();
+        }
+
+        console.log(`[Config] Using WEB IP:Port from config.ini: ${webIp}:${webPort}`);
+        return `http://${webIp}:${webPort}`;
+      }
+    }
+
+    // config.ini가 없거나 [WEB] IP가 없으면 기본값 사용
+    console.log('[Config] Using default API target (localhost:9091)');
+    return 'http://localhost:9091';
+  } catch (error) {
+    console.error('[Config] Error reading config.ini:', error.message);
+    console.log('[Config] Using default API target (localhost:9091)');
+    return 'http://localhost:9091';
+  }
 };
 
 
