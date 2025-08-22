@@ -216,6 +216,12 @@ app.use(['/login', '/logout', '/register', '/password'], (req, res, next) => {
   return proxyMiddleware(req, res, next);
 });
 
+// Socket.IO 연결을 위한 프록시 설정
+app.use('/socket.io', (req, res, next) => {
+  console.log(`[Socket.IO Proxy] Intercepting: ${req.method} ${req.path}`);
+  return proxyMiddleware(req, res, next);
+});
+
 // 모든 API 요청에 대한 통합 프록시 처리
 app.use((req, res, next) => {
   // API 경로인지 확인
