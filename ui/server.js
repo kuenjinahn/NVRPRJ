@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const fetch = require('node-fetch'); // Node.js 18+ 에서는 global fetch 사용 가능
 const app = express();
@@ -29,8 +30,6 @@ const distPath = path.join(__dirname, 'dist');
 console.log('Serving static files from:', distPath);
 
 // config.ini에서 IP 설정을 읽어오는 함수
-const fs = require('fs');
-const path = require('path');
 
 const getApiTarget = () => {
   try {
