@@ -1,6 +1,8 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const fetch = require('node-fetch'); // Node.js 18+ 에서는 global fetch 사용 가능
 const app = express();
@@ -243,7 +245,7 @@ app.get('/test-backend', (req, res) => {
   console.log(`[Test] HTTP request options:`, options);
 
   const httpModule = url.protocol === 'https:' ? https : http;
-  const req = httpModule.request(options, (response) => {
+  const httpReq = httpModule.request(options, (response) => {
     console.log(`[Test] Backend response status: ${response.statusCode}`);
 
     let data = '';
@@ -280,7 +282,7 @@ app.get('/test-backend', (req, res) => {
     });
   });
 
-  req.on('error', (error) => {
+  httpReq.on('error', (error) => {
     console.error('[Test] Backend connection failed:', error.message);
     res.status(500).json({
       status: 'error',
@@ -291,9 +293,9 @@ app.get('/test-backend', (req, res) => {
     });
   });
 
-  req.on('timeout', () => {
+  httpReq.on('timeout', () => {
     console.error('[Test] Backend connection timeout');
-    req.destroy();
+    httpReq.destroy();
     res.status(500).json({
       status: 'error',
       message: 'Backend server connection timeout',
@@ -302,7 +304,7 @@ app.get('/test-backend', (req, res) => {
     });
   });
 
-  req.end();
+  httpReq.end();
 });
 
 // 간단한 ping 테스트 엔드포인트
