@@ -139,6 +139,11 @@ export default class ConfigService {
   }
 
   static async parseConfig(config = {}) {
+    console.log('=== parseConfig Debug ===');
+    console.log('Input config:', config);
+    console.log('config.camera:', config.camera);
+    console.log('config.recordings:', config.recordings);
+
     ConfigService.#config(config);
     ConfigService.#configInterface();
 
@@ -150,7 +155,10 @@ export default class ConfigService {
     }
 
     if (config.camera) {
+      console.log('Calling #configCamera with:', config.camera);
       ConfigService.#configCamera(config.camera);
+    } else {
+      console.log('No camera config found in config parameter');
     }
 
     if (config.recordings) {

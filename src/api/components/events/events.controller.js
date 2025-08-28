@@ -22,7 +22,8 @@ const getCameraConfig = () => {
 
       try {
         // config.ini 파일에서 직접 읽기 (간단한 파싱)
-        const configPath = process.env.CUI_STORAGE_CONFIG_FILE || './config.ini';
+        // CUI_STORAGE_CONFIG_FILE은 config.json용이므로 config.ini를 직접 지정
+        const configPath = './config.ini';
 
         if (fs.existsSync(configPath)) {
           const configContent = fs.readFileSync(configPath, 'utf8');
@@ -66,14 +67,14 @@ const getCameraConfig = () => {
     }
 
     return {
-      ip: cameraConfig.ip || '10.254.198.248', // 기본값
+      ip: cameraConfig.ip || '175.201.204.166', // 기본값
       port: cameraConfig.port || 32000 // 기본값
     };
   } catch (error) {
     console.error('[getCameraConfig] Error reading config:', error);
     // 기본값 반환
     return {
-      ip: '10.254.198.248',
+      ip: '175.201.204.166',
       port: 32000
     };
   }
