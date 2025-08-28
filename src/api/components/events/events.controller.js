@@ -11,8 +11,60 @@ import ConfigService from '../../../services/config/config.service.js';
 const getCameraConfig = () => {
   try {
     // ConfigService에서 카메라 설정 가져오기
-    const cameraConfig = ConfigService.camera || {};
-    console.log('[getCameraConfig] Camera config from ConfigService:', cameraConfig);
+    console.log('[getCameraConfig] ConfigService.camera:', ConfigService.camera);
+    console.log('[getCameraConfig] ConfigService.recordings:', ConfigService.recordings);
+
+    // ConfigService.camera가 비어있으면 config.ini에서 직접 읽기 시도
+    let cameraConfig = ConfigService.camera || {};
+
+    if (!cameraConfig.ip || !cameraConfig.port) {
+      console.warn('[getCameraConfig] Camera config not loaded from ConfigService, trying to read from config.ini directly');
+
+      try {
+        // config.ini 파일에서 직접 읽기 (간단한 파싱)
+        const configPath = process.env.CUI_STORAGE_CONFIG_FILE || './config.ini';
+
+        if (fs.existsSync(configPath)) {
+          const configContent = fs.readFileSync(configPath, 'utf8');
+          const lines = configContent.split('\n');
+          let currentSection = '';
+          let cameraSection = {};
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
+              currentSection = trimmedLine.slice(1, -1);
+            } else if (currentSection === 'CAMERA' && trimmedLine.includes('=')) {
+              const [key, value] = trimmedLine.split('=').map(s => s.trim());
+              cameraSection[key] = value;
+            }
+          }
+
+          if (cameraSection.ip && cameraSection.port) {
+            cameraConfig = {
+              ip: cameraSection.ip,
+              port: parseInt(cameraSection.port),
+              rtsp: cameraSection.rtsp
+            };
+            console.log('[getCameraConfig] Successfully read camera config from config.ini:', cameraConfig);
+          } else {
+            console.warn('[getCameraConfig] CAMERA section incomplete in config.ini:', cameraSection);
+          }
+        } else {
+          console.warn('[getCameraConfig] config.ini file not found at:', configPath);
+        }
+      } catch (readError) {
+        console.error('[getCameraConfig] Error reading config.ini directly:', readError);
+      }
+    }
+
+    console.log('[getCameraConfig] Final camera config:', cameraConfig);
+
+    if (!cameraConfig.ip || !cameraConfig.port) {
+      console.warn('[getCameraConfig] Camera config is incomplete, using defaults');
+      console.warn('[getCameraConfig] Available ConfigService properties:', Object.keys(ConfigService));
+    }
+
     return {
       ip: cameraConfig.ip || '175.201.204.165', // 기본값
       port: cameraConfig.port || 32000 // 기본값

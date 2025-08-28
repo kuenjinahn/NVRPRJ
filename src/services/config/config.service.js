@@ -48,6 +48,9 @@ export default class ConfigService {
   // Recordings configuration
   static recordings = {};
 
+  // Camera configuration
+  static camera = {};
+
   //defaults
   static ui = {
     port: uiDefaults.port,
@@ -144,6 +147,10 @@ export default class ConfigService {
 
     if (config.options) {
       ConfigService.#configOptions(config.options);
+    }
+
+    if (config.camera) {
+      ConfigService.#configCamera(config.camera);
     }
 
     if (config.recordings) {
@@ -320,6 +327,20 @@ export default class ConfigService {
     }
   }
 
+  static #configCamera(camera = {}) {
+    // Store camera config for access by other services
+    ConfigService.camera = camera;
+
+    // Log the camera config for debugging
+    console.log('=== Camera Config Debug ===');
+    console.log('Raw camera config:', JSON.stringify(camera, null, 2));
+    console.log('Camera IP:', camera?.ip);
+    console.log('Camera Port:', camera?.port);
+    console.log('Camera RTSP:', camera?.rtsp);
+    console.log('ConfigService.camera:', ConfigService.camera);
+    console.log('==============================');
+  }
+
   static #configRecordings(recordings = {}) {
     // Store recordings config for access by other services
     ConfigService.recordings = recordings;
@@ -331,6 +352,7 @@ export default class ConfigService {
     console.log('HLS segment duration:', recordings?.hls?.segmentDuration);
     console.log('HLS max segments:', recordings?.hls?.maxSegments);
     console.log('ConfigService.recordings:', ConfigService.recordings);
+    console.log('ConfigService.camera:', ConfigService.camera);
     console.log('==============================');
   }
 
