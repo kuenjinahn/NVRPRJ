@@ -211,9 +211,9 @@ export class ConfigSetup {
 
   static setupCamera(camera = {}) {
     return {
-      ip: camera?.ip || '175.201.204.165',
+      ip: camera?.ip || '10.254.198.248',
       port: parseInt(camera?.port) || 32000,
-      rtsp: camera?.rtsp || 'rtsp://root:bw84218899!@175.201.204.165:554/cam0_0'
+      rtsp: camera?.rtsp || 'rtsp://root:bw84218899!@10.254.198.248:554/cam0_0'
     };
   }
 
