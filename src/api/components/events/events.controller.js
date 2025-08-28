@@ -66,14 +66,14 @@ const getCameraConfig = () => {
     }
 
     return {
-      ip: cameraConfig.ip || '175.201.204.165', // 기본값
+      ip: cameraConfig.ip || '10.254.198.248', // 기본값
       port: cameraConfig.port || 32000 // 기본값
     };
   } catch (error) {
     console.error('[getCameraConfig] Error reading config:', error);
     // 기본값 반환
     return {
-      ip: '175.201.204.165',
+      ip: '10.254.198.248',
       port: 32000
     };
   }
