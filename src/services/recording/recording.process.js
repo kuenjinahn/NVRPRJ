@@ -225,11 +225,18 @@ class RecordingProcess {
       );
       await fs.ensureDir(recordingDir);
 
-      // 파일명 생성
-      const filename = `${cameraName}_${timeInfo.formattedForFile}.mp4`;
+      // 파일명 생성 - 정규화된 카메라 이름 사용
+      const normalizedCameraName = cameraName.replace(/\s+/g, '');
+      const filename = `${normalizedCameraName}_${timeInfo.formattedForFile}.mp4`;
       const outputPath = path.join(recordingDir, filename);
 
-      // 기존 파일 확인 및 제거
+      // 카메라 이름 정규화 로깅
+      logger.info(`Recording [${recordingKey}]: Original camera name: "${cameraName}"`);
+      logger.info(`Recording [${recordingKey}]: Normalized camera name: "${normalizedCameraName}"`);
+      logger.info(`Recording [${recordingKey}]: Generated filename: "${filename}"`);
+      logger.info(`Recording [${recordingKey}]: Output path: "${outputPath}"`);
+
+      // 기존 파일 확인 및 제거 (정규화된 이름 사용)
       if (await fs.pathExists(outputPath)) {
         try {
           await fs.unlink(outputPath);
@@ -271,14 +278,11 @@ class RecordingProcess {
         '-b:v', recoding_bitrate,
         '-maxrate', recoding_bitrate,
         '-bufsize', recoding_bitrate,
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-strict', '-2',
+        '-an',  // 오디오 스트림 제거
         '-f', 'mp4',
         '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
         '-reset_timestamps', '1',
-        '-loglevel', 'info',  // error → info로 변경
+        '-loglevel', 'warning',  // warning + error 출력하여 에러 원인 파악 가능
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -315,16 +319,35 @@ class RecordingProcess {
           message.includes('Invalid data found') ||
           message.includes('Error opening input') ||
           message.includes('Broken pipe') ||
-          message.includes('End of file')) {
+          message.includes('End of file') ||
+          message.includes('error') ||
+          message.includes('Error') ||
+          message.includes('failed') ||
+          message.includes('Failed')) {
           hasError = true;
           errorMessage = message;
           logger.error(`FFMPEG Error for schedule ${recordingKey}:`, message);
+
+          // 에러 발생 시 추가 디버깅 정보
+          logger.error(`FFMPEG Error Context for ${recordingKey}:`, {
+            rtspUrl: rtspUrl,
+            outputPath: outputPath,
+            recoding_bitrate: recoding_bitrate,
+            timestamp: new Date().toISOString()
+          });
         }
       });
 
       // 프로세스 종료 처리
       ffmpeg.on('close', async (code) => {
         logger.info(`Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
+
+        // 에러 코드 상세 분석
+        if (code !== 0) {
+          logger.error(`FFMPEG process exited with error code: ${code} for schedule: ${recordingKey}`);
+          logger.error(`Error message: ${errorMessage}`);
+          logger.error(`FFMPEG logs: ${ffmpegLogs.slice(-10).join('\n')}`); // 최근 10개 로그 출력
+        }
 
         // FFMPEG 로그를 파일로 저장
         try {
@@ -468,18 +491,36 @@ class RecordingProcess {
         formattedForDB: nowMoment.format('YYYY-MM-DD HH:mm:ss')
       };
 
-      // HLS 녹화 디렉토리 생성
+      // HLS 세그먼트 파일명 패턴 (1시간 단위) - 정규화된 카메라 이름 사용
+      const normalizedCameraName = cameraName.replace(/\s+/g, '');
+
+      // HLS 녹화 디렉토리 생성 (정규화된 카메라 이름 사용)
       const recordingDir = path.join(
         this.recordingsPath,
-        cameraName,
+        normalizedCameraName,  // 공백 제거된 이름 사용
         timeInfo.dateString,
         'hls'
       );
       await fs.ensureDir(recordingDir);
 
-      // HLS 세그먼트 파일명 패턴 (1시간 단위)
-      const segmentPattern = `${cameraName}_${timeInfo.formattedForFile}_%02d.ts`;
-      const playlistName = `${cameraName}_${timeInfo.formattedForFile}.m3u8`;
+      // 디렉토리 생성 확인 및 상세 정보 로깅
+      try {
+        const dirStats = await fs.stat(recordingDir);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Recording directory created successfully`);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Directory path: ${recordingDir}`);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Directory permissions: ${dirStats.mode.toString(8)}`);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Directory size: ${dirStats.size} bytes`);
+
+        // 디렉토리 내용 확인
+        const dirContents = await fs.readdir(recordingDir);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Directory contents: ${dirContents.join(', ')}`);
+      } catch (error) {
+        logger.error(`FFMPEG HLS [${recordingKey}]: Error checking directory: ${error.message}`);
+      }
+
+      // 세그먼트 파일명 패턴 단순화 (FFMPEG 호환성 향상)
+      const segmentPattern = `segment_%03d.ts`;  // 단순한 패턴 사용
+      const playlistName = `${normalizedCameraName}_${timeInfo.formattedForFile}.m3u8`;
       const segmentPath = path.join(recordingDir, segmentPattern);
       const playlistPath = path.join(recordingDir, playlistName);
 
@@ -500,6 +541,34 @@ class RecordingProcess {
       // HLS FFMPEG 프로세스 시작 (설정값 기반)
       const hlsConfig = ConfigService.recordings?.hls;
 
+      // 카메라 이름 정규화 (공백 제거) - 이미 위에서 선언됨
+      logger.info(`FFMPEG HLS [${recordingKey}]: Original camera name: "${cameraName}"`);
+      logger.info(`FFMPEG HLS [${recordingKey}]: Normalized camera name: "${normalizedCameraName}"`);
+
+      // 출력 디렉토리 확인 및 생성
+      const segmentDir = path.dirname(segmentPath);
+      const playlistDir = path.dirname(playlistPath);
+
+      try {
+        // 세그먼트 디렉토리 확인
+        await fs.access(segmentDir);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Segment directory exists: ${segmentDir}`);
+      } catch (error) {
+        logger.warn(`FFMPEG HLS [${recordingKey}]: Segment directory does not exist, creating: ${segmentDir}`);
+        await fs.mkdir(segmentDir, { recursive: true });
+        logger.info(`FFMPEG HLS [${recordingKey}]: Segment directory created: ${segmentDir}`);
+      }
+
+      try {
+        // 플레이리스트 디렉토리 확인
+        await fs.access(playlistDir);
+        logger.info(`FFMPEG HLS [${recordingKey}]: Playlist directory exists: ${playlistDir}`);
+      } catch (error) {
+        logger.warn(`FFMPEG HLS [${recordingKey}]: Playlist directory does not exist, creating: ${playlistDir}`);
+        await fs.mkdir(playlistDir, { recursive: true });
+        logger.info(`FFMPEG HLS [${recordingKey}]: Playlist directory created: ${playlistDir}`);
+      }
+
       // HLS 설정 디버깅 로그
       logger.info(`=== HLS Recording Debug ===`);
       logger.info(`Camera: ${cameraName}, Schedule: ${scheduleId}`);
@@ -508,18 +577,23 @@ class RecordingProcess {
       logger.info(`Segment Pattern: ${segmentPattern}`);
       logger.info(`Segment Path: ${segmentPath}`);
       logger.info(`Playlist Path: ${playlistPath}`);
+      logger.info(`Segment Directory: ${segmentDir}`);
+      logger.info(`Playlist Directory: ${playlistDir}`);
       logger.info(`=============================`);
 
       const ffmpeg = spawn('ffmpeg', [
         '-y',
         '-rtsp_transport', 'tcp',
         '-i', rtspUrl,
+        // 비디오 코덱 설정 최적화
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-profile:v', 'baseline',
         '-level', '3.0',
         '-pix_fmt', 'yuv420p',
+        '-color_range', 'tv',  // 픽셀 포맷 범위 명시
+        '-colorspace', 'bt709',  // 색상 공간 명시
         '-r', '30',
         '-g', '30',
         '-keyint_min', '30',
@@ -527,19 +601,20 @@ class RecordingProcess {
         '-b:v', recoding_bitrate,
         '-maxrate', recoding_bitrate,
         '-bufsize', recoding_bitrate,
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-strict', '-2',
-        // HLS 세그먼트 설정 (설정값 기반)
+        // 비디오 스트림만 처리 (오디오 제외)
+        '-map', '0:v:0',  // 첫 번째 비디오 스트림만 선택
+        '-an',  // 오디오 스트림 제거
+        // HLS 세그먼트 설정 (설정값 기반) - 세그먼트 생성 최적화
         '-f', 'hls',
-        '-hls_time', (hlsConfig?.segmentDuration || 30).toString(),
+        '-hls_time', (hlsConfig?.segmentDuration || 3600).toString(),  // 설정값 기반 세그먼트 시간
         '-hls_list_size', '0',  // 모든 세그먼트 유지 (0 = 무제한)
         '-hls_segment_filename', segmentPath,
-        '-hls_flags', 'delete_segments+append_list',  // 세그먼트 자동 삭제 활성화
+        '-hls_flags', 'delete_segments+append_list+independent_segments',  // 독립 세그먼트 활성화
         '-hls_allow_cache', '0',
         '-hls_segment_type', 'mpegts',  // 세그먼트 타입 명시
-        '-loglevel', 'info',  // error → info로 변경하여 더 많은 정보 로깅
+        '-hls_playlist_type', 'vod',  // VOD 타입으로 설정
+        '-hls_base_url', '',  // 상대 경로 사용
+        '-loglevel', 'info',  // info 레벨로 변경하여 세그먼트 생성 정보 확인
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -548,17 +623,30 @@ class RecordingProcess {
       ], {
         windowsHide: true,
         windowsVerbatimArguments: true,
+        cwd: recordingDir,  // FFMPEG 작업 디렉토리를 녹화 디렉토리로 설정
         env: { ...process.env }  // FFREPORT 환경 변수 제거
       });
 
       let hasError = false;
       let errorMessage = '';
       let ffmpegLogs = [];  // FFMPEG 로그 수집
+      let tsFileCheckInterval;  // TS 파일 생성 확인 인터벌
+
+      // FFMPEG 프로세스 시작 로깅
+      logger.info(`FFMPEG HLS [${recordingKey}]: Process started with PID: ${ffmpeg.pid}`);
+      logger.info(`FFMPEG HLS [${recordingKey}]: Command: ffmpeg ${ffmpeg.spawnargs.slice(1).join(' ')}`);
+
+      // 수동 테스트용 명령어 로그
+      const testCommand = `ffmpeg -y -rtsp_transport tcp -i "${rtspUrl}" -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -level 3.0 -pix_fmt yuv420p -color_range tv -colorspace bt709 -r 30 -g 30 -keyint_min 30 -force_key_frames "expr:gte(t,n_forced*1)" -b:v ${recoding_bitrate} -maxrate ${recoding_bitrate} -bufsize ${recoding_bitrate} -map 0:v:0 -an -f hls -hls_time ${hlsConfig?.segmentDuration || 3600} -hls_list_size 0 -hls_segment_filename "${segmentPath}" -hls_flags delete_segments+append_list -hls_allow_cache 0 -hls_segment_type mpegts -loglevel info "${playlistPath}"`;
+      logger.info(`FFMPEG HLS [${recordingKey}]: Manual test command: ${testCommand}`);
 
       // FFMPEG 에러 로그 처리
       ffmpeg.stderr.on('data', (data) => {
         const message = data.toString();
         ffmpegLogs.push(`[${new Date().toISOString()}] ${message}`);  // 로그 수집
+
+        // 모든 FFMPEG 출력을 로깅 (디버깅용)
+        logger.info(`FFMPEG HLS [${recordingKey}]: ${message}`);
 
         // 타임스탬프 관련 경고 메시지 필터링
         if (message.includes('Non-monotonic DTS') ||
@@ -567,24 +655,199 @@ class RecordingProcess {
           return; // 이 메시지들은 무시
         }
 
-        logger.debug(`FFMPEG HLS [${recordingKey}]: ${message}`);
-
         // 주요 에러 체크
         if (message.includes('Connection refused') ||
           message.includes('Connection timed out') ||
           message.includes('Invalid data found') ||
           message.includes('Error opening input') ||
           message.includes('Broken pipe') ||
-          message.includes('End of file')) {
+          message.includes('End of file') ||
+          message.includes('error') ||
+          message.includes('Error') ||
+          message.includes('failed') ||
+          message.includes('Failed') ||
+          message.includes('Invalid') ||
+          message.includes('invalid') ||
+          message.includes('No such file') ||
+          message.includes('Permission denied')) {
           hasError = true;
           errorMessage = message;
           logger.error(`FFMPEG HLS Error for schedule ${recordingKey}:`, message);
+
+          // 에러 발생 시 추가 디버깅 정보
+          logger.error(`FFMPEG HLS Error Context for ${recordingKey}:`, {
+            rtspUrl: rtspUrl,
+            segmentPath: segmentPath,
+            playlistPath: playlistPath,
+            recoding_bitrate: recoding_bitrate,
+            hlsConfig: hlsConfig,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        // TS 파일 생성 확인
+        if (message.includes('Opening') && message.includes('.ts')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: TS segment file creation detected: ${message}`);
+        }
+
+        // HLS 세그먼트 정보 확인
+        if (message.includes('hls') && message.includes('segment')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: HLS segment info: ${message}`);
+        }
+
+        // RTSP 연결 상태 확인
+        if (message.includes('rtsp') || message.includes('RTSP')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: RTSP status: ${message}`);
+        }
+
+        // 연결 관련 메시지 확인
+        if (message.includes('Connection') || message.includes('connection')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: Connection status: ${message}`);
+        }
+
+        // 스트림 시작/종료 확인
+        if (message.includes('Starting') || message.includes('started') || message.includes('ended')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: Stream status: ${message}`);
+        }
+
+        // HLS 관련 메시지 확인
+        if (message.includes('hls') || message.includes('HLS')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: HLS status: ${message}`);
+        }
+
+        // 입력 스트림 정보 확인
+        if (message.includes('Input') || message.includes('Stream')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: Stream info: ${message}`);
         }
       });
 
+      // FFMPEG stdout 모니터링 (HLS 세그먼트 생성 정보)
+      ffmpeg.stdout.on('data', (data) => {
+        const message = data.toString();
+        logger.info(`FFMPEG HLS [${recordingKey}]: STDOUT: ${message}`);
+
+        // HLS 세그먼트 생성 관련 정보 확인
+        if (message.includes('hls') || message.includes('segment') || message.includes('.ts')) {
+          logger.info(`FFMPEG HLS [${recordingKey}]: HLS output detected: ${message}`);
+        }
+      });
+
+      // FFMPEG 프로세스 이벤트 모니터링
+      ffmpeg.on('spawn', () => {
+        logger.info(`FFMPEG HLS [${recordingKey}]: Process spawned successfully`);
+      });
+
+      ffmpeg.on('error', (error) => {
+        logger.error(`FFMPEG HLS [${recordingKey}]: Process error:`, error);
+        hasError = true;
+        errorMessage = error.message;
+      });
+
+      ffmpeg.on('exit', (code, signal) => {
+        logger.info(`FFMPEG HLS [${recordingKey}]: Process exited with code: ${code}, signal: ${signal}`);
+      });
+
+      // 프로세스 시작 후 상태 확인 (더 자주 확인)
+      const processCheckInterval = setInterval(() => {
+        if (ffmpeg.killed) {
+          logger.error(`FFMPEG HLS [${recordingKey}]: Process was killed unexpectedly`);
+          clearInterval(processCheckInterval);
+        } else {
+          logger.info(`FFMPEG HLS [${recordingKey}]: Process is running, PID: ${ffmpeg.pid}, killed: ${ffmpeg.killed}`);
+
+          // 프로세스 상태 상세 확인
+          try {
+            const isAlive = process.kill(ffmpeg.pid, 0); // 프로세스 존재 여부 확인 (시그널 0)
+            logger.info(`FFMPEG HLS [${recordingKey}]: Process alive check: ${isAlive ? 'alive' : 'not alive'}`);
+          } catch (error) {
+            logger.error(`FFMPEG HLS [${recordingKey}]: Process check failed: ${error.message}`);
+          }
+        }
+      }, 3000); // 3초마다 확인
+
+      // TS 파일 생성 확인 인터벌 시작 (3초 후부터 5초마다 확인 - 더 자주 확인)
+      setTimeout(() => {
+        tsFileCheckInterval = setInterval(async () => {
+          try {
+            // 세그먼트 디렉토리에서 TS 파일 확인
+            const segmentDir = path.dirname(segmentPath);
+            const files = await fs.readdir(segmentDir);
+
+            // 다양한 세그먼트 파일 확장자 확인
+            const tsFiles = files.filter(file =>
+              file.endsWith('.ts') ||
+              file.endsWith('.m4s') ||
+              file.endsWith('.mp4')
+            );
+
+            if (tsFiles.length > 0) {
+              logger.info(`FFMPEG HLS [${recordingKey}]: Segment files found: ${tsFiles.length} files`);
+              logger.info(`FFMPEG HLS [${recordingKey}]: Segment file names: ${tsFiles.join(', ')}`);
+              // 세그먼트 파일이 생성되면 인터벌 중지
+              clearInterval(tsFileCheckInterval);
+            } else {
+              logger.warn(`FFMPEG HLS [${recordingKey}]: No segment files generated yet`);
+              logger.info(`FFMPEG HLS [${recordingKey}]: All files in directory: ${files.join(', ')}`);
+
+              // 플레이리스트 파일도 확인 (정규화된 이름 사용)
+              try {
+                // 실제 파일 시스템에서 정규화된 이름으로 파일 찾기
+                const actualFiles = await fs.readdir(playlistDir);
+                const playlistFiles = actualFiles.filter(file =>
+                  file.includes(normalizedCameraName) &&
+                  file.endsWith('.m3u8')
+                );
+
+                if (playlistFiles.length > 0) {
+                  const actualPlaylistPath = path.join(playlistDir, playlistFiles[0]);
+                  const playlistStats = await fs.stat(actualPlaylistPath);
+                  logger.info(`FFMPEG HLS [${recordingKey}]: Actual playlist file found: ${playlistFiles[0]}`);
+                  logger.info(`FFMPEG HLS [${recordingKey}]: Playlist file size: ${playlistStats.size} bytes`);
+                  logger.info(`FFMPEG HLS [${recordingKey}]: Expected path: ${playlistPath}`);
+                  logger.info(`FFMPEG HLS [${recordingKey}]: Actual path: ${actualPlaylistPath}`);
+
+                  // 플레이리스트 내용 확인
+                  try {
+                    const playlistContent = await fs.readFile(actualPlaylistPath, 'utf8');
+                    logger.info(`FFMPEG HLS [${recordingKey}]: Playlist content preview: ${playlistContent.substring(0, 200)}...`);
+                  } catch (contentError) {
+                    logger.warn(`FFMPEG HLS [${recordingKey}]: Cannot read playlist content: ${contentError.message}`);
+                  }
+                } else {
+                  logger.warn(`FFMPEG HLS [${recordingKey}]: No playlist files found in directory: ${playlistDir}`);
+                  logger.warn(`FFMPEG HLS [${recordingKey}]: Available files: ${actualFiles.join(', ')}`);
+                }
+              } catch (playlistError) {
+                logger.warn(`FFMPEG HLS [${recordingKey}]: Error checking playlist files: ${playlistError.message}`);
+              }
+            }
+          } catch (error) {
+            logger.error(`FFMPEG HLS [${recordingKey}]: Error checking segment files:`, error.message);
+          }
+        }, 5000); // 5초마다 확인 (더 자주)
+      }, 3000); // 3초 후 시작
+
       // 프로세스 종료 처리
       ffmpeg.on('close', async (code) => {
+        // 모든 인터벌 정리
+        if (tsFileCheckInterval) {
+          clearInterval(tsFileCheckInterval);
+          logger.info(`FFMPEG HLS [${recordingKey}]: TS file check interval cleared`);
+        }
+
+        if (processCheckInterval) {
+          clearInterval(processCheckInterval);
+          logger.info(`FFMPEG HLS [${recordingKey}]: Process check interval cleared`);
+        }
+
         logger.info(`HLS Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
+
+        // 에러 코드 상세 분석
+        if (code !== 0) {
+          logger.error(`FFMPEG HLS process exited with error code: ${code} for schedule: ${recordingKey}`);
+          logger.error(`Error message: ${errorMessage}`);
+          logger.error(`FFMPEG HLS logs: ${ffmpegLogs.slice(-10).join('\n')}`); // 최근 10개 로그 출력
+        }
 
         // FFMPEG 로그를 파일로 저장
         try {
@@ -596,40 +859,64 @@ class RecordingProcess {
           logger.error(`Failed to save FFMPEG logs: ${logError.message}`);
         }
 
-        // 플레이리스트 파일 존재 확인
+        // 플레이리스트 파일 존재 확인 (정규화된 이름 사용)
         try {
-          const stats = await fs.stat(playlistPath);
-          if (stats.size === 0) {
-            logger.error(`Empty HLS playlist detected for schedule: ${recordingKey}`);
-            await fs.unlink(playlistPath);
+          // 실제 파일 시스템에서 정규화된 이름으로 파일 찾기
+          const actualFiles = await fs.readdir(playlistDir);
+          const playlistFiles = actualFiles.filter(file =>
+            file.includes(normalizedCameraName) &&
+            file.endsWith('.m3u8')
+          );
+
+          if (playlistFiles.length > 0) {
+            const actualPlaylistPath = path.join(playlistDir, playlistFiles[0]);
+            const stats = await fs.stat(actualPlaylistPath);
+
+            if (stats.size === 0) {
+              logger.error(`Empty HLS playlist detected for schedule: ${recordingKey}`);
+              await fs.unlink(actualPlaylistPath);
+              // 녹화 히스토리 업데이트 - 에러 상태로
+              if (recordingId) {
+                await this.updateRecordingHistory(recordingId, {
+                  endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
+                  status: 'error',
+                  errorMessage: 'Empty HLS playlist'
+                });
+              }
+            } else {
+              logger.info(`FFMPEG HLS [${recordingKey}]: Playlist file completed: ${playlistFiles[0]}, size: ${stats.size} bytes`);
+              // 정상 종료 시 녹화 히스토리 업데이트
+              if (recordingId) {
+                await this.updateRecordingHistory(recordingId, {
+                  endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
+                  status: hasError ? 'error' : 'completed',
+                  errorMessage: hasError ? errorMessage : undefined
+                });
+              }
+
+              // HLS 녹화 완료 후 세그먼트 정리 수행
+              const recordingInfo = this.activeRecordings.get(recordingKey);
+              if (!hasError && hlsConfig?.autoCleanup) {
+                try {
+                  const maxSegments = hlsConfig?.maxSegments || 24;
+                  await this.cleanupHLSSegments(cameraName, timeInfo.dateString, maxSegments);
+                  logger.info(`HLS cleanup completed for ${recordingKey}, max segments: ${maxSegments}`);
+                } catch (cleanupError) {
+                  logger.error(`HLS cleanup failed for ${recordingKey}:`, cleanupError);
+                }
+              }
+            }
+          } else {
+            logger.error(`No HLS playlist file found for schedule: ${recordingKey}`);
+            logger.error(`Expected: ${playlistPath}`);
+            logger.error(`Available files: ${actualFiles.join(', ')}`);
             // 녹화 히스토리 업데이트 - 에러 상태로
             if (recordingId) {
               await this.updateRecordingHistory(recordingId, {
                 endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
                 status: 'error',
-                errorMessage: 'Empty HLS playlist'
+                errorMessage: 'HLS playlist file not found'
               });
-            }
-          } else {
-            // 정상 종료 시 녹화 히스토리 업데이트
-            if (recordingId) {
-              await this.updateRecordingHistory(recordingId, {
-                endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
-                status: hasError ? 'error' : 'completed',
-                errorMessage: hasError ? errorMessage : undefined
-              });
-            }
-
-            // HLS 녹화 완료 후 세그먼트 정리 수행
-            const recordingInfo = this.activeRecordings.get(recordingKey);
-            if (!hasError && hlsConfig?.autoCleanup) {
-              try {
-                const maxSegments = hlsConfig?.maxSegments || 24;
-                await this.cleanupHLSSegments(cameraName, timeInfo.dateString, maxSegments);
-                logger.info(`HLS cleanup completed for ${recordingKey}, max segments: ${maxSegments}`);
-              } catch (cleanupError) {
-                logger.error(`HLS cleanup failed for ${recordingKey}:`, cleanupError);
-              }
             }
           }
         } catch (err) {

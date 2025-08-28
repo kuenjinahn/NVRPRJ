@@ -5,10 +5,27 @@ import * as EventsModel from './events.model.js';
 import path from 'path';
 import fs from 'fs';
 import net from 'net';
+import ConfigService from '../../../services/config/config.service.js';
 
-// Camera configuration
-const CAMERA_IP = '175.201.204.165';
-const CAMERA_PORT = 32000;
+// Camera configuration from config.ini
+const getCameraConfig = () => {
+  try {
+    // ConfigService에서 카메라 설정 가져오기
+    const cameraConfig = ConfigService.recordings?.camera || {};
+    console.log('[getCameraConfig] Camera config from ConfigService:', cameraConfig);
+    return {
+      ip: cameraConfig.ip || '175.201.204.165', // 기본값
+      port: cameraConfig.port || 32000 // 기본값
+    };
+  } catch (error) {
+    console.error('[getCameraConfig] Error reading config:', error);
+    // 기본값 반환
+    return {
+      ip: '175.201.204.165',
+      port: 32000
+    };
+  }
+};
 
 // ROI Packet functions
 function buildRoiPacket(cmd, data) {
@@ -362,7 +379,8 @@ export const addDetectionZone = async (req, res) => {
 
     if (result) {
       try {
-        await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, CAMERA_IP, CAMERA_PORT, req.body.roiEnable);
+        const cameraConfig = getCameraConfig();
+        await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
       } catch (roiError) {
         console.error('[addDetectionZone] ROI setting error:', roiError);
         // Continue even if ROI setting fails
@@ -407,7 +425,8 @@ export const updateDetectionZone = async (req, res) => {
     if (!result) return res.status(404).json({ error: 'Not found' });
 
     try {
-      await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, CAMERA_IP, CAMERA_PORT, req.body.roiEnable);
+      const cameraConfig = getCameraConfig();
+      await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
     } catch (roiError) {
       console.error('[updateDetectionZone] ROI setting error:', roiError);
       // Continue even if ROI setting fails
@@ -429,7 +448,8 @@ export const deleteDetectionZone = async (req, res) => {
     const roiIndex = req.query.roiIndex;
     if (roiEnable !== undefined && roiIndex !== undefined) {
       try {
-        await sendRoiSetting(roiIndex, 0, 0, 0, 0, CAMERA_IP, CAMERA_PORT, roiEnable);
+        const cameraConfig = getCameraConfig();
+        await sendRoiSetting(roiIndex, 0, 0, 0, 0, cameraConfig.ip, cameraConfig.port, roiEnable);
       } catch (roiError) {
         console.error('[deleteDetectionZone] ROI setting error:', roiError);
         // Continue even if ROI setting fails

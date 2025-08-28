@@ -211,8 +211,13 @@ export class ConfigSetup {
   static setupRecordings(recordings = {}) {
     return {
       path: recordings?.path || './outputs/nvr/recordings',
-      retention: recordings?.retention || 30,
+      retention: recordings?.retention || 3600,
       maxFileSize: recordings?.maxFileSize || '10GB',
+      camera: {
+        ip: recordings?.camera_ip || '175.201.204.165',
+        port: parseInt(recordings?.camera_port) || 32000,
+        rtsp: recordings?.camera_rtsp || 'rtsp://root:bw84218899!@175.201.204.165:554/cam0_0'
+      },
       hls: {
         enabled: recordings?.hls_enabled === 'true' || recordings?.hls?.enabled || false,
         segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 3600, // 기본값 1시간

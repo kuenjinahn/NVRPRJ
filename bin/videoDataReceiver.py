@@ -95,7 +95,7 @@ class VideoDataReceiver:
         self.last_check_time = 0  # 마지막 상태 확인 시간
         self.last_snapshot_time = 0  # 마지막 스냅샷 캡처 시간
         # 스냅샷 처리 간격을 클래스 변수로 설정 (초 단위)
-        self.snapshot_interval = 10  # 10초마다 스냅샷 캡처
+        self.snapshot_interval = 60  # 10초마다 스냅샷 캡처
         # 설정 파일에서 간격을 읽어올 수 있도록 수정
         try:
             config_interval = self.config.getint('CAMERA', 'snapshot_interval', fallback=10)

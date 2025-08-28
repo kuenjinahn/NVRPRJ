@@ -286,14 +286,14 @@ export const routesConfig = (app) => {
 
       // 파일이 존재하지 않으면 HLS 디렉토리에서 .m3u8 파일을 찾아서 사용
       if (!fs.existsSync(playlistFile)) {
-        logger.warn(`[${requestId}] HLS playlist not found: ${playlistFile}, searching for .m3u8 files...`);
+        // logger.warn(`[${requestId}] HLS playlist not found: ${playlistFile}, searching for .m3u8 files...`);
 
         try {
           // HLS 디렉토리가 존재하는지 확인
-          if (!fs.existsSync(hlsPath)) {
-            logger.error(`[${requestId}] HLS directory not found: ${hlsPath}`);
-            return res.status(404).json({ error: 'HLS directory not found' });
-          }
+          // if (!fs.existsSync(hlsPath)) {
+          //   logger.error(`[${requestId}] HLS directory not found: ${hlsPath}`);
+          //   return res.status(404).json({ error: 'HLS directory not found' });
+          // }
 
           const hlsFiles = fs.readdirSync(hlsPath);
           const m3u8Files = hlsFiles.filter(file => file.endsWith('.m3u8'));
@@ -1122,9 +1122,10 @@ export const routesConfig = (app) => {
 
         // 녹화 시작
         const ffmpeg = spawn('ffmpeg', [
+          '-loglevel', 'error',  // error만 출력하여 진행 상황 로그 억제
           '-i', streamUrl,
           '-c:v', 'copy',
-          '-c:a', 'aac',
+          '-an',  // 오디오 스트림 제거
           '-f', 'mp4',
           videoFilePath
         ]);
@@ -1280,6 +1281,7 @@ async function findVideoFileByFilename(videoPath, filename) {
 async function generateThumbnailToBuffer(videoPath) {
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', [
+      '-loglevel', 'error',  // error만 출력하여 진행 상황 로그 억제
       '-i', videoPath,
       '-vf', 'select=eq(n\\,1),scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-frames:v', '1',
@@ -1307,6 +1309,7 @@ async function generateThumbnailToBuffer(videoPath) {
 async function generateThumbnailFromStream(streamUrl, outputPath) {
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', [
+      '-loglevel', 'error',  // error만 출력하여 진행 상황 로그 억제
       '-i', streamUrl,
       '-vf', 'select=eq(n\\,1),scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-frames:v', '1',
