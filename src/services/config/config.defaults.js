@@ -77,6 +77,7 @@ export class ConfigSetup {
     return {
       ...ConfigSetup.setupUi(config),
       options: ConfigSetup.setupOptions(config?.options),
+      camera: ConfigSetup.setupCamera(config?.camera),
       recordings: ConfigSetup.setupRecordings(config?.recordings),
       ssl: ConfigSetup.setupSsl(config?.ssl),
       http: ConfigSetup.setupHttp(config?.http),
@@ -208,16 +209,19 @@ export class ConfigSetup {
     );
   }
 
+  static setupCamera(camera = {}) {
+    return {
+      ip: camera?.ip || '175.201.204.165',
+      port: parseInt(camera?.port) || 32000,
+      rtsp: camera?.rtsp || 'rtsp://root:bw84218899!@175.201.204.165:554/cam0_0'
+    };
+  }
+
   static setupRecordings(recordings = {}) {
     return {
       path: recordings?.path || './outputs/nvr/recordings',
       retention: recordings?.retention || 3600,
       maxFileSize: recordings?.maxFileSize || '10GB',
-      camera: {
-        ip: recordings?.camera_ip || '175.201.204.165',
-        port: parseInt(recordings?.camera_port) || 32000,
-        rtsp: recordings?.camera_rtsp || 'rtsp://root:bw84218899!@175.201.204.165:554/cam0_0'
-      },
       hls: {
         enabled: recordings?.hls_enabled === 'true' || recordings?.hls?.enabled || false,
         segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 3600, // 기본값 1시간

@@ -11,7 +11,7 @@ import ConfigService from '../../../services/config/config.service.js';
 const getCameraConfig = () => {
   try {
     // ConfigService에서 카메라 설정 가져오기
-    const cameraConfig = ConfigService.recordings?.camera || {};
+    const cameraConfig = ConfigService.camera || {};
     console.log('[getCameraConfig] Camera config from ConfigService:', cameraConfig);
     return {
       ip: cameraConfig.ip || '175.201.204.165', // 기본값
