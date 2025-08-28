@@ -213,7 +213,7 @@ export class ConfigSetup {
     return {
       ip: camera?.ip || '10.254.198.246',
       port: parseInt(camera?.port) || 32000,
-      rtsp: camera?.rtsp || 'rtsp://root:bw84218899!@10.254.198.248:554/cam0_0'
+      rtsp: camera?.rtsp || 'rtsp://root:bw84218899!@10.254.198.246:554/cam0_0'
     };
   }
 
