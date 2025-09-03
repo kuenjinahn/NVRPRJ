@@ -11,6 +11,7 @@ const { log } = LoggerService;
 
 import App from './app.js';
 import { routesConfig as statisticRoutesConfig } from './components/statistic/statistic.routes.js';
+import { routesConfig as recordingsRoutesConfig } from './components/recordings/recordings.routes.js';
 
 export default class Server {
   constructor(controller) {
@@ -20,6 +21,7 @@ export default class Server {
     });
 
     statisticRoutesConfig(app);
+    recordingsRoutesConfig(app);
 
     const server = ConfigService.ui.ssl
       ? https.createServer(

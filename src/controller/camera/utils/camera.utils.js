@@ -312,8 +312,11 @@ export const generateInputSource = (videoConfig, source) => {
       inputSource = `-re ${inputSource}`;
     }
 
-    if (videoConfig.stimeout > 0 && !inputSource.includes('-stimeout')) {
-      inputSource = `-timeout ${videoConfig.stimeout * 10000000} ${inputSource}`;
+    if (videoConfig.stimeout > 0 && !inputSource.includes('-stimeout') && !inputSource.includes('-timeout')) {
+      // stimeout을 마이크로초로 변환 (초 * 1000000)
+      const timeoutValue = videoConfig.stimeout * 1000000;
+      // 기본적으로 -timeout 사용 (FFmpeg 5.0 이상에서 권장)
+      inputSource = `-timeout ${timeoutValue} ${inputSource}`;
     }
 
     if (videoConfig.maxDelay >= 0 && !inputSource.includes('-max_delay')) {
@@ -363,12 +366,20 @@ export const checkDeprecatedFFmpegArguments = (ffmpegVersion, ffmpegArguments) =
 
   let ffmpegArgumentsArray = !Array.isArray(ffmpegArguments) ? ffmpegArguments.split(' ') : [...ffmpegArguments];
 
+  // FFmpeg 5.0 이상에서는 -timeout 사용, 이하에서는 -stimeout 사용
   if (compareVersions.compare(ffmpegVersion, '5.0.0', '>=')) {
     ffmpegArgumentsArray = ffmpegArgumentsArray.map((argument) => {
       if (argument === '-stimeout') {
         argument = '-timeout';
       }
-
+      return argument;
+    });
+  } else {
+    // FFmpeg 5.0 미만에서는 -timeout을 -stimeout으로 변환
+    ffmpegArgumentsArray = ffmpegArgumentsArray.map((argument) => {
+      if (argument === '-timeout') {
+        argument = '-stimeout';
+      }
       return argument;
     });
   }

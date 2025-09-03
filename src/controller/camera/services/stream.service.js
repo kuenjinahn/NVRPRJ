@@ -141,10 +141,14 @@ export default class StreamService {
         '-',
       ].filter((key) => key !== '');
 
-      log.debug(
-        `Stream command: ${ConfigService.ui.options.videoProcessor} ${spawnOptions.join(' ')}`,
-        this.cameraName
-      );
+      const commandString = `${ConfigService.ui.options.videoProcessor} ${spawnOptions.join(' ')}`;
+      log.debug(`Stream command: ${commandString}`, this.cameraName);
+
+      // 타임아웃 관련 설정 로깅
+      const timeoutOption = spawnOptions.find(opt => opt.includes('timeout'));
+      if (timeoutOption) {
+        log.debug(`Timeout option: ${timeoutOption}`, this.cameraName);
+      }
 
       this.streamSession = spawn(ConfigService.ui.options.videoProcessor, spawnOptions, {
         env: process.env,

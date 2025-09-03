@@ -21,6 +21,18 @@ class RecordingProcess {
     this.checkInterval = null;
     this.recordingsPath = ConfigService.recordingsPath;
     this.lastRetryTimes = new Map();
+    this.cameraNameToIndex = new Map(); // 카메라명을 인덱스로 매핑
+    this.cameraIndexCounter = 1; // 카메라 인덱스 카운터
+  }
+
+  // 카메라명을 안전한 파일명으로 변환 (한글 → 인덱스, 공백 제거)
+  getSafeFileName(cameraName) {
+    if (!this.cameraNameToIndex.has(cameraName)) {
+      this.cameraNameToIndex.set(cameraName, this.cameraIndexCounter++);
+      logger.info(`Camera name mapping: "${cameraName}" → camera_${this.cameraIndexCounter - 1}`);
+    }
+    const index = this.cameraNameToIndex.get(cameraName);
+    return `camera_${index}`;
   }
 
   isTimeInRange(currentTime, startTime, endTime) {
@@ -147,54 +159,159 @@ class RecordingProcess {
 
   async updateRecordingHistory(recordingId, updates) {
     try {
-      const currentRecord = await RecordingHistory.findByPk(recordingId);
+      logger.info(`🔄 Updating recording history for ID: ${recordingId} with:`, updates);
 
-      if (!currentRecord) {
-        logger.warn(`Recording history not found for ID: ${recordingId}`);
-        return;
+      // 먼저 Sequelize 모델로 시도
+      try {
+        const currentRecord = await RecordingHistory.findByPk(recordingId);
+
+        if (!currentRecord) {
+          logger.warn(`⚠️ Recording history not found for ID: ${recordingId}, trying direct SQL...`);
+          // Sequelize 모델로 찾을 수 없으면 직접 SQL로 업데이트 시도
+          return await this.forceUpdateRecordingHistory(recordingId, updates);
+        }
+
+        logger.info(`📊 Current record status: ${currentRecord.status}, Updating to: ${updates.status}`);
+
+        // 종료 상태 업데이트는 항상 허용 (중요한 정보이므로)
+        if (['completed', 'stopped', 'error'].includes(updates.status)) {
+          logger.info(`✅ Allowing status update to: ${updates.status}`);
+        } else if (['completed', 'stopped', 'error'].includes(currentRecord.status) && updates.status === 'recording') {
+          logger.warn(`⚠️ Skipping update for already finished recording: ${recordingId}`);
+          return;
+        }
+
+        const updatedRecord = {
+          ...updates,
+          updatedAt: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss')
+        };
+
+        logger.info(`💾 Updating record with:`, updatedRecord);
+
+        const result = await currentRecord.update(updatedRecord);
+
+        logger.info(`✅ Recording history updated successfully via model:`, {
+          id: recordingId,
+          previousStatus: currentRecord.status,
+          newStatus: updates.status,
+          updates: updatedRecord,
+          result: result ? 'success' : 'failed'
+        });
+
+        return result;
+      } catch (modelError) {
+        logger.warn(`⚠️ Model update failed for ID ${recordingId}, trying direct SQL:`, modelError);
+
+        // Sequelize 모델 업데이트 실패 시 직접 SQL로 시도
+        return await this.forceUpdateRecordingHistory(recordingId, updates);
       }
-
-      // 이미 종료된 녹화는 업데이트하지 않음
-      if (['completed', 'stopped', 'error'].includes(currentRecord.status) && updates.status === 'recording') {
-        logger.warn(`Skipping update for already finished recording: ${recordingId}`);
-        return;
-      }
-
-      const updatedRecord = {
-        ...updates,
-        updatedAt: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss')
-      };
-
-      await currentRecord.update(updatedRecord);
-
-      logger.info('Recording history updated:', {
-        id: recordingId,
-        previousStatus: currentRecord.status,
-        newStatus: updates.status,
-        updates
-      });
     } catch (error) {
-      logger.error('Error in updateRecordingHistory:', error);
+      logger.error(`❌ Error in updateRecordingHistory for ID ${recordingId}:`, error);
+
+      // 마지막 시도: 직접 SQL로 강제 업데이트
+      try {
+        logger.warn(`⚠️ Final attempt: force update via direct SQL for ID ${recordingId}`);
+        return await this.forceUpdateRecordingHistory(recordingId, updates);
+      } catch (forceError) {
+        logger.error(`❌ All update methods failed for ID ${recordingId}:`, forceError);
+        throw error;
+      }
     }
   }
 
   async startRecording(cameraName, scheduleId, source, fk_camera_id, recoding_bitrate = '1024k') {
-    // HLS 레코딩 설정 확인
-    const hlsConfig = ConfigService.recordings?.hls;
-    logger.info(`=== Recording Config Debug ===`);
-    logger.info(`ConfigService.recordings:`, ConfigService.recordings);
-    logger.info(`HLS Config Check - enabled: ${hlsConfig?.enabled}, segmentDuration: ${hlsConfig?.segmentDuration}, maxSegments: ${hlsConfig?.maxSegments}`);
-    logger.info(`Full HLS config:`, JSON.stringify(hlsConfig, null, 2));
-    logger.info(`=============================`);
+    // config.ini에서 직접 HLS 설정 읽기
+    let hlsConfig = {
+      enabled: true,
+      segmentDuration: 3600,
+      maxSegments: 24,
+      deleteSegments: true,
+      quality: 'medium',
+      bitrate: '1024k',
+      segmentSize: '4MB',
+      autoCleanup: true,
+      cleanupInterval: 3600,
+      segmentType: 'mpegts',
+      flags: 'delete_segments+append_list'
+    };
 
-    if (hlsConfig?.enabled) {
-      logger.info(`Starting HLS recording for camera: ${cameraName}`);
-      return this.startHLSRecording(cameraName, scheduleId, source, fk_camera_id, recoding_bitrate);
+    try {
+      const configPath = './config.ini';
+      logger.info(`[Config] Trying to read config.ini from: ${path.resolve(configPath)}`);
+
+      if (fs.existsSync(configPath)) {
+        const configContent = fs.readFileSync(configPath, 'utf8');
+        logger.info(`[Config] config.ini content (first 1000 chars):`, configContent.substring(0, 1000));
+
+        const lines = configContent.split('\n');
+        let currentSection = '';
+        let recordingsSection = {};
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+
+          if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
+            currentSection = trimmedLine.slice(1, -1);
+            logger.info(`[Config] Found section: [${currentSection}]`);
+          }
+          else if (currentSection === 'recordings' && trimmedLine.includes('=')) {
+            const [key, value] = trimmedLine.split('=').map(s => s.trim());
+            recordingsSection[key] = value;
+            logger.info(`[Config] Found recordings config: ${key} = ${value}`);
+          }
+        }
+
+        // config.ini에서 읽은 값으로 hlsConfig 업데이트
+        if (recordingsSection.hls_enabled !== undefined) {
+          hlsConfig.enabled = recordingsSection.hls_enabled === 'true';
+        }
+        if (recordingsSection.hls_segmentDuration !== undefined) {
+          hlsConfig.segmentDuration = parseInt(recordingsSection.hls_segmentDuration);
+        }
+        if (recordingsSection.hls_maxSegments !== undefined) {
+          hlsConfig.maxSegments = parseInt(recordingsSection.hls_maxSegments);
+        }
+        if (recordingsSection.hls_deleteSegments !== undefined) {
+          hlsConfig.deleteSegments = recordingsSection.hls_deleteSegments === 'true';
+        }
+        if (recordingsSection.hls_quality !== undefined) {
+          hlsConfig.quality = recordingsSection.hls_quality;
+        }
+        if (recordingsSection.hls_bitrate !== undefined) {
+          hlsConfig.bitrate = recordingsSection.hls_bitrate;
+        }
+        if (recordingsSection.hls_segmentSize !== undefined) {
+          hlsConfig.segmentSize = recordingsSection.hls_segmentSize;
+        }
+        if (recordingsSection.hls_autoCleanup !== undefined) {
+          hlsConfig.autoCleanup = recordingsSection.hls_autoCleanup === 'true';
+        }
+        if (recordingsSection.hls_cleanupInterval !== undefined) {
+          hlsConfig.cleanupInterval = parseInt(recordingsSection.hls_cleanupInterval);
+        }
+        if (recordingsSection.hls_segmentType !== undefined) {
+          hlsConfig.segmentType = recordingsSection.hls_segmentType;
+        }
+        if (recordingsSection.hls_flags !== undefined) {
+          hlsConfig.flags = recordingsSection.hls_flags;
+        }
+
+        logger.info(`=== Config.ini HLS Config ===`);
+        logger.info(`HLS enabled: ${hlsConfig.enabled}`);
+        logger.info(`Segment Duration: ${hlsConfig.segmentDuration} seconds`);
+        logger.info(`Max Segments: ${hlsConfig.maxSegments}`);
+        logger.info(`Full hlsConfig:`, JSON.stringify(hlsConfig, null, 2));
+        logger.info(`=============================`);
+      }
+    } catch (error) {
+      logger.error('Error reading config.ini:', error);
     }
 
+    // MP4 레코딩을 수행
     logger.info(`Starting MP4 recording for camera: ${cameraName}`);
-    // 기존 MP4 레코딩 로직
-    const recordingKey = `${cameraName}_${scheduleId}`;
+    return this.startMP4Recording(cameraName, scheduleId, source, fk_camera_id, recoding_bitrate);
+    const safeCameraName = this.getSafeFileName(cameraName);
+    const recordingKey = `${safeCameraName}_${scheduleId}`;
     let recordingId = null;
 
     try {
@@ -225,18 +342,18 @@ class RecordingProcess {
       );
       await fs.ensureDir(recordingDir);
 
-      // 파일명 생성 - 정규화된 카메라 이름 사용
-      const normalizedCameraName = cameraName.replace(/\s+/g, '');
-      const filename = `${normalizedCameraName}_${timeInfo.formattedForFile}.mp4`;
+      // 안전한 파일명 생성 (한글 → 인덱스, 공백 제거)
+      const safeCameraName = this.getSafeFileName(cameraName);
+      const filename = `${safeCameraName}_${timeInfo.formattedForFile}.mp4`;
       const outputPath = path.join(recordingDir, filename);
 
-      // 카메라 이름 정규화 로깅
-      logger.info(`Recording [${recordingKey}]: Original camera name: "${cameraName}"`);
-      logger.info(`Recording [${recordingKey}]: Normalized camera name: "${normalizedCameraName}"`);
-      logger.info(`Recording [${recordingKey}]: Generated filename: "${filename}"`);
-      logger.info(`Recording [${recordingKey}]: Output path: "${outputPath}"`);
+      // HLS 세그먼트 파일명 패턴 (1시간 단위)
+      const segmentPattern = `${safeCameraName}_${timeInfo.formattedForFile}_%02d.ts`;
+      const playlistName = `${safeCameraName}_${timeInfo.formattedForFile}.m3u8`;
+      const segmentPath = path.join(recordingDir, segmentPattern);
+      const playlistPath = path.join(recordingDir, playlistName);
 
-      // 기존 파일 확인 및 제거 (정규화된 이름 사용)
+      // 기존 파일 확인 및 제거
       if (await fs.pathExists(outputPath)) {
         try {
           await fs.unlink(outputPath);
@@ -278,11 +395,14 @@ class RecordingProcess {
         '-b:v', recoding_bitrate,
         '-maxrate', recoding_bitrate,
         '-bufsize', recoding_bitrate,
-        '-an',  // 오디오 스트림 제거
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '44100',
+        '-strict', '-2',
         '-f', 'mp4',
         '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
         '-reset_timestamps', '1',
-        '-loglevel', 'warning',  // warning + error 출력하여 에러 원인 파악 가능
+        '-loglevel', 'error',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -291,18 +411,16 @@ class RecordingProcess {
       ], {
         windowsHide: true,
         windowsVerbatimArguments: true,
-        env: { ...process.env }  // FFREPORT 환경 변수 제거
+        env: { ...process.env }
       });
 
       // console.log('=====> ffmpeg', ffmpeg);
       let hasError = false;
       let errorMessage = '';
-      let ffmpegLogs = [];  // FFMPEG 로그 수집
 
       // FFMPEG 에러 로그 처리
       ffmpeg.stderr.on('data', (data) => {
         const message = data.toString();
-        ffmpegLogs.push(`[${new Date().toISOString()}] ${message}`);  // 로그 수집
 
         // 타임스탬프 관련 경고 메시지 필터링
         if (message.includes('Non-monotonic DTS') ||
@@ -319,45 +437,16 @@ class RecordingProcess {
           message.includes('Invalid data found') ||
           message.includes('Error opening input') ||
           message.includes('Broken pipe') ||
-          message.includes('End of file') ||
-          message.includes('error') ||
-          message.includes('Error') ||
-          message.includes('failed') ||
-          message.includes('Failed')) {
+          message.includes('End of file')) {
           hasError = true;
           errorMessage = message;
           logger.error(`FFMPEG Error for schedule ${recordingKey}:`, message);
-
-          // 에러 발생 시 추가 디버깅 정보
-          logger.error(`FFMPEG Error Context for ${recordingKey}:`, {
-            rtspUrl: rtspUrl,
-            outputPath: outputPath,
-            recoding_bitrate: recoding_bitrate,
-            timestamp: new Date().toISOString()
-          });
         }
       });
 
       // 프로세스 종료 처리
       ffmpeg.on('close', async (code) => {
         logger.info(`Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
-
-        // 에러 코드 상세 분석
-        if (code !== 0) {
-          logger.error(`FFMPEG process exited with error code: ${code} for schedule: ${recordingKey}`);
-          logger.error(`Error message: ${errorMessage}`);
-          logger.error(`FFMPEG logs: ${ffmpegLogs.slice(-10).join('\n')}`); // 최근 10개 로그 출력
-        }
-
-        // FFMPEG 로그를 파일로 저장
-        try {
-          const logFilePath = path.join(recordingDir, `ffmpeg-${recordingKey}.log`);
-          const logContent = ffmpegLogs.join('\n');
-          await fs.writeFile(logFilePath, logContent, 'utf8');
-          logger.info(`FFMPEG logs saved to: ${logFilePath}`);
-        } catch (logError) {
-          logger.error(`Failed to save FFMPEG logs: ${logError.message}`);
-        }
 
         // 파일 크기 확인
         try {
@@ -467,8 +556,9 @@ class RecordingProcess {
     }
   }
 
-  async startHLSRecording(cameraName, scheduleId, source, fk_camera_id, recoding_bitrate = '1024k') {
-    const recordingKey = `${cameraName}_${scheduleId}`;
+  async startMP4Recording(cameraName, scheduleId, source, fk_camera_id, recoding_bitrate = '1024k') {
+    const safeCameraName = this.getSafeFileName(cameraName);
+    const recordingKey = `${safeCameraName}_${scheduleId}`;
     let recordingId = null;
 
     try {
@@ -491,44 +581,24 @@ class RecordingProcess {
         formattedForDB: nowMoment.format('YYYY-MM-DD HH:mm:ss')
       };
 
-      // HLS 세그먼트 파일명 패턴 (1시간 단위) - 정규화된 카메라 이름 사용
-      const normalizedCameraName = cameraName.replace(/\s+/g, '');
-
-      // HLS 녹화 디렉토리 생성 (정규화된 카메라 이름 사용)
+      // MP4 녹화 디렉토리 생성
       const recordingDir = path.join(
         this.recordingsPath,
-        normalizedCameraName,  // 공백 제거된 이름 사용
-        timeInfo.dateString,
-        'hls'
+        cameraName,
+        timeInfo.dateString
       );
       await fs.ensureDir(recordingDir);
 
-      // 디렉토리 생성 확인 및 상세 정보 로깅
+      // MP4 파일명 생성
+      const safeCameraName = this.getSafeFileName(cameraName);
+      const filename = `${safeCameraName}_${timeInfo.formattedForFile}.mp4`;
+      const outputPath = path.join(recordingDir, filename);
+
+      // recordingHistory에 추가 (MP4 파일명 사용)
       try {
-        const dirStats = await fs.stat(recordingDir);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Recording directory created successfully`);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Directory path: ${recordingDir}`);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Directory permissions: ${dirStats.mode.toString(8)}`);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Directory size: ${dirStats.size} bytes`);
-
-        // 디렉토리 내용 확인
-        const dirContents = await fs.readdir(recordingDir);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Directory contents: ${dirContents.join(', ')}`);
+        recordingId = await this.addRecordingHistory(scheduleId, cameraName, timeInfo, filename, fk_camera_id);
       } catch (error) {
-        logger.error(`FFMPEG HLS [${recordingKey}]: Error checking directory: ${error.message}`);
-      }
-
-      // 세그먼트 파일명 패턴 단순화 (FFMPEG 호환성 향상)
-      const segmentPattern = `segment_%03d.ts`;  // 단순한 패턴 사용
-      const playlistName = `${normalizedCameraName}_${timeInfo.formattedForFile}.m3u8`;
-      const segmentPath = path.join(recordingDir, segmentPattern);
-      const playlistPath = path.join(recordingDir, playlistName);
-
-      // recordingHistory에 추가
-      try {
-        recordingId = await this.addRecordingHistory(scheduleId, cameraName, timeInfo, playlistName, fk_camera_id);
-      } catch (error) {
-        logger.error('Failed to add HLS recording history:', error);
+        logger.error('Failed to add MP4 recording history:', error);
         return;
       }
 
@@ -538,121 +608,58 @@ class RecordingProcess {
         rtspUrl = rtspUrl.replace(/-i\s+/, '').trim();
       }
 
-      // HLS FFMPEG 프로세스 시작 (설정값 기반)
-      const hlsConfig = ConfigService.recordings?.hls;
-
-      // 카메라 이름 정규화 (공백 제거) - 이미 위에서 선언됨
-      logger.info(`FFMPEG HLS [${recordingKey}]: Original camera name: "${cameraName}"`);
-      logger.info(`FFMPEG HLS [${recordingKey}]: Normalized camera name: "${normalizedCameraName}"`);
-
-      // 출력 디렉토리 확인 및 생성
-      const segmentDir = path.dirname(segmentPath);
-      const playlistDir = path.dirname(playlistPath);
-
-      try {
-        // 세그먼트 디렉토리 확인
-        await fs.access(segmentDir);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Segment directory exists: ${segmentDir}`);
-      } catch (error) {
-        logger.warn(`FFMPEG HLS [${recordingKey}]: Segment directory does not exist, creating: ${segmentDir}`);
-        await fs.mkdir(segmentDir, { recursive: true });
-        logger.info(`FFMPEG HLS [${recordingKey}]: Segment directory created: ${segmentDir}`);
-      }
-
-      try {
-        // 플레이리스트 디렉토리 확인
-        await fs.access(playlistDir);
-        logger.info(`FFMPEG HLS [${recordingKey}]: Playlist directory exists: ${playlistDir}`);
-      } catch (error) {
-        logger.warn(`FFMPEG HLS [${recordingKey}]: Playlist directory does not exist, creating: ${playlistDir}`);
-        await fs.mkdir(playlistDir, { recursive: true });
-        logger.info(`FFMPEG HLS [${recordingKey}]: Playlist directory created: ${playlistDir}`);
-      }
-
-      // HLS 설정 디버깅 로그
-      logger.info(`=== HLS Recording Debug ===`);
-      logger.info(`Camera: ${cameraName}, Schedule: ${scheduleId}`);
-      logger.info(`Segment Duration: ${hlsConfig?.segmentDuration || 3600}s (1시간)`);
-      logger.info(`Max Segments: ${hlsConfig?.maxSegments || 24}`);
-      logger.info(`Segment Pattern: ${segmentPattern}`);
-      logger.info(`Segment Path: ${segmentPath}`);
-      logger.info(`Playlist Path: ${playlistPath}`);
-      logger.info(`Segment Directory: ${segmentDir}`);
-      logger.info(`Playlist Directory: ${playlistDir}`);
+      // MP4 FFMPEG 프로세스 시작
+      logger.info(`=== FFMPEG MP4 Command Debug ===`);
+      logger.info(`Output Path: ${outputPath}`);
       logger.info(`=============================`);
 
       const ffmpeg = spawn('ffmpeg', [
         '-y',
         '-rtsp_transport', 'tcp',
         '-i', rtspUrl,
-        // 비디오 코덱 설정 최적화
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-profile:v', 'baseline',
         '-level', '3.0',
         '-pix_fmt', 'yuv420p',
-        '-color_range', 'tv',  // 픽셀 포맷 범위 명시
-        '-colorspace', 'bt709',  // 색상 공간 명시
         '-r', '30',
-        '-g', '30',
-        '-keyint_min', '30',
-        '-force_key_frames', 'expr:gte(t,n_forced*1)',
+        '-g', '108000',           // GOP 크기: 108000프레임 (30fps × 3600초 = 1시간)
+        '-keyint_min', '108000',  // 최소 키프레임 간격: 108000프레임 (1시간)
+        '-force_key_frames', 'expr:gte(t,n_forced*3600)', // 1시간마다 강제 키프레임
         '-b:v', recoding_bitrate,
         '-maxrate', recoding_bitrate,
         '-bufsize', recoding_bitrate,
-        // 비디오 스트림만 처리 (오디오 제외)
-        '-map', '0:v:0',  // 첫 번째 비디오 스트림만 선택
-        '-an',  // 오디오 스트림 제거
-        // HLS 세그먼트 설정 (설정값 기반) - 세그먼트 생성 최적화
-        '-f', 'hls',
-        '-hls_time', (hlsConfig?.segmentDuration || 3600).toString(),  // 설정값 기반 세그먼트 시간
-        '-hls_list_size', '0',  // 모든 세그먼트 유지 (0 = 무제한)
-        '-hls_segment_filename', segmentPath,
-        '-hls_flags', 'delete_segments+append_list+independent_segments',  // 독립 세그먼트 활성화
-        '-hls_allow_cache', '0',
-        '-hls_segment_type', 'mpegts',  // 세그먼트 타입 명시
-        '-hls_playlist_type', 'vod',  // VOD 타입으로 설정
-        '-hls_base_url', '',  // 상대 경로 사용
-        '-loglevel', 'info',  // info 레벨로 변경하여 세그먼트 생성 정보 확인
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '44100',
+        '-strict', '-2',
+        // MP4 출력 설정
+        '-f', 'mp4',
+        '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
+        '-reset_timestamps', '1',
+        '-loglevel', 'info',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
-        playlistPath
+        outputPath
       ], {
         windowsHide: true,
         windowsVerbatimArguments: true,
-        cwd: recordingDir,  // FFMPEG 작업 디렉토리를 녹화 디렉토리로 설정
-        env: { ...process.env }  // FFREPORT 환경 변수 제거
+        env: { ...process.env }
       });
 
       let hasError = false;
       let errorMessage = '';
-      let ffmpegLogs = [];  // FFMPEG 로그 수집
-      let tsFileCheckInterval;  // TS 파일 생성 확인 인터벌
 
-      // FFMPEG 프로세스 시작 로깅
-      logger.info(`FFMPEG HLS [${recordingKey}]: Process started with PID: ${ffmpeg.pid}`);
-      logger.info(`FFMPEG HLS [${recordingKey}]: Command: ffmpeg ${ffmpeg.spawnargs.slice(1).join(' ')}`);
-
-      // 수동 테스트용 명령어 로그
-      const testCommand = `ffmpeg -y -rtsp_transport tcp -i "${rtspUrl}" -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -level 3.0 -pix_fmt yuv420p -color_range tv -colorspace bt709 -r 30 -g 30 -keyint_min 30 -force_key_frames "expr:gte(t,n_forced*1)" -b:v ${recoding_bitrate} -maxrate ${recoding_bitrate} -bufsize ${recoding_bitrate} -map 0:v:0 -an -f hls -hls_time ${hlsConfig?.segmentDuration || 3600} -hls_list_size 0 -hls_segment_filename "${segmentPath}" -hls_flags delete_segments+append_list -hls_allow_cache 0 -hls_segment_type mpegts -loglevel info "${playlistPath}"`;
-      logger.info(`FFMPEG HLS [${recordingKey}]: Manual test command: ${testCommand}`);
-
-      // FFMPEG 에러 로그 처리
+      // FFMPEG 로그 처리 (MP4 녹화 정보 포함)
       ffmpeg.stderr.on('data', (data) => {
         const message = data.toString();
-        ffmpegLogs.push(`[${new Date().toISOString()}] ${message}`);  // 로그 수집
 
-        // 모든 FFMPEG 출력을 로깅 (디버깅용)
-        logger.info(`FFMPEG HLS [${recordingKey}]: ${message}`);
-
-        // 타임스탬프 관련 경고 메시지 필터링
-        if (message.includes('Non-monotonic DTS') ||
-          message.includes('changing to') ||
-          message.includes('This may result in incorrect timestamps')) {
-          return; // 이 메시지들은 무시
+        // MP4 녹화 정보 로깅
+        if (message.includes('Opening') || message.includes('frame=') || message.includes('time=')) {
+          logger.info(`FFMPEG MP4 Info for ${recordingKey}: ${message.trim()}`);
         }
 
         // 주요 에러 체크
@@ -661,272 +668,129 @@ class RecordingProcess {
           message.includes('Invalid data found') ||
           message.includes('Error opening input') ||
           message.includes('Broken pipe') ||
-          message.includes('End of file') ||
-          message.includes('error') ||
-          message.includes('Error') ||
-          message.includes('failed') ||
-          message.includes('Failed') ||
-          message.includes('Invalid') ||
-          message.includes('invalid') ||
-          message.includes('No such file') ||
-          message.includes('Permission denied')) {
+          message.includes('End of file')) {
           hasError = true;
           errorMessage = message;
           logger.error(`FFMPEG HLS Error for schedule ${recordingKey}:`, message);
-
-          // 에러 발생 시 추가 디버깅 정보
-          logger.error(`FFMPEG HLS Error Context for ${recordingKey}:`, {
-            rtspUrl: rtspUrl,
-            segmentPath: segmentPath,
-            playlistPath: playlistPath,
-            recoding_bitrate: recoding_bitrate,
-            hlsConfig: hlsConfig,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        // TS 파일 생성 확인
-        if (message.includes('Opening') && message.includes('.ts')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: TS segment file creation detected: ${message}`);
-        }
-
-        // HLS 세그먼트 정보 확인
-        if (message.includes('hls') && message.includes('segment')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: HLS segment info: ${message}`);
-        }
-
-        // RTSP 연결 상태 확인
-        if (message.includes('rtsp') || message.includes('RTSP')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: RTSP status: ${message}`);
-        }
-
-        // 연결 관련 메시지 확인
-        if (message.includes('Connection') || message.includes('connection')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: Connection status: ${message}`);
-        }
-
-        // 스트림 시작/종료 확인
-        if (message.includes('Starting') || message.includes('started') || message.includes('ended')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: Stream status: ${message}`);
-        }
-
-        // HLS 관련 메시지 확인
-        if (message.includes('hls') || message.includes('HLS')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: HLS status: ${message}`);
-        }
-
-        // 입력 스트림 정보 확인
-        if (message.includes('Input') || message.includes('Stream')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: Stream info: ${message}`);
         }
       });
-
-      // FFMPEG stdout 모니터링 (HLS 세그먼트 생성 정보)
-      ffmpeg.stdout.on('data', (data) => {
-        const message = data.toString();
-        logger.info(`FFMPEG HLS [${recordingKey}]: STDOUT: ${message}`);
-
-        // HLS 세그먼트 생성 관련 정보 확인
-        if (message.includes('hls') || message.includes('segment') || message.includes('.ts')) {
-          logger.info(`FFMPEG HLS [${recordingKey}]: HLS output detected: ${message}`);
-        }
-      });
-
-      // FFMPEG 프로세스 이벤트 모니터링
-      ffmpeg.on('spawn', () => {
-        logger.info(`FFMPEG HLS [${recordingKey}]: Process spawned successfully`);
-      });
-
-      ffmpeg.on('error', (error) => {
-        logger.error(`FFMPEG HLS [${recordingKey}]: Process error:`, error);
-        hasError = true;
-        errorMessage = error.message;
-      });
-
-      ffmpeg.on('exit', (code, signal) => {
-        logger.info(`FFMPEG HLS [${recordingKey}]: Process exited with code: ${code}, signal: ${signal}`);
-      });
-
-      // 프로세스 시작 후 상태 확인 (더 자주 확인)
-      const processCheckInterval = setInterval(() => {
-        if (ffmpeg.killed) {
-          logger.error(`FFMPEG HLS [${recordingKey}]: Process was killed unexpectedly`);
-          clearInterval(processCheckInterval);
-        } else {
-          logger.info(`FFMPEG HLS [${recordingKey}]: Process is running, PID: ${ffmpeg.pid}, killed: ${ffmpeg.killed}`);
-
-          // 프로세스 상태 상세 확인
-          try {
-            const isAlive = process.kill(ffmpeg.pid, 0); // 프로세스 존재 여부 확인 (시그널 0)
-            logger.info(`FFMPEG HLS [${recordingKey}]: Process alive check: ${isAlive ? 'alive' : 'not alive'}`);
-          } catch (error) {
-            logger.error(`FFMPEG HLS [${recordingKey}]: Process check failed: ${error.message}`);
-          }
-        }
-      }, 3000); // 3초마다 확인
-
-      // TS 파일 생성 확인 인터벌 시작 (3초 후부터 5초마다 확인 - 더 자주 확인)
-      setTimeout(() => {
-        tsFileCheckInterval = setInterval(async () => {
-          try {
-            // 세그먼트 디렉토리에서 TS 파일 확인
-            const segmentDir = path.dirname(segmentPath);
-            const files = await fs.readdir(segmentDir);
-
-            // 다양한 세그먼트 파일 확장자 확인
-            const tsFiles = files.filter(file =>
-              file.endsWith('.ts') ||
-              file.endsWith('.m4s') ||
-              file.endsWith('.mp4')
-            );
-
-            if (tsFiles.length > 0) {
-              logger.info(`FFMPEG HLS [${recordingKey}]: Segment files found: ${tsFiles.length} files`);
-              logger.info(`FFMPEG HLS [${recordingKey}]: Segment file names: ${tsFiles.join(', ')}`);
-              // 세그먼트 파일이 생성되면 인터벌 중지
-              clearInterval(tsFileCheckInterval);
-            } else {
-              logger.warn(`FFMPEG HLS [${recordingKey}]: No segment files generated yet`);
-              logger.info(`FFMPEG HLS [${recordingKey}]: All files in directory: ${files.join(', ')}`);
-
-              // 플레이리스트 파일도 확인 (정규화된 이름 사용)
-              try {
-                // 실제 파일 시스템에서 정규화된 이름으로 파일 찾기
-                const actualFiles = await fs.readdir(playlistDir);
-                const playlistFiles = actualFiles.filter(file =>
-                  file.includes(normalizedCameraName) &&
-                  file.endsWith('.m3u8')
-                );
-
-                if (playlistFiles.length > 0) {
-                  const actualPlaylistPath = path.join(playlistDir, playlistFiles[0]);
-                  const playlistStats = await fs.stat(actualPlaylistPath);
-                  logger.info(`FFMPEG HLS [${recordingKey}]: Actual playlist file found: ${playlistFiles[0]}`);
-                  logger.info(`FFMPEG HLS [${recordingKey}]: Playlist file size: ${playlistStats.size} bytes`);
-                  logger.info(`FFMPEG HLS [${recordingKey}]: Expected path: ${playlistPath}`);
-                  logger.info(`FFMPEG HLS [${recordingKey}]: Actual path: ${actualPlaylistPath}`);
-
-                  // 플레이리스트 내용 확인
-                  try {
-                    const playlistContent = await fs.readFile(actualPlaylistPath, 'utf8');
-                    logger.info(`FFMPEG HLS [${recordingKey}]: Playlist content preview: ${playlistContent.substring(0, 200)}...`);
-                  } catch (contentError) {
-                    logger.warn(`FFMPEG HLS [${recordingKey}]: Cannot read playlist content: ${contentError.message}`);
-                  }
-                } else {
-                  logger.warn(`FFMPEG HLS [${recordingKey}]: No playlist files found in directory: ${playlistDir}`);
-                  logger.warn(`FFMPEG HLS [${recordingKey}]: Available files: ${actualFiles.join(', ')}`);
-                }
-              } catch (playlistError) {
-                logger.warn(`FFMPEG HLS [${recordingKey}]: Error checking playlist files: ${playlistError.message}`);
-              }
-            }
-          } catch (error) {
-            logger.error(`FFMPEG HLS [${recordingKey}]: Error checking segment files:`, error.message);
-          }
-        }, 5000); // 5초마다 확인 (더 자주)
-      }, 3000); // 3초 후 시작
 
       // 프로세스 종료 처리
       ffmpeg.on('close', async (code) => {
-        // 모든 인터벌 정리
-        if (tsFileCheckInterval) {
-          clearInterval(tsFileCheckInterval);
-          logger.info(`FFMPEG HLS [${recordingKey}]: TS file check interval cleared`);
-        }
+        logger.info(`🛑 HLS recording stopped for ${recordingKey} (exit code: ${code})`);
 
-        if (processCheckInterval) {
-          clearInterval(processCheckInterval);
-          logger.info(`FFMPEG HLS [${recordingKey}]: Process check interval cleared`);
-        }
+        // 이벤트 리스너 제거하여 로그 출력 중단
+        ffmpeg.removeAllListeners();
+        ffmpeg.stderr.removeAllListeners();
 
-        logger.info(`HLS Recording stopped for schedule: ${recordingKey}, exit code: ${code}`);
+        // 녹화 종료 시간 기록
+        const endTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
+        logger.info(`⏰ Recording end time: ${endTime} for ${recordingKey}`);
 
-        // 에러 코드 상세 분석
-        if (code !== 0) {
-          logger.error(`FFMPEG HLS process exited with error code: ${code} for schedule: ${recordingKey}`);
-          logger.error(`Error message: ${errorMessage}`);
-          logger.error(`FFMPEG HLS logs: ${ffmpegLogs.slice(-10).join('\n')}`); // 최근 10개 로그 출력
-        }
-
-        // FFMPEG 로그를 파일로 저장
+        // 플레이리스트 파일 존재 확인 (.m3u8 파일이 없으면 .m3u8.json 파일 확인)
         try {
-          const logFilePath = path.join(recordingDir, `ffmpeg-${recordingKey}.log`);
-          const logContent = ffmpegLogs.join('\n');
-          await fs.writeFile(logFilePath, logContent, 'utf8');
-          logger.info(`FFMPEG logs saved to: ${logFilePath}`);
-        } catch (logError) {
-          logger.error(`Failed to save FFMPEG logs: ${logError.message}`);
-        }
+          let stats;
+          let fileExists = false;
 
-        // 플레이리스트 파일 존재 확인 (정규화된 이름 사용)
-        try {
-          // 실제 파일 시스템에서 정규화된 이름으로 파일 찾기
-          const actualFiles = await fs.readdir(playlistDir);
-          const playlistFiles = actualFiles.filter(file =>
-            file.includes(normalizedCameraName) &&
-            file.endsWith('.m3u8')
-          );
-
-          if (playlistFiles.length > 0) {
-            const actualPlaylistPath = path.join(playlistDir, playlistFiles[0]);
-            const stats = await fs.stat(actualPlaylistPath);
-
-            if (stats.size === 0) {
-              logger.error(`Empty HLS playlist detected for schedule: ${recordingKey}`);
-              await fs.unlink(actualPlaylistPath);
-              // 녹화 히스토리 업데이트 - 에러 상태로
-              if (recordingId) {
-                await this.updateRecordingHistory(recordingId, {
-                  endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
-                  status: 'error',
-                  errorMessage: 'Empty HLS playlist'
-                });
-              }
-            } else {
-              logger.info(`FFMPEG HLS [${recordingKey}]: Playlist file completed: ${playlistFiles[0]}, size: ${stats.size} bytes`);
-              // 정상 종료 시 녹화 히스토리 업데이트
-              if (recordingId) {
-                await this.updateRecordingHistory(recordingId, {
-                  endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
-                  status: hasError ? 'error' : 'completed',
-                  errorMessage: hasError ? errorMessage : undefined
-                });
-              }
-
-              // HLS 녹화 완료 후 세그먼트 정리 수행
-              const recordingInfo = this.activeRecordings.get(recordingKey);
-              if (!hasError && hlsConfig?.autoCleanup) {
-                try {
-                  const maxSegments = hlsConfig?.maxSegments || 24;
-                  await this.cleanupHLSSegments(cameraName, timeInfo.dateString, maxSegments);
-                  logger.info(`HLS cleanup completed for ${recordingKey}, max segments: ${maxSegments}`);
-                } catch (cleanupError) {
-                  logger.error(`HLS cleanup failed for ${recordingKey}:`, cleanupError);
-                }
-              }
+          // 먼저 .m3u8 파일 확인
+          try {
+            stats = await fs.stat(playlistPath);
+            fileExists = true;
+          } catch (m3u8Error) {
+            // .m3u8 파일이 없으면 .m3u8.json 파일 확인
+            const jsonPath = `${playlistPath}.json`;
+            try {
+              stats = await fs.stat(jsonPath);
+              fileExists = true;
+              logger.info(`✅ M3U8 JSON metadata found for ${recordingKey}: ${jsonPath}`);
+            } catch (jsonError) {
+              logger.warn(`⚠️ Neither .m3u8 nor .m3u8.json file found for ${recordingKey}`);
+              fileExists = false;
             }
-          } else {
-            logger.error(`No HLS playlist file found for schedule: ${recordingKey}`);
-            logger.error(`Expected: ${playlistPath}`);
-            logger.error(`Available files: ${actualFiles.join(', ')}`);
+          }
+
+          if (!fileExists) {
+            logger.error(`No MP4 file found for schedule: ${recordingKey}`);
             // 녹화 히스토리 업데이트 - 에러 상태로
             if (recordingId) {
               await this.updateRecordingHistory(recordingId, {
                 endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
                 status: 'error',
-                errorMessage: 'HLS playlist file not found'
+                errorMessage: 'No MP4 file found'
               });
+            }
+          } else if (stats.size === 0) {
+            logger.error(`Empty MP4 file detected for schedule: ${recordingKey}`);
+            // 빈 파일 삭제 시도
+            try {
+              await fs.unlink(outputPath);
+            } catch (unlinkError) {
+              logger.warn(`Could not delete empty MP4 file: ${unlinkError.message}`);
+            }
+            // 녹화 히스토리 업데이트 - 에러 상태로
+            if (recordingId) {
+              await this.updateRecordingHistory(recordingId, {
+                endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
+                status: 'error',
+                errorMessage: 'Empty MP4 file'
+              });
+            }
+          } else {
+            // 정상 종료 시 녹화 히스토리 업데이트
+            if (recordingId) {
+              logger.info(`💾 Updating recording history for ${recordingKey} with endTime: ${endTime}`);
+
+              try {
+                const updateResult = await this.updateRecordingHistory(recordingId, {
+                  endTime: endTime,
+                  status: hasError ? 'error' : 'completed',
+                  errorMessage: hasError ? errorMessage : undefined
+                });
+
+                if (updateResult) {
+                  logger.info(`✅ Recording history updated successfully for ${recordingKey}: status=${hasError ? 'error' : 'completed'}, endTime=${endTime}`);
+                } else {
+                  logger.error(`❌ Failed to update recording history for ${recordingKey}`);
+                }
+              } catch (error) {
+                logger.error(`❌ Error updating recording history for ${recordingKey}:`, error);
+              }
+            } else {
+              logger.warn(`⚠️ No recordingId found for ${recordingKey}, cannot update history`);
+            }
+
+            // MP4 녹화 완료 후 파일 정보 로깅
+            if (!hasError) {
+              try {
+                const fileStats = await fs.stat(outputPath);
+                logger.info(`MP4 recording completed for ${recordingKey}, file size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
+              } catch (statsError) {
+                logger.warn(`Could not get MP4 file stats for ${recordingKey}: ${statsError.message}`);
+              }
             }
           }
         } catch (err) {
-          logger.error(`Error checking HLS playlist: ${err.message}`);
+          logger.error(`❌ Error checking MP4 file: ${err.message}`);
           if (recordingId) {
-            await this.updateRecordingHistory(recordingId, {
-              endTime: moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss'),
-              status: 'error',
-              errorMessage: err.message
-            });
+            logger.info(`💾 Updating recording history for ${recordingKey} with error status`);
+
+            try {
+              const updateResult = await this.updateRecordingHistory(recordingId, {
+                endTime: endTime,
+                status: 'error',
+                errorMessage: err.message
+              });
+
+              if (updateResult) {
+                logger.info(`✅ Recording history updated successfully for ${recordingKey}: status=error, endTime=${endTime}`);
+              } else {
+                logger.error(`❌ Failed to update recording history for ${recordingKey}`);
+              }
+            } catch (error) {
+              logger.error(`❌ Error updating recording history for ${recordingKey}:`, error);
+            }
+          } else {
+            logger.warn(`⚠️ No recordingId found for ${recordingKey}, cannot update history`);
           }
         }
 
@@ -949,49 +813,177 @@ class RecordingProcess {
       ffmpeg.on('error', async (err) => {
         logger.error(`FFMPEG HLS process error for schedule ${recordingKey}:`, err);
         hasError = true;
+
+        // 이벤트 리스너 제거하여 로그 출력 중단
+        ffmpeg.removeAllListeners();
+        ffmpeg.stderr.removeAllListeners();
+
         if (recordingId) {
-          await this.updateRecordingHistory(recordingId, {
-            status: 'error',
-            errorMessage: err.message
-          });
+          const errorEndTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
+          logger.info(`💾 Updating recording history for ${recordingKey} with error status`);
+
+          try {
+            const updateResult = await this.updateRecordingHistory(recordingId, {
+              endTime: errorEndTime,
+              status: 'error',
+              errorMessage: err.message
+            });
+
+            if (updateResult) {
+              logger.info(`✅ Recording history updated successfully for ${recordingKey}: status=error, endTime=${errorEndTime}`);
+            } else {
+              logger.error(`❌ Failed to update recording history for ${recordingKey}`);
+            }
+          } catch (error) {
+            logger.error(`❌ Error updating recording history for ${recordingKey}:`, error);
+          }
+        } else {
+          logger.warn(`⚠️ No recordingId found for ${recordingKey}, cannot update history`);
         }
       });
 
-      // 녹화 정보 저장
+      // 녹화 정보 저장 - outputPath를 메타데이터 파일 경로로 설정
       const recordingInfo = {
         recordingId,
         cameraName,
         scheduleId,
         process: ffmpeg,
         timeInfo,
-        outputPath: playlistPath,
+        outputPath: path.join(recordingDir, `${playlistName}.json`), // .m3u8.json 파일 경로
+        playlistPath: playlistPath, // .m3u8 파일 경로 추가
         segmentDir: recordingDir,
         hasError: false,
         pid: ffmpeg.pid,
         startTime: Date.now(),
         isHLS: true,
-        hlsConfig,
-        logFilePath: path.join(recordingDir, `ffmpeg-${recordingKey}.log`)  // 로그 파일 경로 저장
+        hlsConfig
       };
 
       this.activeRecordings.set(recordingKey, recordingInfo);
 
-      // 녹화 메타데이터 저장
-      const metadataPath = path.join(recordingDir, `${playlistName}.json`);
-      await fs.writeJson(metadataPath, {
+      // TS 파일 생성 모니터링 (30초 후 체크, 그 다음 1분 후 재체크)
+      setTimeout(async () => {
+        try {
+          const files = await fs.readdir(recordingDir);
+          const tsFiles = files.filter(file => file.endsWith('.ts'));
+          const m3u8Files = files.filter(file => file.endsWith('.m3u8'));
+
+          if (tsFiles.length > 0) {
+            logger.info(`✅ TS files generated successfully: ${tsFiles.length} files for ${recordingKey}`);
+          } else {
+            logger.warn(`⚠️ No TS files generated for ${recordingKey} after 30 seconds`);
+          }
+
+          if (m3u8Files.length > 0) {
+            logger.info(`✅ M3U8 playlist generated: ${m3u8Files.length} files for ${recordingKey}`);
+
+            // HLS 플레이리스트 파일 내용 검증
+            for (const m3u8File of m3u8Files) {
+              try {
+                const playlistPath = path.join(recordingDir, m3u8File);
+                const playlistContent = await fs.readFile(playlistPath, 'utf8');
+
+                // 중복 경로 패턴 검사
+                const duplicatePatterns = [
+                  /\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+                  /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+                  /\/\/api\/recordings\/hls\/api\/recordings\/hls\//g,
+                  /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g
+                ];
+
+                let hasDuplicatePaths = false;
+                for (const pattern of duplicatePatterns) {
+                  const matches = playlistContent.match(pattern);
+                  if (matches && matches.length > 0) {
+                    logger.error(`❌ Found ${matches.length} duplicate patterns in ${m3u8File}: ${pattern.source}`);
+                    logger.error(`❌ Duplicate matches:`, matches);
+                    hasDuplicatePaths = true;
+                  }
+                }
+
+                if (hasDuplicatePaths) {
+                  logger.error(`❌ HLS playlist ${m3u8File} contains duplicate paths - this will cause playback issues`);
+                } else {
+                  logger.info(`✅ HLS playlist ${m3u8File} has valid paths`);
+                }
+
+                // .ts 파일 경로 확인
+                const tsPaths = playlistContent.match(/^[^#\n]*\.ts$/gm) || [];
+                logger.debug(`📁 HLS playlist ${m3u8File} contains ${tsPaths.length} TS file references`);
+
+              } catch (playlistError) {
+                logger.error(`❌ Error reading HLS playlist ${m3u8File}: ${playlistError.message}`);
+              }
+            }
+          } else {
+            // .m3u8 파일이 없으면 .m3u8.json 파일 확인
+            const jsonFiles = files.filter(file => file.endsWith('.m3u8.json'));
+            if (jsonFiles.length > 0) {
+              logger.info(`✅ M3U8 JSON metadata found: ${jsonFiles.length} files for ${recordingKey}`);
+            } else {
+              logger.warn(`⚠️ No M3U8 playlist or JSON metadata generated for ${recordingKey} after 30 seconds`);
+            }
+          }
+        } catch (error) {
+          logger.error(`❌ HLS Monitoring Error for ${recordingKey}: ${error.message}`);
+        }
+      }, 30000); // 30초 (30000ms)
+
+      // 추가 모니터링 (1분 후 재체크)
+      setTimeout(async () => {
+        try {
+          const files = await fs.readdir(recordingDir);
+          const tsFiles = files.filter(file => file.endsWith('.ts'));
+          const m3u8Files = files.filter(file => file.endsWith('.m3u8'));
+
+          if (tsFiles.length > 0) {
+            logger.info(`✅ TS files confirmed: ${tsFiles.length} files for ${recordingKey}`);
+          } else {
+            logger.warn(`⚠️ Still no TS files for ${recordingKey} after 1 minute`);
+          }
+
+          if (m3u8Files.length > 0) {
+            logger.info(`✅ M3U8 playlist confirmed: ${m3u8Files.length} files for ${recordingKey}`);
+          } else {
+            // .m3u8 파일이 없으면 .m3u8.json 파일 확인
+            const jsonFiles = files.filter(file => file.endsWith('.m3u8.json'));
+            if (jsonFiles.length > 0) {
+              logger.info(`✅ M3U8 JSON metadata confirmed: ${jsonFiles.length} files for ${recordingKey}`);
+            } else {
+              logger.warn(`⚠️ Still no M3U8 playlist or JSON metadata for ${recordingKey} after 1 minute`);
+            }
+          }
+        } catch (error) {
+          logger.error(`❌ HLS Monitoring Error for ${recordingKey}: ${error.message}`);
+        }
+      }, 60000); // 1분 (60000ms)
+
+      // 녹화 자동 종료 모니터링 (스케줄 시간이 끝나면 자동 종료)
+      this.startRecordingTimeout(recordingKey, scheduleId, cameraName, timeInfo);
+
+      // 안전장치: 최대 24시간 후 자동 종료 (백업 타이머)
+      setTimeout(() => {
+        logger.warn(`⚠️ Safety timeout reached for ${recordingKey}, forcing stop after 24 hours`);
+        this.stopRecording(cameraName, scheduleId);
+      }, 24 * 60 * 60 * 1000); // 24시간
+
+      // 녹화 메타데이터 저장 - MP4 파일 정보
+      await fs.writeJson(`${outputPath}.json`, {
         recordingId,
         scheduleId,
         cameraName,
         startTime: timeInfo.formattedForFile,
-        filename: playlistName,
-        outputPath: playlistPath,
-        segmentDir: recordingDir,
+        filename: filename,
+        outputPath: outputPath, // MP4 파일 경로
+        recordingDir: recordingDir,
         rtspUrl,
         status: 'recording',
-        isHLS: true,
-        segmentDuration: (hlsConfig?.segmentDuration || 30),   // 30초
-        maxSegments: (hlsConfig?.maxSegments || 2880)
+        isMP4: true,
+        fileSize: 0 // 녹화 완료 후 업데이트됨
       });
+
+      logger.info(`🎬 HLS recording started for ${recordingKey} - TS files will be generated every 1 minute`);
+      logger.info(`⏰ Safety timeout set: will auto-stop after 24 hours if not stopped by schedule`);
 
     } catch (error) {
       logger.error(`Failed to start HLS recording for schedule: ${recordingKey}`, error);
@@ -1007,54 +999,116 @@ class RecordingProcess {
 
   async stopRecording(cameraName, scheduleId) {
     try {
-      const recordingKey = `${cameraName}_${scheduleId}`;
+      // 카메라명을 안전한 형태로 변환하여 recordingKey 생성
+      const safeCameraName = this.getSafeFileName(cameraName);
+      const recordingKey = `${safeCameraName}_${scheduleId}`;
+      logger.info(`🛑 Attempting to stop recording: ${recordingKey} (original: ${cameraName})`);
+
       const recordingInfo = this.activeRecordings.get(recordingKey);
       if (!recordingInfo) {
+        logger.warn(`⚠️ Recording info not found for: ${recordingKey}`);
         return;
       }
 
-      // FFMPEG 프로세스 종료
+      logger.info(`🛑 Found recording info: process=${!!recordingInfo.process}, killed=${recordingInfo.process?.killed}`);
+
+      // FFMPEG 프로세스 강제 종료
       if (recordingInfo.process && !recordingInfo.process.killed) {
         try {
+          logger.info(`🛑 Sending SIGTERM to process ${recordingInfo.process.pid}`);
           recordingInfo.process.kill('SIGTERM');
-          // 5초 후에도 종료되지 않으면 강제 종료
-          setTimeout(() => {
-            try {
-              if (!recordingInfo.process.killed) {
-                recordingInfo.process.kill('SIGKILL');
+
+          // 즉시 종료 확인
+          if (recordingInfo.process.killed) {
+            logger.info(`✅ Process terminated immediately with SIGTERM`);
+          } else {
+            logger.info(`⏳ Process not terminated, waiting 3 seconds...`);
+
+            // 3초 후에도 종료되지 않으면 강제 종료
+            setTimeout(() => {
+              try {
+                if (!recordingInfo.process.killed) {
+                  logger.info(`🛑 Sending SIGKILL to process ${recordingInfo.process.pid}`);
+                  recordingInfo.process.kill('SIGKILL');
+
+                  if (recordingInfo.process.killed) {
+                    logger.info(`✅ Process terminated with SIGKILL`);
+                  } else {
+                    logger.error(`❌ Failed to terminate process ${recordingInfo.process.pid}`);
+                  }
+                }
+              } catch (e) {
+                logger.error(`❌ Error sending SIGKILL: ${e.message}`);
               }
-            } catch (e) {
-              logger.debug(`Process already terminated: ${e.message}`);
-            }
-          }, 5000);
+            }, 3000);
+          }
         } catch (e) {
-          logger.error(`Error killing process: ${e.message}`);
+          logger.error(`❌ Error killing process: ${e.message}`);
         }
+      } else {
+        logger.info(`ℹ️ Process already terminated or not found`);
       }
 
       // recordingHistory 업데이트
       if (recordingInfo.recordingId) {
         const endTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
-        await this.updateRecordingHistory(recordingInfo.recordingId, {
-          endTime,
-          status: recordingInfo.hasError ? 'error' : 'stopped'
-        });
+        logger.info(`💾 Updating recording history for ${recordingKey} with endTime: ${endTime}`);
+
+        try {
+          const updateResult = await this.updateRecordingHistory(recordingInfo.recordingId, {
+            endTime,
+            status: recordingInfo.hasError ? 'error' : 'stopped'
+          });
+
+          if (updateResult) {
+            logger.info(`✅ Recording history updated successfully for ${recordingKey}`);
+          } else {
+            logger.error(`❌ Failed to update recording history for ${recordingKey}`);
+          }
+        } catch (error) {
+          logger.error(`❌ Error updating recording history for ${recordingKey}:`, error);
+        }
+      } else {
+        logger.warn(`⚠️ No recordingId found for ${recordingKey}, cannot update history`);
       }
 
-      // 메타데이터 업데이트
-      const metadataPath = `${recordingInfo.outputPath}.json`;
-      if (await fs.pathExists(metadataPath)) {
-        const metadata = await fs.readJson(metadataPath);
-        metadata.endTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
-        metadata.status = recordingInfo.hasError ? 'error' : 'stopped';
-        await fs.writeJson(metadataPath, metadata);
+      // 메타데이터 업데이트 - .m3u8 파일이 있으면 해당 파일도 확인
+      let metadataUpdated = false;
+
+      // 먼저 .m3u8.json 파일 확인 (outputPath)
+      if (await fs.pathExists(recordingInfo.outputPath)) {
+        try {
+          const metadata = await fs.readJson(recordingInfo.outputPath);
+          metadata.endTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
+          metadata.status = recordingInfo.hasError ? 'error' : 'stopped';
+          await fs.writeJson(recordingInfo.outputPath, metadata);
+          logger.info(`✅ Metadata updated for ${recordingKey}`);
+          metadataUpdated = true;
+        } catch (e) {
+          logger.error(`❌ Error updating metadata: ${e.message}`);
+        }
       }
 
+      // .m3u8 파일도 확인 (playlistPath가 있는 경우)
+      if (recordingInfo.playlistPath && await fs.pathExists(recordingInfo.playlistPath)) {
+        try {
+          logger.info(`✅ M3U8 playlist file found for ${recordingKey}: ${recordingInfo.playlistPath}`);
+        } catch (e) {
+          logger.warn(`⚠️ Could not access M3U8 playlist file: ${e.message}`);
+        }
+      }
+
+      if (!metadataUpdated) {
+        logger.warn(`⚠️ Metadata file not found for ${recordingKey} at: ${recordingInfo.outputPath}`);
+      }
+
+      // activeRecordings에서 제거
       this.activeRecordings.delete(recordingKey);
-      logger.info(`Stopped recording for schedule: ${recordingKey}`);
+      logger.info(`✅ Recording stopped and removed from active recordings: ${recordingKey}`);
 
     } catch (error) {
-      logger.error(`Failed to stop recording for schedule: ${cameraName}_${scheduleId}`, error);
+      logger.error(`❌ Failed to stop recording for schedule: ${cameraName}_${scheduleId}`, error);
+      // 에러가 발생해도 activeRecordings에서 제거
       this.activeRecordings.delete(`${cameraName}_${scheduleId}`);
     }
   }
@@ -1070,13 +1124,55 @@ class RecordingProcess {
         activeScheduleMap.set(scheduleKey, schedule);
       });
 
-      // console.log('this.activeRecordings:', Object.fromEntries(this.activeRecordings));
       // 현재 녹화 중인 프로세스 확인 및 중지
+      logger.info(`🔍 Checking ${this.activeRecordings.size} active recordings...`);
+
       for (const [recordingKey, recordingInfo] of this.activeRecordings) {
-        // 해당 스케줄이 더 이상 활성화되지 않은 경우 녹화 중지
-        if (!activeScheduleMap.has(recordingKey)) {
-          logger.info(`Stopping recording for inactive schedule: ${recordingKey}`);
-          await this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
+        logger.info(`🔍 Checking recording: ${recordingKey}`);
+
+        // recordingKey에서 cameraName과 scheduleId 추출
+        const parts = recordingKey.split('_');
+        if (parts.length >= 2) {
+          const scheduleId = parts[parts.length - 1]; // 마지막 부분이 scheduleId
+          const originalCameraName = recordingInfo.cameraName; // 원본 카메라명 사용
+
+          // 스케줄 키 생성 (원본 카메라명 사용)
+          const scheduleKey = `${originalCameraName}_${scheduleId}`;
+          logger.info(`🔍 Schedule key: ${scheduleKey}, Active schedules: ${Array.from(activeScheduleMap.keys()).join(', ')}`);
+
+          if (!activeScheduleMap.has(scheduleKey)) {
+            logger.info(`🛑 Stopping recording for inactive schedule: ${recordingKey} (schedule: ${scheduleKey})`);
+            await this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
+          } else {
+            // 활성 스케줄의 경우 종료 시간 체크
+            const schedule = activeScheduleMap.get(scheduleKey);
+            if (schedule) {
+              const now = new Date();
+              const currentDay = now.getDay();
+              const currentTime = now.toLocaleTimeString('en-US', {
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+
+              logger.info(`🔍 Schedule ${schedule.id}: ${schedule.start_time}-${schedule.end_time}, Current: ${currentTime}, Day: ${currentDay}`);
+
+              // 스케줄 시간이 끝났으면 녹화 중지
+              if (!this.isTimeInRange(currentTime, schedule.start_time, schedule.end_time)) {
+                logger.info(`⏰ Schedule ${schedule.id} time range ended (${schedule.start_time}-${schedule.end_time}), stopping recording for ${recordingKey}`);
+                await this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
+
+                // 추가 확인: 프로세스가 실제로 종료되었는지 체크
+                setTimeout(async () => {
+                  const stillActive = this.activeRecordings.has(recordingKey);
+                  if (stillActive) {
+                    logger.warn(`⚠️ Recording ${recordingKey} still active after stop attempt, force stopping...`);
+                    await this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
+                  }
+                }, 5000); // 5초 후 재확인
+              }
+            }
+          }
         }
       }
 
@@ -1123,10 +1219,8 @@ class RecordingProcess {
 
   async cleanupHLSSegments(cameraName, recordingDate, maxSegments) {
     try {
-      // 설정값에서 maxSegments 가져오기
-      const hlsConfig = ConfigService.recordings?.hls;
-      const defaultMaxSegments = hlsConfig?.maxSegments || 24;
-      const segmentsToKeep = maxSegments || defaultMaxSegments;
+      // 24시간 최대 1440개 세그먼트로 하드코딩 (1분 단위)
+      const segmentsToKeep = 1440;
 
       const hlsDir = path.join(
         this.recordingsPath,
@@ -1165,9 +1259,7 @@ class RecordingProcess {
 
   async performHLSCleanup() {
     try {
-      const hlsConfig = ConfigService.recordings?.hls;
-      if (!hlsConfig?.autoCleanup) return;
-
+      // 24시간 최대 1440개 세그먼트로 하드코딩
       const cameras = await this.getActiveCameras();
 
       for (const camera of cameras) {
@@ -1175,13 +1267,70 @@ class RecordingProcess {
         await this.cleanupHLSSegments(
           camera.name,
           recordingDate,
-          hlsConfig?.maxSegments || 24
+          1440  // 24시간 최대 1440개 세그먼트 (1분 단위)
         );
       }
 
-      logger.debug('HLS cleanup completed');
+      logger.debug('HLS cleanup completed (1440 segments max)');
     } catch (error) {
       logger.error('Error during HLS cleanup:', error);
+    }
+  }
+
+  // 녹화 자동 종료 모니터링 함수
+  startRecordingTimeout(recordingKey, scheduleId, cameraName, timeInfo) {
+    try {
+      // 스케줄 정보 조회
+      Schedule.findByPk(scheduleId).then(schedule => {
+        if (schedule) {
+          const now = new Date();
+          const currentDay = now.getDay();
+          const currentTime = now.toLocaleTimeString('en-US', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+
+          // 스케줄이 활성화되어 있고, 오늘 날짜이고, 현재 시간이 스케줄 시간 범위에 있는지 확인
+          if (schedule.isActive &&
+            schedule.days_of_week.includes(currentDay) &&
+            this.isTimeInRange(currentTime, schedule.start_time, schedule.end_time)) {
+
+            // 스케줄 종료 시간까지 대기 후 녹화 종료
+            const [endHour, endMinute] = schedule.end_time.split(':');
+            const endTime = new Date();
+            endTime.setHours(parseInt(endHour), parseInt(endMinute), 0, 0);
+
+            // 현재 시간이 종료 시간을 지났으면 즉시 종료
+            if (now >= endTime) {
+              logger.info(`⏰ Schedule ${scheduleId} end time reached, stopping recording for ${recordingKey}`);
+              this.stopRecording(cameraName, scheduleId);
+              return;
+            }
+
+            // 종료 시간까지 남은 시간 계산
+            const timeUntilEnd = endTime.getTime() - now.getTime();
+
+            // 녹화 자동 종료 타이머 설정 (최대 24시간)
+            const maxTimeout = Math.min(timeUntilEnd, 24 * 60 * 60 * 1000); // 24시간 제한
+
+            setTimeout(() => {
+              logger.info(`🛑 Auto-stopping recording for ${recordingKey} due to schedule end time`);
+              this.stopRecording(cameraName, scheduleId);
+            }, maxTimeout);
+
+            logger.info(`⏰ Auto-stop timer set for ${recordingKey}: will stop in ${Math.round(maxTimeout / 60000)} minutes`);
+          } else {
+            logger.warn(`⚠️ Schedule ${scheduleId} is not active or outside time range for ${recordingKey}`);
+          }
+        } else {
+          logger.warn(`⚠️ Schedule ${scheduleId} not found for ${recordingKey}`);
+        }
+      }).catch(error => {
+        logger.error(`❌ Error setting recording timeout for ${recordingKey}:`, error);
+      });
+    } catch (error) {
+      logger.error(`❌ Error in startRecordingTimeout for ${recordingKey}:`, error);
     }
   }
 
@@ -1195,7 +1344,159 @@ class RecordingProcess {
       this.checkAndUpdateRecordings();
     }, 30000);
 
-    logger.info('Recording process started, checking schedules every 30 seconds');
+    // 안전장치: 1시간마다 모든 녹화 상태 체크 및 강제 정리
+    setInterval(() => {
+      this.checkAndForceCleanup();
+    }, 60 * 60 * 1000); // 1시간
+
+    logger.info('Recording process started, checking schedules every 30 seconds, cleanup every 1 hour');
+  }
+
+  // 녹화 상태 체크 및 강제 정리
+  async checkAndForceCleanup() {
+    try {
+      logger.info(`🧹 Starting periodic cleanup check...`);
+
+      for (const [recordingKey, recordingInfo] of this.activeRecordings) {
+        // 녹화가 너무 오래 실행되고 있는지 확인 (24시간 이상)
+        const runningTime = Date.now() - recordingInfo.startTime;
+        const maxRunningTime = 24 * 60 * 60 * 1000; // 24시간
+
+        if (runningTime > maxRunningTime) {
+          logger.warn(`⚠️ Recording ${recordingKey} running too long (${Math.round(runningTime / 60000)} minutes), force stopping...`);
+          await this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
+        }
+      }
+
+      logger.info(`🧹 Periodic cleanup check completed`);
+    } catch (error) {
+      logger.error(`❌ Error in periodic cleanup:`, error);
+    }
+  }
+
+  // 강제로 모든 녹화를 중지하는 함수
+  forceStopAllRecordings() {
+    logger.warn(`⚠️ Force stopping all recordings...`);
+
+    for (const [recordingKey, recordingInfo] of this.activeRecordings) {
+      logger.warn(`⚠️ Force stopping: ${recordingKey}`);
+      try {
+        if (recordingInfo.process && !recordingInfo.process.killed) {
+          recordingInfo.process.kill('SIGKILL');
+          logger.info(`✅ Force killed process for ${recordingKey}`);
+        }
+
+        // 강제로 DB 업데이트 시도
+        if (recordingInfo.recordingId) {
+          const endTime = moment().tz('Asia/Seoul').format('YYYY-MM-DDTHH:mm:ss');
+          this.updateRecordingHistory(recordingInfo.recordingId, {
+            endTime,
+            status: 'stopped',
+            errorMessage: 'Force stopped'
+          }).then(() => {
+            logger.info(`✅ Force updated recording history for ${recordingKey}`);
+          }).catch((error) => {
+            logger.error(`❌ Failed to force update recording history for ${recordingKey}:`, error);
+          });
+        }
+      } catch (e) {
+        logger.error(`❌ Error force killing process for ${recordingKey}: ${e.message}`);
+      }
+    }
+
+    // activeRecordings 초기화
+    this.activeRecordings.clear();
+    logger.info(`✅ All recordings force stopped and cleared`);
+  }
+
+  // DB 연결 상태 확인 및 녹화 히스토리 강제 업데이트
+  async forceUpdateRecordingHistory(recordingId, updates) {
+    try {
+      logger.warn(`⚠️ Force updating recording history for ID: ${recordingId}`);
+
+      // 여러 SQL 문법으로 시도 (데이터베이스 호환성)
+      const sqlQueries = [
+        // 표준 SQL
+        'UPDATE RecordingHistories SET endTime = :endTime, status = :status, updatedAt = :updatedAt WHERE id = :id',
+        // MySQL/SQLite 스타일
+        'UPDATE RecordingHistories SET endTime = ?, status = ?, updatedAt = ? WHERE id = ?',
+        // PostgreSQL 스타일
+        'UPDATE "RecordingHistories" SET "endTime" = $1, "status" = $2, "updatedAt" = $3 WHERE "id" = $4'
+      ];
+
+      for (let i = 0; i < sqlQueries.length; i++) {
+        try {
+          const sql = sqlQueries[i];
+          let replacements;
+
+          if (sql.includes(':')) {
+            // Named parameters
+            replacements = {
+              endTime: updates.endTime || null,
+              status: updates.status || 'stopped',
+              updatedAt: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss'),
+              id: recordingId
+            };
+          } else if (sql.includes('$')) {
+            // Positional parameters (PostgreSQL)
+            replacements = [
+              updates.endTime || null,
+              updates.status || 'stopped',
+              moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss'),
+              recordingId
+            ];
+          } else {
+            // Positional parameters (MySQL/SQLite)
+            replacements = [
+              updates.endTime || null,
+              updates.status || 'stopped',
+              moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss'),
+              recordingId
+            ];
+          }
+
+          logger.info(`🔄 Trying SQL query ${i + 1}: ${sql}`);
+
+          const result = await sequelize.query(sql, {
+            replacements,
+            type: sequelize.QueryTypes.UPDATE
+          });
+
+          logger.info(`✅ Force update successful with query ${i + 1}:`, result);
+          return result;
+        } catch (queryError) {
+          logger.warn(`⚠️ Query ${i + 1} failed:`, queryError.message);
+          if (i === sqlQueries.length - 1) {
+            throw queryError; // 마지막 쿼리도 실패하면 에러 전파
+          }
+        }
+      }
+    } catch (error) {
+      logger.error(`❌ All force update methods failed for ID ${recordingId}:`, error);
+
+      // 최후의 수단: INSERT 시도 (레코드가 없는 경우)
+      try {
+        logger.warn(`⚠️ Attempting INSERT as last resort for ID ${recordingId}`);
+        const insertResult = await sequelize.query(
+          'INSERT INTO RecordingHistories (id, endTime, status, updatedAt, createdAt) VALUES (:id, :endTime, :status, :updatedAt, :createdAt)',
+          {
+            replacements: {
+              id: recordingId,
+              endTime: updates.endTime || null,
+              status: updates.status || 'stopped',
+              updatedAt: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss'),
+              createdAt: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss')
+            },
+            type: sequelize.QueryTypes.INSERT
+          }
+        );
+        logger.info(`✅ INSERT successful as fallback:`, insertResult);
+        return insertResult;
+      } catch (insertError) {
+        logger.error(`❌ INSERT also failed for ID ${recordingId}:`, insertError);
+        throw error;
+      }
+    }
   }
 
   stop() {
@@ -1203,12 +1504,12 @@ class RecordingProcess {
       clearInterval(this.checkInterval);
       this.checkInterval = null;
 
-      // 모든 녹화 중지
-      for (const [recordingKey, recordingInfo] of this.activeRecordings) {
-        this.stopRecording(recordingInfo.cameraName, recordingInfo.scheduleId);
-      }
+      logger.info('🛑 Recording process stopping, force stopping all recordings...');
 
-      logger.info('Recording process stopped');
+      // 강제로 모든 녹화 중지
+      this.forceStopAllRecordings();
+
+      logger.info('✅ Recording process stopped');
     }
   }
 }

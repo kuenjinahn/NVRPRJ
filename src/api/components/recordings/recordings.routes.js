@@ -115,7 +115,17 @@ async function shouldRegenerateThumbnail(videoPath, thumbnailPath) {
 
 // 비디오 파일 경로 생성 함수 개선
 const getVideoPath = (cameraName, date) => {
-  const recordingPath = resolve(RECORDINGS_DIR, cameraName, date);
+  // 카메라 이름을 실제 폴더명으로 매핑
+  let actualCameraName = cameraName;
+
+  // 데이터베이스의 카메라명을 실제 폴더명으로 변환
+  if (cameraName === '댐영상1' || cameraName === 'camera1') {
+    actualCameraName = 'camera1';
+  } else if (cameraName === '댐영상2' || cameraName === 'camera2') {
+    actualCameraName = 'camera2';
+  }
+
+  const recordingPath = resolve(RECORDINGS_DIR, actualCameraName, date);
   logger.debug('Generated video path:', recordingPath);
   return recordingPath;
 };
@@ -176,8 +186,222 @@ export const routesConfig = (app) => {
   // 비디오 스트리밍 라우트를 가장 먼저 등록
   logger.info('Registering video streaming routes');
 
-  // MP4 스트리밍 ID 기반 라우트 (기존)
+  // HLS 세그먼트 파일 스트리밍 라우트 (HLS 재생을 위해 필요)
+  app.get('/api/recordings/hls/:cameraName/:date/:filename', async (req, res) => {
+    const requestId = req.headers['x-request-id'] || 'unknown';
+    const { cameraName, date, filename } = req.params;
+
+    try {
+      // 파라미터 검증
+      if (!cameraName || !date || !filename) {
+        logger.warn(`[${requestId}] Invalid parameters: cameraName=${cameraName}, date=${date}, filename=${filename}`);
+        return res.status(400).json({ error: 'Invalid parameters' });
+      }
+
+      // 파일명 검증 (보안)
+      if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        logger.warn(`[${requestId}] Invalid filename: ${filename}`);
+        return res.status(400).json({ error: 'Invalid filename' });
+      }
+
+      // URL 중복 패턴 검사 및 수정
+      if (filename.includes('//api/recordings/hls//')) {
+        logger.warn(`[${requestId}] Filename contains duplicate path, fixing: ${filename}`);
+        filename = filename.replace(/\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g, '/api/recordings/hls/');
+        logger.info(`[${requestId}] Fixed filename: ${filename}`);
+      }
+
+      // HLS 파일 경로 생성
+      const hlsPath = path.join(RECORDINGS_DIR, cameraName, date, 'hls');
+      logger.debug(`[${requestId}] HLS path: ${hlsPath}`);
+
+      // 파일 존재 확인
+      const filePath = path.join(hlsPath, filename);
+      logger.debug(`[${requestId}] Full file path: ${filePath}`);
+
+      if (!await fs.promises.access(filePath).then(() => true).catch(() => false)) {
+        logger.warn(`[${requestId}] HLS file not found: ${filePath}`);
+        return res.status(404).json({ error: 'HLS file not found' });
+      }
+
+      // 파일 정보 확인
+      const stat = await fs.promises.stat(filePath);
+      const fileSize = stat.size;
+
+      // 적절한 Content-Type 설정
+      let contentType = 'application/octet-stream';
+      if (filename.endsWith('.ts')) {
+        contentType = 'video/mp2t';
+      } else if (filename.endsWith('.m3u8')) {
+        contentType = 'application/vnd.apple.mpegurl';
+      }
+
+      // CORS 및 캐시 헤더 설정
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', fileSize);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, If-None-Match, If-Modified-Since');
+
+      // Range 요청 지원 (비디오 세그먼트 스트리밍 최적화)
+      const range = req.headers.range;
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = (end - start) + 1;
+
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Length', chunksize);
+
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.pipe(res);
+      } else {
+        // 전체 파일 스트리밍
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+      }
+
+      logger.debug(`[${requestId}] HLS file streaming: ${filename} (${fileSize} bytes)`);
+    } catch (error) {
+      logger.error(`[${requestId}] HLS file streaming error: ${error.message}`);
+      res.status(500).json({ error: 'HLS file streaming failed' });
+    }
+  });
+
+  // MP4 파일 직접 스트리밍 라우트
   app.get('/api/recordings/stream/:id', async (req, res) => {
+    const requestId = req.headers['x-request-id'] || 'unknown';
+    const startTime = Date.now();
+    const id = req.params.id;
+
+    try {
+      // recordingHistory에서 녹화 정보 찾기
+      const recording = await RecordingsModel.getRecordingHistoryById(id);
+
+      if (!recording) {
+        logger.warn(`[${requestId}] Recording not found in history: ${id}`);
+        return res.status(404).json({ error: 'Recording not found' });
+      }
+
+      // 녹화 파일 경로 생성
+      let datePart = '';
+      if (recording.startTime instanceof Date) {
+        datePart = recording.startTime.toISOString().split('T')[0];
+      } else if (typeof recording.startTime === 'string' && recording.startTime.includes('T')) {
+        datePart = recording.startTime.split('T')[0];
+      } else if (typeof recording.startTime === 'string' && recording.startTime.length >= 10) {
+        // 혹시 '2025-05-21 09:41:21' 같은 형식일 때
+        datePart = recording.startTime.substring(0, 10);
+      }
+
+      // MP4 파일 경로 직접 확인
+      let videoFile = null;
+
+      // file_path가 제공된 경우 해당 경로 사용
+      if (req.query.file_path) {
+        const filePath = req.query.file_path;
+        // 상대 경로인 경우 outputs/nvr 기준으로 절대 경로 구성
+        if (filePath.startsWith('./outputs/nvr/')) {
+          videoFile = path.resolve(process.cwd(), filePath.substring(2));
+        } else if (filePath.startsWith('outputs/nvr/')) {
+          videoFile = path.resolve(process.cwd(), filePath);
+        } else {
+          videoFile = filePath;
+        }
+
+        logger.info(`[${requestId}] Using file_path from query: ${videoFile}`);
+      } else {
+        // 기존 로직 (DB의 filename 사용)
+        const videoPath = getVideoPath(recording.cameraName, datePart);
+
+        // DB에 저장된 파일 경로가 절대 경로인지 확인
+        if (recording.filename && path.isAbsolute(recording.filename)) {
+          videoFile = recording.filename;
+        } else if (recording.filename) {
+          // 상대 경로인 경우 전체 경로 구성
+          videoFile = path.join(videoPath, recording.filename);
+        }
+
+        // MP4 파일 존재 확인
+        if (!videoFile || !fs.existsSync(videoFile)) {
+          // 파일명으로 검색 시도
+          videoFile = await findVideoFileByFilename(videoPath, recording.filename);
+        }
+
+        // 여전히 파일을 찾지 못한 경우, 다른 가능한 경로 시도
+        if (!videoFile || !fs.existsSync(videoFile)) {
+          // 파일명에서 경로 부분을 제거하고 파일명만 사용
+          const pathParts = recording.filename.split('/');
+          const shortFilename = pathParts[pathParts.length - 1];
+
+          if (shortFilename !== recording.filename) {
+            const alternativePath = path.join(videoPath, shortFilename);
+            if (fs.existsSync(alternativePath)) {
+              videoFile = alternativePath;
+              logger.info(`[${requestId}] Found file using alternative path: ${videoFile}`);
+            }
+          }
+        }
+      }
+
+      if (!videoFile || !fs.existsSync(videoFile)) {
+        logger.warn(`[${requestId}] MP4 file not found: ${videoFile}`);
+        return res.status(404).json({ error: 'Video file not found' });
+      }
+
+      // 파일 정보 확인
+      const stat = fs.statSync(videoFile);
+      const fileSize = stat.size;
+      const range = req.headers.range;
+
+      // Range 요청 처리 (비디오 스트리밍을 위해)
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = (end - start) + 1;
+        const file = fs.createReadStream(videoFile, { start, end });
+
+        const head = {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': 'video/mp4',
+          'Cache-Control': 'public, max-age=3600',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Range'
+        };
+
+        res.writeHead(206, head);
+        file.pipe(res);
+      } else {
+        // 전체 파일 스트리밍
+        const head = {
+          'Content-Length': fileSize,
+          'Content-Type': 'video/mp4',
+          'Cache-Control': 'public, max-age=3600',
+          'Access-Control-Allow-Origin': '*'
+        };
+
+        res.writeHead(200, head);
+        fs.createReadStream(videoFile).pipe(res);
+      }
+
+      const duration = Date.now() - startTime;
+      logger.info(`[${requestId}] MP4 streaming completed in ${duration}ms`);
+
+    } catch (error) {
+      logger.error(`[${requestId}] MP4 file streaming error: ${error.message}`);
+      res.status(500).json({ error: 'MP4 file streaming failed' });
+    }
+  });
+
+  // 기존 HLS 스트리밍 라우트 (호환성 유지)
+  app.get('/api/recordings/hls/:id', async (req, res) => {
     const requestId = req.headers['x-request-id'] || 'unknown';
     const startTime = Date.now();
     const id = req.params.id;
@@ -204,14 +428,300 @@ export const routesConfig = (app) => {
 
       // 녹화 파일 경로 생성
       const videoPath = getVideoPath(recording.cameraName, datePart);
-      const videoFile = await findVideoFileByFilename(videoPath, recording.filename);
+
+      // 먼저 HLS 파일 (.m3u8) 확인
+      let videoFile = await findVideoFileByFilename(videoPath, recording.filename);
+
+      // .m3u8 파일이 없으면 .m3u8.json 파일에서 실제 파일명 확인
+      if (!videoFile && recording.filename && recording.filename.endsWith('.m3u8')) {
+        const jsonPath = path.join(videoPath, `${recording.filename}.json`);
+        try {
+          if (await fs.promises.access(jsonPath).then(() => true).catch(() => false)) {
+            const metadata = await fs.promises.readJson(jsonPath);
+
+            // metadata에서 실제 .m3u8 파일 경로 확인
+            if (metadata.playlistPath) {
+              const actualPlaylistPath = metadata.playlistPath;
+              if (await fs.promises.access(actualPlaylistPath).then(() => true).catch(() => false)) {
+                videoFile = actualPlaylistPath;
+                logger.info(`[${requestId}] Found HLS playlist from metadata: ${videoFile}`);
+              }
+            } else if (metadata.filename) {
+              // metadata에 filename이 있으면 해당 파일 확인
+              const actualFilePath = path.join(videoPath, 'hls', metadata.filename);
+              if (await fs.promises.access(actualFilePath).then(() => true).catch(() => false)) {
+                videoFile = actualFilePath;
+                logger.info(`[${requestId}] Found HLS playlist from metadata filename: ${videoFile}`);
+              }
+            }
+
+            // 여전히 파일을 찾지 못했으면 hls 디렉토리에서 .m3u8 파일 검색
+            if (!videoFile) {
+              const hlsPath = path.join(videoPath, 'hls');
+              if (await fs.promises.access(hlsPath).then(() => true).catch(() => false)) {
+                const hlsFiles = await fs.promises.readdir(hlsPath);
+                const m3u8Files = hlsFiles.filter(file => file.endsWith('.m3u8'));
+                if (m3u8Files.length > 0) {
+                  // 가장 최근 파일 선택 (파일명에 시간이 포함되어 있다고 가정)
+                  const latestFile = m3u8Files.sort().pop();
+                  videoFile = path.join(hlsPath, latestFile);
+                  logger.info(`[${requestId}] Found HLS playlist from hls directory: ${videoFile}`);
+                }
+              }
+            }
+          }
+        } catch (jsonError) {
+          logger.debug(`[${requestId}] Could not read metadata file: ${jsonError.message}`);
+        }
+      }
 
       if (!videoFile) {
         logger.warn(`[${requestId}] Video file not found: ${recording.filename}`);
         return res.status(404).json({ error: 'Video file not found' });
       }
 
-      // 비디오 스트리밍 처리
+      // HLS 파일인지 확인
+      const isHLS = videoFile.endsWith('.m3u8');
+
+      if (isHLS) {
+        // HLS 스트리밍 처리
+        try {
+          const stat = await fs.promises.stat(videoFile);
+          const fileSize = stat.size;
+
+          // HLS 플레이리스트 내용을 읽어서 세그먼트 파일 경로를 수정
+          let playlistContent = await fs.promises.readFile(videoFile, 'utf8');
+
+          // 디버깅을 위한 로그 - 전체 내용 로깅
+          logger.debug(`[${requestId}] Original playlist content (full):`, playlistContent);
+          logger.debug(`[${requestId}] Original playlist content (first 1000 chars):`, playlistContent.substring(0, 1000));
+
+          // 원본 플레이리스트에서 .ts 파일 경로 확인
+          const originalTsFiles = playlistContent.match(/^[^#\n]*\.ts$/gm) || [];
+          logger.debug(`[${requestId}] Original TS files found:`, originalTsFiles);
+
+          // 원본 플레이리스트에서 .m3u8 파일 경로 확인
+          const originalM3u8Files = playlistContent.match(/^[^#\n]*\.m3u8$/gm) || [];
+          logger.debug(`[${requestId}] Original M3U8 files found:`, originalM3u8Files);
+
+          // 원본 플레이리스트에서 중복 경로 패턴 검사
+          const originalDuplicatePatterns = [
+            /\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/\/api\/recordings\/hls\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g
+          ];
+
+          for (const pattern of originalDuplicatePatterns) {
+            const matches = playlistContent.match(pattern);
+            if (matches && matches.length > 0) {
+              logger.error(`[${requestId}] Found ${matches.length} duplicate patterns in ORIGINAL playlist: ${pattern.source}`);
+              logger.error(`[${requestId}] Duplicate matches:`, matches);
+            }
+          }
+
+          // 원본 플레이리스트에서 모든 경로 패턴 검사
+          const allPaths = playlistContent.match(/[^\s#\n]+/g) || [];
+          const suspiciousPaths = allPaths.filter(path =>
+            path.includes('api/recordings/hls') &&
+            (path.includes('//') || path.includes('\\\\'))
+          );
+
+          if (suspiciousPaths.length > 0) {
+            logger.error(`[${requestId}] Found suspicious paths in original playlist:`, suspiciousPaths);
+          }
+
+          // HLS 플레이리스트를 줄 단위로 파싱하여 수정
+          const lines = playlistContent.split('\n');
+          const modifiedLines = [];
+
+          logger.debug(`[${requestId}] Processing ${lines.length} lines in playlist`);
+
+          for (let i = 0; i < lines.length; i++) {
+            const originalLine = lines[i];
+            const trimmedLine = originalLine.trim();
+
+            // 주석이나 빈 줄은 그대로 유지
+            if (trimmedLine.startsWith('#') || trimmedLine === '') {
+              modifiedLines.push(originalLine);
+              continue;
+            }
+
+            // .ts 파일인 경우 경로 수정
+            if (trimmedLine.endsWith('.ts')) {
+              const filename = trimmedLine;
+              const baseUrl = `/api/recordings/hls/${recording.cameraName}/${datePart}`;
+              const fullUrl = `${baseUrl}/${filename}`;
+              logger.debug(`[${requestId}] Line ${i + 1}: Replacing .ts path: ${filename} -> ${fullUrl}`);
+              modifiedLines.push(fullUrl);
+            }
+            // .m3u8 파일인 경우 경로 수정
+            else if (trimmedLine.endsWith('.m3u8')) {
+              const filename = trimmedLine;
+              const baseUrl = `/api/recordings/hls/${recording.cameraName}/${datePart}`;
+              const fullUrl = `${baseUrl}/${filename}`;
+              logger.debug(`[${requestId}] Line ${i + 1}: Replacing .m3u8 path: ${filename} -> ${fullUrl}`);
+              modifiedLines.push(fullUrl);
+            }
+            // 다른 내용은 그대로 유지
+            else {
+              modifiedLines.push(originalLine);
+            }
+          }
+
+          // 추가 안전장치: 모든 중복 패턴을 찾아서 수정
+          let finalPlaylistContent = modifiedLines.join('\n');
+
+          logger.debug(`[${requestId}] Before duplicate pattern fix:`, finalPlaylistContent.substring(0, 1000));
+
+          // 모든 가능한 중복 패턴을 체계적으로 제거
+          const duplicatePatterns = [
+            /\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/\/api\/recordings\/hls\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g
+          ];
+
+          let totalFixes = 0;
+          for (const pattern of duplicatePatterns) {
+            const matches = finalPlaylistContent.match(pattern);
+            if (matches && matches.length > 0) {
+              logger.warn(`[${requestId}] Found ${matches.length} matches for pattern: ${pattern.source}`);
+              logger.warn(`[${requestId}] Matches:`, matches);
+
+              const beforeFix = finalPlaylistContent;
+              finalPlaylistContent = finalPlaylistContent.replace(pattern, '/api/recordings/hls/');
+              const afterFix = finalPlaylistContent;
+
+              if (beforeFix !== afterFix) {
+                totalFixes += matches.length;
+                logger.info(`[${requestId}] Applied fix for pattern: ${pattern.source}`);
+                logger.debug(`[${requestId}] Before fix:`, beforeFix.substring(0, 500));
+                logger.debug(`[${requestId}] After fix:`, afterFix.substring(0, 500));
+              }
+            }
+          }
+
+          if (totalFixes > 0) {
+            logger.info(`[${requestId}] Total fixes applied: ${totalFixes}`);
+            logger.debug(`[${requestId}] After all fixes:`, finalPlaylistContent.substring(0, 1000));
+          }
+
+          // 최종 검증: 중복 패턴이 완전히 제거되었는지 확인
+          if (finalPlaylistContent.includes('//api/recordings/hls//')) {
+            logger.error(`[${requestId}] Final validation failed: still contains duplicate patterns`);
+            logger.error(`[${requestId}] Remaining content:`, finalPlaylistContent);
+            return res.status(500).json({ error: 'Failed to fix playlist paths' });
+          }
+
+          // 최종 플레이리스트 내용을 사용
+          playlistContent = finalPlaylistContent;
+
+          // 수정된 플레이리스트에서 .ts 파일 경로 확인
+          const modifiedTsFiles = modifiedLines.filter(line => line.endsWith('.ts') && !line.startsWith('#'));
+          logger.debug(`[${requestId}] Modified TS files:`, modifiedTsFiles);
+
+          // 플레이리스트 검증: 모든 .ts 파일이 올바른 경로를 가지고 있는지 확인
+          const tsFiles = modifiedLines.filter(line => line.endsWith('.ts') && !line.startsWith('#'));
+          const invalidPaths = tsFiles.filter(path => !path.startsWith('/api/recordings/hls/'));
+
+          if (invalidPaths.length > 0) {
+            logger.warn(`[${requestId}] Found invalid paths in playlist:`, invalidPaths);
+          }
+
+          // 플레이리스트에 최소한 하나의 .ts 파일이 있는지 확인
+          if (tsFiles.length === 0) {
+            logger.warn(`[${requestId}] No .ts files found in playlist`);
+          } else {
+            logger.info(`[${requestId}] Found ${tsFiles.length} .ts files in playlist`);
+            logger.debug(`[${requestId}] TS files:`, tsFiles);
+          }
+
+          // 각 .ts 파일의 경로를 개별적으로 검증
+          for (let i = 0; i < tsFiles.length; i++) {
+            const tsPath = tsFiles[i];
+            logger.debug(`[${requestId}] TS file ${i + 1}: ${tsPath}`);
+
+            // 경로 형식 검증
+            if (!tsPath.startsWith('/api/recordings/hls/')) {
+              logger.error(`[${requestId}] Invalid TS path format: ${tsPath}`);
+            }
+
+            // 중복 경로 검증
+            if (tsPath.includes('//api/recordings/hls//')) {
+              logger.error(`[${requestId}] Duplicate path detected in TS file: ${tsPath}`);
+            }
+          }
+
+          // 최종 검증: 중복 경로가 있는지 확인
+          const duplicatePaths = tsFiles.filter(path => path.includes('//api/recordings/hls//'));
+          if (duplicatePaths.length > 0) {
+            logger.error(`[${requestId}] Found duplicate paths in playlist:`, duplicatePaths);
+            // 중복 경로 수정 시도
+            playlistContent = playlistContent.replace(/\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g, '/api/recordings/hls/');
+            logger.info(`[${requestId}] Attempted to fix duplicate paths`);
+          }
+
+          // 최종 검증: 응답 전에 중복 경로가 있는지 한 번 더 확인
+          const finalCheck = playlistContent.includes('//api/recordings/hls//');
+          if (finalCheck) {
+            logger.error(`[${requestId}] Final check: Still has duplicate paths, attempting emergency fix`);
+            playlistContent = playlistContent.replace(/\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g, '/api/recordings/hls/');
+            logger.info(`[${requestId}] Emergency fix applied`);
+          }
+
+          // 추가 검증: 모든 중복 패턴을 찾아서 수정
+          const allDuplicatePatterns = playlistContent.match(/\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g);
+          if (allDuplicatePatterns && allDuplicatePatterns.length > 0) {
+            logger.error(`[${requestId}] Found ${allDuplicatePatterns.length} duplicate patterns, applying comprehensive fix`);
+            playlistContent = playlistContent.replace(/\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g, '/api/recordings/hls/');
+            logger.info(`[${requestId}] Comprehensive fix applied`);
+          }
+
+          // 추가 안전장치: 모든 가능한 중복 패턴을 찾아서 수정
+          const allPossibleDuplicates = [
+            /\/\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g,
+            /\/\/api\/recordings\/hls\/api\/recordings\/hls\//g,
+            /\/api\/recordings\/hls\/\/api\/recordings\/hls\//g
+          ];
+
+          for (const pattern of allPossibleDuplicates) {
+            if (playlistContent.match(pattern)) {
+              logger.warn(`[${requestId}] Found additional duplicate pattern:`, pattern.source);
+              playlistContent = playlistContent.replace(pattern, '/api/recordings/hls/');
+            }
+          }
+
+          // 수정된 HLS 플레이리스트 스트리밍
+          res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+          res.setHeader('Content-Length', Buffer.byteLength(finalPlaylistContent, 'utf8'));
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+
+          // 최종 플레이리스트 내용 로깅 (디버깅용)
+          logger.debug(`[${requestId}] Final playlist content (first 1000 chars):`, finalPlaylistContent.substring(0, 1000));
+
+          // .ts 파일 경로 최종 확인
+          const finalTsFiles = finalPlaylistContent.match(/^[^#\n]*\.ts$/gm) || [];
+          logger.info(`[${requestId}] Final TS files count: ${finalTsFiles.length}`);
+          if (finalTsFiles.length > 0) {
+            logger.debug(`[${requestId}] Final TS files:`, finalTsFiles.slice(0, 5)); // 처음 5개만 로깅
+          }
+
+          res.send(playlistContent);
+
+          logger.info(`[${requestId}] HLS streaming started with corrected paths: ${videoFile} (${fileSize} bytes)`);
+        } catch (hlsError) {
+          logger.error(`[${requestId}] HLS streaming error: ${hlsError.message}`);
+          return res.status(500).json({ error: 'HLS streaming failed' });
+        }
+        return;
+      }
+
+      // MP4 비디오 스트리밍 처리 (기존 로직)
       const stat = fs.statSync(videoFile);
       const fileSize = stat.size;
       const range = req.headers.range;
@@ -372,7 +882,7 @@ export const routesConfig = (app) => {
       // 세그먼트 파일 경로를 API 엔드포인트로 변경
       const modifiedPlaylist = playlistContent.replace(
         /([^\/\n]+\.ts)/g,
-        `/api/recordings/hls/${id}/segments/$1`
+        `/api/recordings/hls/${recording.cameraName}/${datePart}/$1`
       );
 
       logger.info(`[${requestId}] M3U8 playlist processed successfully, segments found: ${(modifiedPlaylist.match(/\.ts/g) || []).length}`);
@@ -421,87 +931,27 @@ export const routesConfig = (app) => {
     }
   });
 
-  // HLS 세그먼트 파일 스트리밍 라우트 (최적화)
-  app.get('/api/recordings/hls/:id/segments/:segment', async (req, res) => {
+  // HLS 세그먼트 파일 스트리밍 라우트 (카메라명/날짜 기반 - 실제 파일 구조와 일치)
+  app.get('/api/recordings/hls/:cameraName/:date/:segment', async (req, res) => {
     const requestId = req.headers['x-request-id'] || 'unknown';
-    const id = req.params.id;
-    const segment = req.params.segment;
+    const { cameraName, date, segment } = req.params;
 
-    logger.info(`[${requestId}] HLS segment request for recording ID: ${id}, segment: ${segment}`);
+    logger.info(`[${requestId}] HLS segment request for camera: ${cameraName}, date: ${date}, segment: ${segment}`);
 
     try {
-      // recordingHistory에서 녹화 정보 찾기
-      const recording = await RecordingsModel.getRecordingHistoryById(id);
-
-      if (!recording) {
-        logger.warn(`[${requestId}] Recording not found in history: ${id}`);
-        return res.status(404).json({ error: 'Recording not found' });
+      // 파일명 검증 (보안)
+      if (segment.includes('..') || segment.includes('/') || segment.includes('\\')) {
+        logger.warn(`[${requestId}] Invalid segment filename: ${segment}`);
+        return res.status(400).json({ error: 'Invalid segment filename' });
       }
 
       // HLS 세그먼트 파일 경로 생성
-      let datePart = '';
-      if (recording.startTime instanceof Date) {
-        datePart = recording.startTime.toISOString().split('T')[0];
-      } else if (typeof recording.startTime === 'string' && recording.startTime.includes('T')) {
-        datePart = recording.startTime.split('T')[0];
-      } else if (typeof recording.startTime === 'string' && recording.startTime.length >= 10) {
-        datePart = recording.startTime.substring(0, 10);
-      }
+      const hlsPath = path.join(RECORDINGS_DIR, cameraName, date, 'hls');
+      const segmentFile = path.join(hlsPath, segment);
 
-      // HLS 세그먼트 파일 경로 생성
-      const hlsPath = path.join(RECORDINGS_DIR, recording.cameraName, datePart, 'hls');
-      let segmentFile = path.join(hlsPath, segment);
-
-      // 세그먼트 파일 존재 확인 및 검색
+      // 세그먼트 파일 존재 확인
       if (!fs.existsSync(segmentFile)) {
-        logger.warn(`[${requestId}] HLS segment not found: ${segmentFile}, searching for segment files...`);
-
-        try {
-          // HLS 디렉토리가 존재하는지 확인
-          if (!fs.existsSync(hlsPath)) {
-            logger.error(`[${requestId}] HLS directory not found: ${hlsPath}`);
-            return res.status(404).json({ error: 'HLS directory not found' });
-          }
-
-          const hlsFiles = fs.readdirSync(hlsPath);
-          const tsFiles = hlsFiles.filter(file => file.endsWith('.ts'));
-
-          if (tsFiles.length > 0) {
-            // 세그먼트 번호 추출 (예: 댐영상2_2025-07-09T14-33-11_000.ts)
-            const segmentNumber = segment.match(/_(\d+)\.ts$/);
-            if (segmentNumber) {
-              const targetNumber = segmentNumber[1];
-
-              // 동일한 번호의 세그먼트 파일 찾기 (3자리 숫자 패턴)
-              const matchingSegment = tsFiles.find(file => {
-                const fileNumber = file.match(/_(\d+)\.ts$/);
-                return fileNumber && fileNumber[1] === targetNumber;
-              });
-
-              if (matchingSegment) {
-                segmentFile = path.join(hlsPath, matchingSegment);
-                logger.info(`[${requestId}] Using found segment file: ${matchingSegment}`);
-              } else {
-                logger.error(`[${requestId}] No matching segment file found for number: ${targetNumber}`);
-                return res.status(404).json({ error: 'Segment file not found' });
-              }
-            } else {
-              logger.error(`[${requestId}] Invalid segment filename format: ${segment}`);
-              return res.status(400).json({ error: 'Invalid segment filename' });
-            }
-          } else {
-            logger.error(`[${requestId}] No .ts files found in HLS directory: ${hlsPath}`);
-            return res.status(404).json({ error: 'No segment files found' });
-          }
-        } catch (error) {
-          logger.error(`[${requestId}] Error searching for segment files: ${error.message}`);
-          return res.status(404).json({ error: 'HLS directory not accessible' });
-        }
-      }
-
-      // 최종 세그먼트 파일 존재 확인
-      if (!fs.existsSync(segmentFile)) {
-        logger.error(`[${requestId}] Final segment file not found: ${segmentFile}`);
+        logger.warn(`[${requestId}] HLS segment not found: ${segmentFile}`);
         return res.status(404).json({ error: 'HLS segment file not found' });
       }
 
@@ -535,11 +985,14 @@ export const routesConfig = (app) => {
         res.writeHead(200, head);
         fs.createReadStream(segmentFile).pipe(res);
       }
+
+      logger.debug(`[${requestId}] HLS segment streaming: ${segment} (${fileSize} bytes)`);
     } catch (error) {
       logger.error(`[${requestId}] Error streaming HLS segment: ${error.message}`, {
         error: error.stack,
-        recordingId: id,
-        segment: segment,
+        cameraName,
+        date,
+        segment,
         requestUrl: req.url,
         userAgent: req.headers['user-agent']
       });
@@ -635,7 +1088,7 @@ export const routesConfig = (app) => {
     PaginationMiddleware.pages,
   ]);
 
-  // 녹화 기록 조회 라우트
+  // 녹화 기록 조회 라우트 (MP4 segment 파일 기반)
   app.get('/api/recordings/history', async (req, res) => {
     try {
       let recordings;
@@ -676,12 +1129,88 @@ export const routesConfig = (app) => {
         recordings = await RecordingsModel.getAllRecordingHistory();
       }
 
-      res.status(200).send(recordings);
+      // MP4 파일 경로로 변환하여 반환
+      const processedRecordings = recordings.map(record => {
+        const data = record.dataValues || record;
+        return {
+          ...data,
+          id: data.id || '',
+          cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
+          filename: data.filename || data.file_path || 'Unknown File',
+          startTime: data.startTime || data.start_time || new Date().toISOString(),
+          endTime: data.endTime || data.end_time || null,
+          status: data.status || 'completed',
+          // MP4 파일 경로 정보 추가
+          filePath: data.filename || data.file_path,
+          fileType: 'mp4'
+        };
+      });
+
+      res.status(200).send(processedRecordings);
     } catch (error) {
       logger.error(`Error fetching recording history: ${error.message}`);
       res.status(500).send({
         statusCode: 500,
         message: error.message,
+      });
+    }
+  });
+
+  // 특정 날짜의 모든 MP4 segment 파일 목록 조회 API
+  app.get('/api/recordings/segments', async (req, res) => {
+    try {
+      const { date, file_path } = req.query;
+
+      if (!date) {
+        return res.status(400).json({ error: 'Date parameter is required' });
+      }
+
+      // 날짜 범위 설정 (선택된 날짜의 시작부터 끝까지)
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+
+      // 전체 카메라의 녹화 기록 조회 (카메라 ID 제한 없음)
+      const recordings = await RecordingsModel.getRecordingHistoryByDateRange(startDate, endDate);
+
+      // MP4 segment 파일 정보로 변환
+      const segmentFiles = recordings.map(record => {
+        const data = record.dataValues || record;
+
+        // file_path가 제공된 경우 해당 경로 사용, 없으면 기본값 사용
+        const actualFilePath = file_path || data.filename || data.file_path || 'Unknown File';
+
+        return {
+          id: data.id,
+          cameraId: data.fk_camera_id,
+          cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
+          filename: actualFilePath,
+          startTime: data.startTime || data.start_time,
+          endTime: data.endTime || data.end_time,
+          duration: data.duration || 0,
+          fileSize: data.fileSize || data.file_size || 0,
+          status: data.status || 'completed',
+          filePath: actualFilePath,
+          streamUrl: `${req.protocol}://${req.get('host')}/api/recordings/stream/${data.id}`,
+          fileType: 'mp4'
+        };
+      });
+
+      // 시작 시간순으로 정렬
+      segmentFiles.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+      res.status(200).json({
+        date: date,
+        totalSegments: segmentFiles.length,
+        segments: segmentFiles
+      });
+
+    } catch (error) {
+      logger.error(`Error fetching MP4 segments: ${error.message}`);
+      res.status(500).json({
+        error: 'Failed to fetch MP4 segments',
+        message: error.message
       });
     }
   });
@@ -1270,7 +1799,22 @@ async function findVideoFileByFilename(videoPath, filename) {
     const files = await fs.promises.readdir(videoPath);
     const videoFile = files.find(file => file === filename);
 
-    return videoFile ? path.join(videoPath, videoFile) : null;
+    if (videoFile) {
+      return path.join(videoPath, videoFile);
+    }
+
+    // 파일을 찾지 못한 경우, 파일명만 추출하여 다시 검색
+    const pathParts = filename.split('/');
+    const shortFilename = pathParts[pathParts.length - 1];
+
+    if (shortFilename !== filename) {
+      const shortVideoFile = files.find(file => file === shortFilename);
+      if (shortVideoFile) {
+        return path.join(videoPath, shortVideoFile);
+      }
+    }
+
+    return null;
   } catch (error) {
     logger.error(`Error finding video file for filename ${filename}:`, error);
     return null;

@@ -14,7 +14,7 @@ export const routesConfig = (app) => {
   RecordingProcess.start();
 
   // 스케줄 체커 시작
-  ScheduleChecker.startChecking(1); // 1분 간격으로 체크
+  ScheduleChecker.startChecking(60); // 1분 간격으로 체크
 
   // 현재 녹화 중인 스케줄 조회 엔드포인트 추가
   app.get('/api/schedules/recording', async (req, res) => {

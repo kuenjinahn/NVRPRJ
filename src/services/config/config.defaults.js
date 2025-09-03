@@ -307,22 +307,97 @@ export class ConfigSetup {
   }
 
   static setupRecordings(recordings = {}) {
+    // config.ini 파일에서 직접 [recordings] 섹션 읽기
+    let recordingsConfig = { ...recordings };
+
+    try {
+      const fs = require('fs-extra');
+      const configPath = './config.ini';
+      console.log('[setupRecordings] Config file path:', configPath);
+
+      if (fs.existsSync(configPath)) {
+        const configContent = fs.readFileSync(configPath, 'utf8');
+
+        // INI 파일 파싱
+        const lines = configContent.split('\n');
+        let currentSection = '';
+        let recordingsSection = {};
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+
+          // 섹션 헤더 확인
+          if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
+            currentSection = trimmedLine.slice(1, -1);
+          }
+          // RECORDINGS 섹션의 키-값 쌍 파싱
+          else if (currentSection === 'recordings' && trimmedLine.includes('=')) {
+            const [key, value] = trimmedLine.split('=').map(s => s.trim());
+            recordingsSection[key] = value;
+            console.log('[setupRecordings] Found recordings config:', key, '=', value);
+          }
+        }
+
+        console.log('[setupRecordings] Parsed recordings section:', recordingsSection);
+
+        // config.ini에서 읽은 값으로 recordingsConfig 업데이트
+        if (recordingsSection.hls_enabled !== undefined) {
+          recordingsConfig.hls_enabled = recordingsSection.hls_enabled;
+        }
+        if (recordingsSection.hls_segmentDuration !== undefined) {
+          recordingsConfig.hls_segmentDuration = recordingsSection.hls_segmentDuration;
+        }
+        if (recordingsSection.hls_maxSegments !== undefined) {
+          recordingsConfig.hls_maxSegments = recordingsSection.hls_maxSegments;
+        }
+        if (recordingsSection.hls_deleteSegments !== undefined) {
+          recordingsConfig.hls_deleteSegments = recordingsSection.hls_deleteSegments;
+        }
+        if (recordingsSection.hls_quality !== undefined) {
+          recordingsConfig.hls_quality = recordingsSection.hls_quality;
+        }
+        if (recordingsSection.hls_bitrate !== undefined) {
+          recordingsConfig.hls_bitrate = recordingsSection.hls_bitrate;
+        }
+        if (recordingsSection.hls_segmentSize !== undefined) {
+          recordingsConfig.hls_segmentSize = recordingsSection.hls_segmentSize;
+        }
+        if (recordingsSection.hls_autoCleanup !== undefined) {
+          recordingsConfig.hls_autoCleanup = recordingsSection.hls_autoCleanup;
+        }
+        if (recordingsSection.hls_cleanupInterval !== undefined) {
+          recordingsConfig.hls_cleanupInterval = recordingsSection.hls_cleanupInterval;
+        }
+        if (recordingsSection.hls_segmentType !== undefined) {
+          recordingsConfig.hls_segmentType = recordingsSection.hls_segmentType;
+        }
+        if (recordingsSection.hls_flags !== undefined) {
+          recordingsConfig.hls_flags = recordingsSection.hls_flags;
+        }
+        console.log('[setupRecordings] Updated recordings config from config.ini:', recordingsConfig);
+      } else {
+        console.warn('[setupRecordings] Config file not found at:', configPath);
+      }
+    } catch (error) {
+      console.error('[setupRecordings] Error reading config.ini:', error);
+    }
+
     return {
-      path: recordings?.path || './outputs/nvr/recordings',
-      retention: recordings?.retention || 3600,
-      maxFileSize: recordings?.maxFileSize || '10GB',
+      path: recordingsConfig?.path || './outputs/nvr/recordings',
+      retention: recordingsConfig?.retention || 3600,
+      maxFileSize: recordingsConfig?.maxFileSize || '10GB',
       hls: {
-        enabled: recordings?.hls_enabled === 'true' || recordings?.hls?.enabled || false,
-        segmentDuration: parseInt(recordings?.hls_segmentDuration) || recordings?.hls?.segmentDuration || 3600, // 기본값 1시간
-        maxSegments: parseInt(recordings?.hls_maxSegments) || recordings?.hls?.maxSegments || 24, // 24시간 = 24개
-        deleteSegments: recordings?.hls_deleteSegments === 'true' || recordings?.hls?.deleteSegments || true,
-        quality: recordings?.hls_quality || recordings?.hls?.quality || 'medium',
-        bitrate: recordings?.hls_bitrate || recordings?.hls?.bitrate || '1024k',
-        segmentSize: recordings?.hls_segmentSize || recordings?.hls?.segmentSize || '4MB', // 기본값 4MB
-        autoCleanup: recordings?.hls_autoCleanup === 'true' || recordings?.hls?.autoCleanup || true,
-        cleanupInterval: parseInt(recordings?.hls_cleanupInterval) || recordings?.hls?.cleanupInterval || 3600, // 기본값 1시간
-        segmentType: recordings?.hls_segmentType || recordings?.hls?.segmentType || 'mpegts', // 명시적으로 mpegts 타입 지정
-        flags: recordings?.hls_flags || recordings?.hls?.flags || 'delete_segments+append_list', // 세그먼트 자동 삭제 활성화
+        enabled: recordingsConfig?.hls_enabled === 'true' || recordingsConfig?.hls?.enabled || false,
+        segmentDuration: parseInt(recordingsConfig?.hls_segmentDuration) || recordingsConfig?.hls?.segmentDuration || 3600, // 기본값 1시간
+        maxSegments: parseInt(recordingsConfig?.hls_maxSegments) || recordingsConfig?.hls?.maxSegments || 24, // 24시간 = 24개
+        deleteSegments: recordingsConfig?.hls_deleteSegments === 'true' || recordingsConfig?.hls?.deleteSegments || true,
+        quality: recordingsConfig?.hls_quality || recordingsConfig?.hls?.quality || 'medium',
+        bitrate: recordingsConfig?.hls_bitrate || recordingsConfig?.hls?.bitrate || '1024k',
+        segmentSize: recordingsConfig?.hls_segmentSize || recordingsConfig?.hls?.segmentSize || '4MB', // 기본값 4MB
+        autoCleanup: recordingsConfig?.hls_autoCleanup === 'true' || recordingsConfig?.hls?.autoCleanup || true,
+        cleanupInterval: parseInt(recordingsConfig?.hls_cleanupInterval) || recordingsConfig?.hls?.cleanupInterval || 3600, // 기본값 1시간
+        segmentType: recordingsConfig?.hls_segmentType || recordingsConfig?.hls?.segmentType || 'mpegts', // 명시적으로 mpegts 타입 지정
+        flags: recordingsConfig?.hls_flags || recordingsConfig?.hls?.flags || 'delete_segments+append_list', // 세그먼트 자동 삭제 활성화
       },
     };
   }
