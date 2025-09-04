@@ -29,7 +29,7 @@ const __dirname = dirname(__filename);
 
 // 썸네일 저장 디렉토리 설정
 const THUMBNAIL_DIR = resolve(process.env.CUI_STORAGE_PATH || 'storage', 'thumbnails');
-const RECORDINGS_DIR = resolve(process.env.CUI_STORAGE_PATH || 'storage', 'recordings');
+const RECORDINGS_DIR = resolve(process.env.CUI_STORAGE_PATH || 'outputs/nvr', 'recordings');
 
 // 썸네일 디렉토리가 없으면 생성
 if (!fs.existsSync(THUMBNAIL_DIR)) {
