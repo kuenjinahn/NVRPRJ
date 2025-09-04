@@ -3,7 +3,7 @@ import sequelize from '../../models/index.js';
 const Schedule = ScheduleModel(sequelize);
 
 import LoggerService from '../logger/logger.service.js';
-import RecordingService from '../recording/recording.service.js';
+// import RecordingService from '../recording/recording.service.js'; // Python으로 이동됨
 
 const logger = new LoggerService('ScheduleChecker');
 
@@ -68,35 +68,36 @@ class ScheduleChecker {
       logger.info(`🔍 checkSchedules - lastCheck:`, Array.from(this.lastCheck.entries()));
       logger.info(`🔍 checkSchedules - currentScheduleKeys:`, Array.from(currentScheduleKeys));
 
-      for (const [scheduleKey, wasRecording] of this.lastCheck.entries()) {
-        if (wasRecording && !currentScheduleKeys.has(scheduleKey)) {
-          // 녹화 중지 - scheduleKey에서 cameraName과 scheduleId 추출
-          const [cameraName, scheduleId] = scheduleKey.split('_');
-          if (cameraName && scheduleId) {
-            await RecordingService.stopRecording(cameraName, parseInt(scheduleId));
-            logger.info(`🛑 Stopped recording for schedule: ${scheduleKey} (schedule ended)`);
-          } else {
-            logger.warn(`⚠️ Invalid schedule key format: ${scheduleKey}`);
-          }
-        }
-      }
+      // 레코딩 중지 로직은 Python으로 이동됨
+      // for (const [scheduleKey, wasRecording] of this.lastCheck.entries()) {
+      //   if (wasRecording && !currentScheduleKeys.has(scheduleKey)) {
+      //     // 녹화 중지 - scheduleKey에서 cameraName과 scheduleId 추출
+      //     const [cameraName, scheduleId] = scheduleKey.split('_');
+      //     if (cameraName && scheduleId) {
+      //       await RecordingService.stopRecording(cameraName, parseInt(scheduleId));
+      //       logger.info(`🛑 Stopped recording for schedule: ${scheduleKey} (schedule ended)`);
+      //     } else {
+      //       logger.warn(`⚠️ Invalid schedule key format: ${scheduleKey}`);
+      //     }
+      //   }
+      // }
 
-      // 현재 녹화해야 할 스케줄들 처리
+      // 현재 녹화해야 할 스케줄들 처리 - Python으로 이동됨
       logger.info(`🎬 recordingSchedules:`, recordingSchedules);
-      for (const schedule of recordingSchedules) {
-        const { cameraName, id, recording_type, fk_camera_id, source, recoding_bitrate } = schedule;
-        const scheduleKey = `${cameraName}_${id}`;
+      // for (const schedule of recordingSchedules) {
+      //   const { cameraName, id, recording_type, fk_camera_id, source, recoding_bitrate } = schedule;
+      //   const scheduleKey = `${cameraName}_${id}`;
 
-        // 이미 녹화 중인 경우 스킵
-        if (this.lastCheck.has(scheduleKey)) {
-          logger.debug(`⏭️ Recording already active for schedule: ${scheduleKey}`);
-          continue;
-        }
+      //   // 이미 녹화 중인 경우 스킵
+      //   if (this.lastCheck.has(scheduleKey)) {
+      //     logger.debug(`⏭️ Recording already active for schedule: ${scheduleKey}`);
+      //     continue;
+      //   }
 
-        // 녹화 시작
-        await RecordingService.startRecording(cameraName, id, source, fk_camera_id, recoding_bitrate);
-        logger.info(`🎬 Started recording for schedule: ${scheduleKey} (camera_id: ${fk_camera_id})`);
-      }
+      //   // 녹화 시작
+      //   await RecordingService.startRecording(cameraName, id, source, fk_camera_id, recoding_bitrate);
+      //   logger.info(`🎬 Started recording for schedule: ${scheduleKey} (camera_id: ${fk_camera_id})`);
+      // }
 
       // 현재 상태 저장 - scheduleKey 형식으로 저장
       this.lastCheck.clear();

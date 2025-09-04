@@ -15,18 +15,19 @@ class RecordingCleanupService {
   }
 
   /**
-   * EventSetting 테이블에서 system_json을 파싱하여 recodingFileDeleteDays 값을 가져옴
+   * EventSetting 테이블에서 object_json을 파싱하여 recodingFileDeleteDays 값을 가져옴
    */
   async getDeleteDaysFromSettings() {
     try {
       const eventSetting = await EventSetting.findOne({
         where: { id: 1 }, // 기본 설정 레코드
-        attributes: ['system_json']
+        attributes: ['object_json']
       });
 
-      if (eventSetting && eventSetting.system_json) {
-        const systemConfig = JSON.parse(eventSetting.system_json);
-        return systemConfig.recodingFileDeleteDays || this.defaultDeleteDays;
+      if (eventSetting && eventSetting.object_json) {
+        const objectConfig = JSON.parse(eventSetting.object_json);
+        const recordingConfig = objectConfig.recording || {};
+        return recordingConfig.recodingFileDeleteDays || this.defaultDeleteDays;
       }
 
       return this.defaultDeleteDays;

@@ -1178,20 +1178,33 @@ export const routesConfig = (app) => {
       const segmentFiles = recordings.map(record => {
         const data = record.dataValues || record;
 
-        // file_path가 제공된 경우 해당 경로 사용, 없으면 기본값 사용
-        const actualFilePath = file_path || data.filename || data.file_path || 'Unknown File';
+        // DB에서 실제 파일명을 가져오기 (file_path 파라미터는 검색용으로만 사용)
+        // 모델에서 filename은 실제로 file_path DB 컬럼에 매핑됨
+        const fullFilePath = data.filename || 'Unknown File';
+
+        // 전체 경로에서 파일명만 추출 (예: ./outputs/nvr/recordings/camera1/2025-09-02/segment_000.mp4 -> segment_000.mp4)
+        const actualFilename = fullFilePath.split('/').pop() || fullFilePath;
+        const actualFilePath = fullFilePath;
+
+        // 디버깅을 위한 로그
+        console.log('Processing record:', {
+          id: data.id,
+          cameraName: data.cameraName || data.camera_name,
+          fullFilePath: fullFilePath,
+          actualFilename: actualFilename
+        });
 
         return {
           id: data.id,
           cameraId: data.fk_camera_id,
           cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
-          filename: actualFilePath,
+          filename: actualFilename, // DB의 실제 파일명 사용
           startTime: data.startTime || data.start_time,
           endTime: data.endTime || data.end_time,
           duration: data.duration || 0,
           fileSize: data.fileSize || data.file_size || 0,
           status: data.status || 'completed',
-          filePath: actualFilePath,
+          filePath: actualFilePath, // 실제 파일 경로
           streamUrl: `${req.protocol}://${req.get('host')}/api/recordings/stream/${data.id}`,
           fileType: 'mp4'
         };
@@ -1238,25 +1251,8 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/recordings/status/:cameraName', [
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.minimumPermissionLevelRequired('recordings:access'),
-    async (req, res) => {
-      try {
-        const { cameraName } = req.params;
-        const recordingHistory = await RecordingsModel.getRecordingHistoryByCameraId(cameraName);
-        const activeRecordings = recordingHistory.filter(record => record.status === 'recording');
-
-        res.json({
-          isRecording: activeRecordings.length > 0,
-          currentRecording: activeRecordings[0] || null
-        });
-      } catch (error) {
-        logger.error('Error fetching recording status:', error);
-        res.status(500).json({ error: 'Failed to fetch recording status' });
-      }
-    }
-  ]);
+  // 레코딩 상태 조회 API는 Python으로 이동됨 - 제거
+  // app.get('/api/recordings/status/:cameraName', ...)
 
   /**
    * @swagger
@@ -1274,19 +1270,8 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.get('/api/recordings/active', [
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.minimumPermissionLevelRequired('recordings:access'),
-    async (req, res) => {
-      try {
-        const activeRecordings = await RecordingsModel.getRecordingHistoryByStatus('recording');
-        res.json(activeRecordings);
-      } catch (error) {
-        logger.error('Error fetching active recordings:', error);
-        res.status(500).json({ error: 'Failed to fetch active recordings' });
-      }
-    }
-  ]);
+  // 레코딩 상태 조회 API는 Python으로 이동됨 - 제거
+  // app.get('/api/recordings/active', ...)
 
   /**
    * @swagger
@@ -1599,93 +1584,8 @@ export const routesConfig = (app) => {
    *       500:
    *         description: Internal server error
    */
-  app.post('/api/recordings', [
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.minimumPermissionLevelRequired('notifications:edit'),
-    RecordingsValidationMiddleware.hasValidFields,
-    async (req, res) => {
-      const requestId = uuidv4();
-      const startTime = Date.now();
-
-      try {
-        const { camera, trigger, type } = req.body;
-        logger.info(`[${requestId}] Starting new recording`, { camera, trigger, type });
-
-        // 녹화 정보 생성
-        const recording = {
-          id: uuidv4(),
-          cameraName: camera,
-          startTime: new Date().toISOString(),
-          status: 'recording',
-          trigger: trigger,
-          type: type
-        };
-
-        // 녹화 디렉토리 생성
-        const recordingDate = recording.startTime.substring(0, 10);
-        const videoPath = getVideoPath(camera, recordingDate);
-        if (!fs.existsSync(videoPath)) {
-          fs.mkdirSync(videoPath, { recursive: true });
-          logger.debug(`[${requestId}] Created recording directory: ${videoPath}`);
-        }
-
-        // 카메라 스트림 URL 생성
-        const streamUrl = `rtsp://${camera}/stream`;
-
-        // 녹화 파일명 생성
-        const filename = `${recording.id}.mp4`;
-        const videoFilePath = path.join(videoPath, filename);
-
-        // 섬네일 파일명 생성
-        const thumbnailFilename = `${recording.id}.png`;
-        const thumbnailPath = path.join(videoPath, thumbnailFilename);
-
-        // 첫 프레임 캡처 및 섬네일 생성
-        try {
-          await generateThumbnailFromStream(streamUrl, thumbnailPath);
-          logger.info(`[${requestId}] Generated initial thumbnail: ${thumbnailPath}`);
-        } catch (error) {
-          logger.error(`[${requestId}] Failed to generate initial thumbnail:`, error);
-          // 섬네일 생성 실패는 녹화 시작을 막지 않음
-        }
-
-        // 녹화 시작
-        const ffmpeg = spawn('ffmpeg', [
-          '-loglevel', 'error',  // error만 출력하여 진행 상황 로그 억제
-          '-i', streamUrl,
-          '-c:v', 'copy',
-          '-an',  // 오디오 스트림 제거
-          '-f', 'mp4',
-          videoFilePath
-        ]);
-
-        // 녹화 정보 저장
-        recording.filename = filename;
-        await RecordingsModel.addRecordingHistory(recording);
-
-        const duration = Date.now() - startTime;
-        logger.info(`[${requestId}] Recording started successfully in ${duration}ms`, {
-          recordingId: recording.id,
-          videoPath: videoFilePath,
-          thumbnailPath: thumbnailPath
-        });
-
-        res.status(201).json(recording);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        logger.error(`[${requestId}] Error starting recording:`, {
-          error: error.message,
-          stack: error.stack,
-          duration: `${duration}ms`
-        });
-
-        res.status(500).json({
-          error: 'Failed to start recording',
-          message: error.message
-        });
-      }
-    }
-  ]);
+  // 레코딩 시작 API는 Python으로 이동됨 - 제거
+  // app.post('/api/recordings', ...)
 
   /**
    * @swagger

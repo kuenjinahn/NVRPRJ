@@ -2,50 +2,21 @@
 
 import * as SchedulesController from './schedules.controller.js';
 import LoggerService from '../../../services/logger/logger.service.js';
-import ScheduleChecker from '../../../services/schedule/schedule.checker.js';
-import RecordingProcess from '../../../services/recording/recording.process.js';
+// import ScheduleChecker from '../../../services/schedule/schedule.checker.js';
+// import RecordingProcess from '../../../services/recording/recording.process.js';
 
 const { log } = LoggerService;
 
 export const routesConfig = (app) => {
   log.info('Registering schedules routes...', 'Schedules');
 
-  // 녹화 프로세스 시작
-  RecordingProcess.start();
+  // 녹화 프로세스는 Python으로 이동됨 - Node 서버에서는 제거
+  // RecordingProcess.start();
+  // ScheduleChecker.startChecking(60); // 1분 간격으로 체크
 
-  // 스케줄 체커 시작
-  ScheduleChecker.startChecking(60); // 1분 간격으로 체크
-
-  // 현재 녹화 중인 스케줄 조회 엔드포인트 추가
-  app.get('/api/schedules/recording', async (req, res) => {
-    try {
-      const recordingSchedules = await ScheduleChecker.getCurrentlyRecordingSchedules();
-      res.json(recordingSchedules);
-    } catch (error) {
-      log.error('Error getting recording schedules:', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // 녹화 상태 조회 API
-  app.get('/api/schedules/recording-status', async (req, res) => {
-    try {
-      const activeRecordings = Array.from(RecordingProcess.activeRecordings.entries()).map(([cameraName, info]) => ({
-        cameraName,
-        scheduleId: info.scheduleId,
-        startTime: info.startTime,
-        outputPath: info.outputPath
-      }));
-
-      res.json({
-        status: 'success',
-        activeRecordings
-      });
-    } catch (error) {
-      log.error('Error getting recording status:', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
+  // 레코딩 관련 API는 Python으로 이동됨 - 제거
+  // app.get('/api/schedules/recording', ...)
+  // app.get('/api/schedules/recording-status', ...)
 
   // Log when routes are being registered
   log.debug('Adding schedules middleware and routes', 'Schedules');
