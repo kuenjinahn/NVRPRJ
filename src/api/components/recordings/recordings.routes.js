@@ -290,9 +290,13 @@ export const routesConfig = (app) => {
       // 녹화 파일 경로 생성
       let datePart = '';
       if (recording.startTime instanceof Date) {
-        datePart = recording.startTime.toISOString().split('T')[0];
+        // 한국 시간으로 변환하여 날짜 추출
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.includes('T')) {
-        datePart = recording.startTime.split('T')[0];
+        // ISO 문자열을 한국 시간으로 변환
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.length >= 10) {
         // 혹시 '2025-05-21 09:41:21' 같은 형식일 때
         datePart = recording.startTime.substring(0, 10);
@@ -418,9 +422,13 @@ export const routesConfig = (app) => {
       // 녹화 파일 경로 생성
       let datePart = '';
       if (recording.startTime instanceof Date) {
-        datePart = recording.startTime.toISOString().split('T')[0];
+        // 한국 시간으로 변환하여 날짜 추출
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.includes('T')) {
-        datePart = recording.startTime.split('T')[0];
+        // ISO 문자열을 한국 시간으로 변환
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.length >= 10) {
         // 혹시 '2025-05-21 09:41:21' 같은 형식일 때
         datePart = recording.startTime.substring(0, 10);
@@ -774,9 +782,13 @@ export const routesConfig = (app) => {
       // HLS 파일 경로 생성
       let datePart = '';
       if (recording.startTime instanceof Date) {
-        datePart = recording.startTime.toISOString().split('T')[0];
+        // 한국 시간으로 변환하여 날짜 추출
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.includes('T')) {
-        datePart = recording.startTime.split('T')[0];
+        // ISO 문자열을 한국 시간으로 변환
+        const kstDate = moment(recording.startTime).tz('Asia/Seoul');
+        datePart = kstDate.format('YYYY-MM-DD');
       } else if (typeof recording.startTime === 'string' && recording.startTime.length >= 10) {
         datePart = recording.startTime.substring(0, 10);
       }
