@@ -14,6 +14,36 @@ function createPelcoDPacket(address = 0x01, command1, command2, data1, data2) {
   return Buffer.from([sync, address, command1, command2, data1, data2, checksum]);
 }
 
+// PNT 프로토콜 패킷 생성 함수 (Python 소스 기반)
+function createPNTPacket(pid, dataBytes = []) {
+  const RMID = 0xB8;  // 184
+  const TMID = 0xAC;  // 172
+  const PNT_ID = 0x01; // 장치 Address는 내부 고정(비노출)
+
+  const data = Array.isArray(dataBytes) ? dataBytes : [];
+  const base = [RMID, TMID, PNT_ID, pid, data.length, ...data];
+
+  // 체크섬 계산 (2의 보수)
+  const total = base.reduce((sum, byte) => (sum + byte) & 0xFF, 0);
+  const checksum = ((~total) + 1) & 0xFF;
+
+  return Buffer.from([...base, checksum]);
+}
+
+// 16비트 정수를 리틀 엔디안 바이트 배열로 변환
+function intToLE16(n) {
+  n &= 0xFFFF;
+  return [n & 0xFF, (n >> 8) & 0xFF];
+}
+
+// PNT 프로토콜 PID 상수
+const PNT_PID = {
+  PRESET_SAVE: 24,      // 0x18
+  PRESET_RECALL: 25,    // 0x19
+  TOUR: 46,             // 0x2E (1 = start, 0 = stop)
+  SET_EACH_TOUR_DATA: 222  // 0xDE: [D0=preset(1~8), D1~D2= speed(rpm LSB/MSB), D3=delay(1~255s)]
+};
+
 // TCP로 패킷 전송 함수
 async function sendTCPPacket(ip, port, packet) {
   return new Promise((resolve, reject) => {
@@ -515,6 +545,529 @@ router.post('/ptz/wiper', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'PTZ 와이퍼 명령 전송 실패',
+      error: error.message
+    });
+  }
+});
+
+// =========================
+// PNT 프리셋 및 투어 API
+// =========================
+
+/**
+ * @swagger
+ * /api/ptz/preset/save:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 프리셋 저장
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - presetNumber
+ *               - ip
+ *               - port
+ *             properties:
+ *               presetNumber:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 8
+ *                 description: 프리셋 번호 (1-8)
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 프리셋 저장 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/preset/save', async (req, res) => {
+  try {
+    const { presetNumber, ip, port } = req.body;
+
+    if (!presetNumber || !ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: presetNumber, ip, port'
+      });
+    }
+
+    if (presetNumber < 1 || presetNumber > 8) {
+      return res.status(400).json({
+        success: false,
+        message: '프리셋 번호는 1-8 사이여야 합니다'
+      });
+    }
+
+    log.info(`PNT Preset Save: ${presetNumber}, target: ${ip}:${port}`);
+
+    const packet = createPNTPacket(PNT_PID.PRESET_SAVE, [presetNumber & 0xFF]);
+    log.info(`PNT Preset Save packet: ${packet.toString('hex')}`);
+
+    await sendTCPPacket(ip, port, packet);
+
+    res.json({
+      success: true,
+      message: `프리셋 ${presetNumber} 저장 완료`,
+      data: {
+        presetNumber,
+        ip,
+        port,
+        packet: packet.toString('hex')
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Preset Save Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '프리셋 저장 실패',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/ptz/preset/recall:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 프리셋 호출
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - presetNumber
+ *               - ip
+ *               - port
+ *             properties:
+ *               presetNumber:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 8
+ *                 description: 프리셋 번호 (1-8)
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 프리셋 호출 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/preset/recall', async (req, res) => {
+  try {
+    const { presetNumber, ip, port } = req.body;
+
+    if (!presetNumber || !ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: presetNumber, ip, port'
+      });
+    }
+
+    if (presetNumber < 1 || presetNumber > 8) {
+      return res.status(400).json({
+        success: false,
+        message: '프리셋 번호는 1-8 사이여야 합니다'
+      });
+    }
+
+    log.info(`PNT Preset Recall: ${presetNumber}, target: ${ip}:${port}`);
+
+    const packet = createPNTPacket(PNT_PID.PRESET_RECALL, [presetNumber & 0xFF]);
+    log.info(`PNT Preset Recall packet: ${packet.toString('hex')}`);
+
+    await sendTCPPacket(ip, port, packet);
+
+    res.json({
+      success: true,
+      message: `프리셋 ${presetNumber} 호출 완료`,
+      data: {
+        presetNumber,
+        ip,
+        port,
+        packet: packet.toString('hex')
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Preset Recall Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '프리셋 호출 실패',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/ptz/tour/start:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 투어 시작
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - ip
+ *               - port
+ *             properties:
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 투어 시작 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/tour/start', async (req, res) => {
+  try {
+    const { ip, port } = req.body;
+
+    if (!ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: ip, port'
+      });
+    }
+
+    log.info(`PNT Tour Start: target: ${ip}:${port}`);
+
+    const packet = createPNTPacket(PNT_PID.TOUR, [1]);
+    log.info(`PNT Tour Start packet: ${packet.toString('hex')}`);
+
+    await sendTCPPacket(ip, port, packet);
+
+    res.json({
+      success: true,
+      message: '투어 시작 완료',
+      data: {
+        ip,
+        port,
+        packet: packet.toString('hex')
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Tour Start Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '투어 시작 실패',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/ptz/tour/stop:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 투어 정지
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - ip
+ *               - port
+ *             properties:
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 투어 정지 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/tour/stop', async (req, res) => {
+  try {
+    const { ip, port } = req.body;
+
+    if (!ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: ip, port'
+      });
+    }
+
+    log.info(`PNT Tour Stop: target: ${ip}:${port}`);
+
+    const packet = createPNTPacket(PNT_PID.TOUR, [0]);
+    log.info(`PNT Tour Stop packet: ${packet.toString('hex')}`);
+
+    await sendTCPPacket(ip, port, packet);
+
+    res.json({
+      success: true,
+      message: '투어 정지 완료',
+      data: {
+        ip,
+        port,
+        packet: packet.toString('hex')
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Tour Stop Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '투어 정지 실패',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/ptz/tour/step:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 투어 스텝 설정
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - presetNumber
+ *               - speedRpm
+ *               - delaySec
+ *               - ip
+ *               - port
+ *             properties:
+ *               presetNumber:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 8
+ *                 description: 프리셋 번호 (1-8)
+ *               speedRpm:
+ *                 type: number
+ *                 description: 투어 속도 (RPM)
+ *               delaySec:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 255
+ *                 description: 지연 시간 (초)
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 투어 스텝 설정 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/tour/step', async (req, res) => {
+  try {
+    const { presetNumber, speedRpm, delaySec, ip, port } = req.body;
+
+    if (!presetNumber || !speedRpm || !delaySec || !ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: presetNumber, speedRpm, delaySec, ip, port'
+      });
+    }
+
+    if (presetNumber < 1 || presetNumber > 8) {
+      return res.status(400).json({
+        success: false,
+        message: '프리셋 번호는 1-8 사이여야 합니다'
+      });
+    }
+
+    if (delaySec < 1 || delaySec > 255) {
+      return res.status(400).json({
+        success: false,
+        message: '지연 시간은 1-255 초 사이여야 합니다'
+      });
+    }
+
+    log.info(`PNT Tour Step: preset=${presetNumber}, speed=${speedRpm}rpm, delay=${delaySec}s, target: ${ip}:${port}`);
+
+    // 속도를 리틀 엔디안으로 변환
+    const [speedLSB, speedMSB] = intToLE16(speedRpm);
+    const delay = Math.max(1, Math.min(255, Math.floor(delaySec)));
+
+    const packet = createPNTPacket(PNT_PID.SET_EACH_TOUR_DATA, [
+      presetNumber & 0xFF,
+      speedLSB,
+      speedMSB,
+      delay
+    ]);
+
+    log.info(`PNT Tour Step packet: ${packet.toString('hex')}`);
+
+    await sendTCPPacket(ip, port, packet);
+
+    res.json({
+      success: true,
+      message: `투어 스텝 설정 완료 (Preset ${presetNumber})`,
+      data: {
+        presetNumber,
+        speedRpm,
+        delaySec: delay,
+        ip,
+        port,
+        packet: packet.toString('hex')
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Tour Step Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '투어 스텝 설정 실패',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/ptz/tour/setup:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: PNT 투어 전체 설정 (1-3 스텝)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - speedRpm
+ *               - delaySec
+ *               - ip
+ *               - port
+ *             properties:
+ *               speedRpm:
+ *                 type: number
+ *                 description: 투어 속도 (RPM)
+ *               delaySec:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 255
+ *                 description: 지연 시간 (초)
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *               port:
+ *                 type: number
+ *                 description: 카메라 포트
+ *     responses:
+ *       200:
+ *         description: 투어 설정 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/tour/setup', async (req, res) => {
+  try {
+    const { speedRpm, delaySec, ip, port } = req.body;
+
+    if (!speedRpm || !delaySec || !ip || !port) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: speedRpm, delaySec, ip, port'
+      });
+    }
+
+    if (delaySec < 1 || delaySec > 255) {
+      return res.status(400).json({
+        success: false,
+        message: '지연 시간은 1-255 초 사이여야 합니다'
+      });
+    }
+
+    log.info(`PNT Tour Setup: speed=${speedRpm}rpm, delay=${delaySec}s, target: ${ip}:${port}`);
+
+    const results = [];
+    const delay = Math.max(1, Math.min(255, Math.floor(delaySec)));
+
+    // 1-3번 프리셋에 대해 투어 스텝 설정
+    for (let preset = 1; preset <= 3; preset++) {
+      const [speedLSB, speedMSB] = intToLE16(speedRpm);
+
+      const packet = createPNTPacket(PNT_PID.SET_EACH_TOUR_DATA, [
+        preset,
+        speedLSB,
+        speedMSB,
+        delay
+      ]);
+
+      log.info(`PNT Tour Step ${preset} packet: ${packet.toString('hex')}`);
+
+      await sendTCPPacket(ip, port, packet);
+
+      results.push({
+        preset,
+        speedRpm,
+        delaySec: delay,
+        packet: packet.toString('hex')
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '투어 설정 완료 (Preset 1-3)',
+      data: {
+        speedRpm,
+        delaySec: delay,
+        ip,
+        port,
+        results
+      }
+    });
+
+  } catch (error) {
+    log.error('PNT Tour Setup Error:', error);
+    res.status(500).json({
+      success: false,
+      message: '투어 설정 실패',
       error: error.message
     });
   }

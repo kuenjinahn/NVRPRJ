@@ -37,6 +37,7 @@ import * as SchedulesRouter from './components/schedules/schedules.routes.js';
 import * as EventsRouter from './components/events/events.routes.js';
 import EventAreaRouter from './components/eventArea/eventArea.routes.js';
 import * as AlertsRouter from './components/alerts/alerts.routes.js';
+import * as PanoramaRouter from './components/panorama/panorama.routes.js';
 const { log } = LoggerService;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -187,6 +188,7 @@ export default class App {
     AlertsRouter.routesConfig(app);
     app.use('/api', EventsRouter.default || EventsRouter);
     app.use('/api', EventAreaRouter);
+    PanoramaRouter.routesConfig(app);
     log.info('Registering schedules routes...', 'App');
     SchedulesRouter.routesConfig(app);
     log.info('Schedules routes registered', 'App');

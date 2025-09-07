@@ -4,6 +4,7 @@ import { Sequelize } from 'sequelize';
 import mariadbConfig from '../services/database/mariadb.config.js';
 import Camera from './Camera.js';
 import ScheduleModel from './schedule.js';
+import VideoPanoramaData from './VideoPanoramaData.js';
 
 // mariadbConfig.config에서 정보 추출
 const { database, user, password, host, port } = mariadbConfig.config;
@@ -27,7 +28,8 @@ const sequelize = new Sequelize(
 // 모델 초기화
 const models = {
   Camera,
-  Schedule: ScheduleModel(sequelize)
+  Schedule: ScheduleModel(sequelize),
+  VideoPanoramaData: VideoPanoramaData(sequelize)
 };
 
 // 관계 초기화
