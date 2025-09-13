@@ -5,6 +5,10 @@ import os
 import sys
 import locale
 
+# 출력 버퍼링 비활성화 (실시간 로그 출력을 위해)
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 # 시스템 인코딩 설정
 if sys.platform.startswith('win'):
     # Windows에서 한글 출력을 위한 인코딩 설정
@@ -12,6 +16,9 @@ if sys.platform.startswith('win'):
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+        # 버퍼링 비활성화 재적용
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
     except:
         pass
     
@@ -61,17 +68,122 @@ DBSERVER_CHARSET = config.get('DATABASE', 'charset')
 
 
 # 🔧 글로벌 설정 변수
-# 세그먼트 분할 시간 (초 단위) - 여기서 변경하면 모든 녹화 설정에 즉시 적용됩니다!
-# - 60: 1분마다 분할
-# - 120: 2분마다 분할
-# - 300: 5분마다 분할 (기본값)
-# - 600: 10분마다 분할
-# - 3600: 1시간마다 분할
-SPLIT_SECONDS = 300  # 기본값: 300초 (5분)
+# 세그먼트 분할 시간 (초 단위) - DB에서 동적으로 로드됩니다
+SPLIT_SECONDS = 600  # 기본값: 600초 (10분) - DB에서 로드 실패 시 사용
+
+# 비트레이트 설정 (DB에서 동적으로 로드됩니다)
+DEFAULT_BITRATE = "1024k"  # 기본값 - DB에서 로드 실패 시 사용
 
 print(f"🔧 Global Settings Loaded:")
-print(f"  📹 SPLIT_SECONDS: {SPLIT_SECONDS} seconds ({SPLIT_SECONDS/60:.1f} minutes)")
-print(f"  💡 To change segment time, edit SPLIT_SECONDS variable at the top of this file")
+print(f"  📹 SPLIT_SECONDS: {SPLIT_SECONDS} seconds ({SPLIT_SECONDS/60:.1f} minutes) - Will be updated from DB")
+print(f"  📹 DEFAULT_BITRATE: {DEFAULT_BITRATE} - Will be updated from DB")
+
+def load_event_settings():
+    """tb_event_setting에서 object_json을 조회하여 녹화 설정을 로드"""
+    global SPLIT_SECONDS, DEFAULT_BITRATE
+    
+    try:
+        print("\n" + "=" * 80, flush=True)
+        print("🔍 LOADING EVENT SETTINGS FROM DATABASE", flush=True)
+        print("=" * 80, flush=True)
+        print(f"📊 DB Connection: {DBSERVER_IP}:{DBSERVER_PORT}/{DBSERVER_DB}", flush=True)
+        print(f"📊 DB User: {DBSERVER_USER}", flush=True)
+        
+        # DB 연결
+        db_connection = pymysql.connect(
+            host=DBSERVER_IP,
+            port=DBSERVER_PORT,
+            user=DBSERVER_USER,
+            password=DBSERVER_PASSWORD,
+            db=DBSERVER_DB,
+            charset=DBSERVER_CHARSET,
+            autocommit=True,
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5
+        )
+        print("✅ Database connection successful", flush=True)
+        
+        cursor = db_connection.cursor()
+        
+        # tb_event_setting에서 object_json 조회
+        query = "SELECT object_json FROM tb_event_setting LIMIT 1"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        
+        if result and result['object_json']:
+            print("✅ Found event settings in database", flush=True)
+            object_json = json.loads(result['object_json'])
+            
+            # recording 설정 확인
+            recording_config = object_json.get('recording', {})
+            print(f"📋 Recording configuration found: {len(recording_config)} settings", flush=True)
+            
+            # enabled 값에 따라 레코딩 여부 결정
+            recording_enabled = recording_config.get('enabled', True)
+            status_text = "🟢 ENABLED" if recording_enabled else "🔴 DISABLED"
+            print(f"📹 Recording Status: {status_text}", flush=True)
+            
+            if recording_enabled:
+                # recordingSegment 값에 따라 SPLIT_SECONDS 설정
+                recording_segment = recording_config.get('recordingSegment', '10')  # 기본값: 10분
+                
+                # 분 단위를 초 단위로 변환
+                segment_mapping = {
+                    '5': 300,    # 5분 = 300초
+                    '10': 600,   # 10분 = 600초
+                    '30': 1800,  # 30분 = 1800초
+                    '60': 3600   # 1시간 = 3600초
+                }
+                
+                old_split_seconds = SPLIT_SECONDS
+                SPLIT_SECONDS = segment_mapping.get(recording_segment, 600)  # 기본값: 10분
+                print(f"📹 Segment Duration: {recording_segment}min → {SPLIT_SECONDS}s ({SPLIT_SECONDS/60:.1f} minutes)", flush=True)
+                if old_split_seconds != SPLIT_SECONDS:
+                    print(f"   🔄 Changed from {old_split_seconds}s to {SPLIT_SECONDS}s", flush=True)
+                
+                # recodingBitrate 값 설정
+                old_bitrate = DEFAULT_BITRATE
+                recoding_bitrate = recording_config.get('recodingBitrate', '1024k')
+                DEFAULT_BITRATE = recoding_bitrate
+                print(f"📹 Video Bitrate: {recoding_bitrate}", flush=True)
+                if old_bitrate != DEFAULT_BITRATE:
+                    print(f"   🔄 Changed from {old_bitrate} to {DEFAULT_BITRATE}", flush=True)
+                
+                # 파일 삭제 설정
+                delete_days = recording_config.get('recodingFileDeleteDays', 30)
+                print(f"📹 File Auto-Delete: {delete_days} days", flush=True)
+                
+                print("✅ All recording settings loaded successfully", flush=True)
+            else:
+                print("⚠️ Recording is disabled, using default values", flush=True)
+                print(f"   📹 Default SPLIT_SECONDS: {SPLIT_SECONDS}s", flush=True)
+                print(f"   📹 Default DEFAULT_BITRATE: {DEFAULT_BITRATE}", flush=True)
+            
+        else:
+            print("⚠️ No object_json found in tb_event_setting", flush=True)
+            print("🔄 Using default values:", flush=True)
+            print(f"   📹 SPLIT_SECONDS: {SPLIT_SECONDS}s ({SPLIT_SECONDS/60:.1f} minutes)", flush=True)
+            print(f"   📹 DEFAULT_BITRATE: {DEFAULT_BITRATE}", flush=True)
+            
+        cursor.close()
+        db_connection.close()
+        print("✅ Database connection closed", flush=True)
+        
+    except Exception as e:
+        print(f"❌ Error loading event settings: {e}", flush=True)
+        print("🔄 Using default values:", flush=True)
+        print(f"   📹 SPLIT_SECONDS: {SPLIT_SECONDS}s ({SPLIT_SECONDS/60:.1f} minutes)", flush=True)
+        print(f"   📹 DEFAULT_BITRATE: {DEFAULT_BITRATE}", flush=True)
+        print("⚠️ Please check database connection and settings", flush=True)
+    
+    print("=" * 80, flush=True)
+    print("🎯 CURRENT SETTINGS SUMMARY:", flush=True)
+    print(f"   📹 SPLIT_SECONDS: {SPLIT_SECONDS} seconds ({SPLIT_SECONDS/60:.1f} minutes)", flush=True)
+    print(f"   📹 DEFAULT_BITRATE: {DEFAULT_BITRATE}", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+# 설정 로드 실행
+load_event_settings()
 
 @dataclass
 class RecorderConfig:
@@ -80,7 +192,7 @@ class RecorderConfig:
     segment_seconds: int = SPLIT_SECONDS
     output_dir: Path = Path("./outputs/nvr/recordings")
     reencode_video: bool = False
-    video_bitrate: str = "1000k"
+    video_bitrate: str = DEFAULT_BITRATE
     gop_seconds: Optional[int] = None
     rtsp_transport: str = "tcp"
     analyzeduration: str = "10M"
@@ -971,6 +1083,33 @@ class MultiCameraRecorder:
         """순차적인 카메라 이름 생성 (camera1, camera2, ...)"""
         return f"camera{index}"
 
+    def _is_recording_enabled(self):
+        """DB에서 레코딩 활성화 상태 확인"""
+        try:
+            if not self.connect_to_db():
+                print("⚠️ DB connection failed, defaulting to recording enabled")
+                return True  # DB 연결 실패 시 기본적으로 활성화
+            
+            cursor = self.db_connection.cursor()
+            query = "SELECT object_json FROM tb_event_setting LIMIT 1"
+            cursor.execute(query)
+            result = cursor.fetchone()
+            
+            if result and result['object_json']:
+                object_json = json.loads(result['object_json'])
+                recording_config = object_json.get('recording', {})
+                recording_enabled = recording_config.get('enabled', True)
+                status_icon = "🟢" if recording_enabled else "🔴"
+                print(f"📹 Recording Status Check: {status_icon} {'ENABLED' if recording_enabled else 'DISABLED'}")
+                return recording_enabled
+            else:
+                print("📹 No object_json found, defaulting to recording enabled")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Error checking recording status: {e}")
+            return True  # 에러 시 기본적으로 활성화
+
     def get_camera_list(self):
         """tb_cameras 테이블에서 카메라 정보 조회"""
         try:
@@ -1060,12 +1199,24 @@ class MultiCameraRecorder:
 
     def start_all_recorders(self):
         """모든 카메라 녹화 시작"""
+        # 시작 전에 설정을 다시 로드 (30초마다 업데이트)
+        load_event_settings()
+        
+        # 레코딩이 비활성화되었는지 확인
+        if not self._is_recording_enabled():
+            print("📹 Recording is disabled in settings, skipping recorder startup")
+            print("📹 Program will continue running and check settings every 30 seconds")
+            return
+        
         camera_list = self.get_camera_list()
         if not camera_list:
-            print("No cameras found in database")
+            print("⚠️ No cameras found in database")
             return
 
-        print(f"Starting recorders for {len(camera_list)} cameras...")
+        print(f"🎬 Starting recorders for {len(camera_list)} cameras...", flush=True)
+        print(f"📹 Using SPLIT_SECONDS: {SPLIT_SECONDS} seconds ({SPLIT_SECONDS/60:.1f} minutes)", flush=True)
+        print(f"📹 Using DEFAULT_BITRATE: {DEFAULT_BITRATE}", flush=True)
+        print("-" * 60, flush=True)
         
         for camera_info in camera_list:
             try:
@@ -1073,7 +1224,8 @@ class MultiCameraRecorder:
                     rtsp_url=camera_info['rtsp_url'],
                     camera_name=camera_info['camera_name'],  # 순차적인 이름 사용
                     output_dir=Path("./outputs/nvr/recordings"),
-                    segment_seconds=SPLIT_SECONDS,  # 2분마다 세그먼트 분할
+                    segment_seconds=SPLIT_SECONDS,  # DB에서 로드된 세그먼트 분할 시간
+                    video_bitrate=DEFAULT_BITRATE,  # DB에서 로드된 비트레이트
                     reencode_video=False,
                     rtsp_transport="tcp",
                     use_timeouts=True,  # 타임아웃 활성화
@@ -1087,40 +1239,167 @@ class MultiCameraRecorder:
                 
                 self.recorders[camera_info['camera_name']] = recorder  # 순차적인 이름을 키로 사용
                 recorder.start()
+                print(f"✅ Started recorder: {camera_info['camera_name']} ({camera_info['name']})", flush=True)
                 
             except Exception as e:
-                print(f"Error starting recorder for {camera_info['camera_name']}: {e}")
+                print(f"❌ Error starting recorder for {camera_info['camera_name']}: {e}", flush=True)
 
-        self.running = True
-        print(f"Started {len(self.recorders)} recorders")
+        if self.recorders:
+            self.running = True
+            print("-" * 60, flush=True)
+            print(f"🎉 Successfully started {len(self.recorders)} recorders", flush=True)
+            for name in self.recorders.keys():
+                print(f"   📹 - {name}", flush=True)
+        else:
+            print("⚠️ No recorders started (recording may be disabled)", flush=True)
 
     def stop_all_recorders(self):
         """모든 녹화 중지"""
-        print("Stopping all recorders...")
+        if not self.recorders:
+            print("📹 No active recorders to stop")
+            return
+            
+        print("\n" + "=" * 80)
+        print("⏹️ STOPPING ALL RECORDERS")
+        print("=" * 80)
+        print(f"📹 Stopping {len(self.recorders)} active recorders...")
+        print("-" * 60)
+        
         for name, recorder in self.recorders.items():
             try:
+                print(f"⏹️ Stopping recorder: {name}")
                 recorder.stop()
+                print(f"✅ Recorder {name} stopped successfully")
             except Exception as e:
-                print(f"Error stopping recorder {name}: {e}")
+                print(f"❌ Error stopping recorder {name}: {e}")
         
         self.recorders.clear()
-        self.running = False
-        print("All recorders stopped")
+        # self.running = False  # 프로그램이 계속 실행되도록 주석 처리
+        
+        print("-" * 60)
+        print("🎯 RECORDING STATUS: ALL RECORDERS STOPPED")
+        print("📹 Program continues running and monitoring settings...")
+        print("=" * 80 + "\n")
 
     def run(self):
         """메인 실행 루프"""
         try:
+            # 초기 설정 로드 및 녹화기 시작 시도
             self.start_all_recorders()
-            print("Multi-camera recorder running. Press Ctrl+C to stop.")
+            
+            # 프로그램이 계속 실행되도록 self.running을 True로 설정
+            self.running = True
+            
+            print("\n" + "=" * 80, flush=True)
+            print("🚀 MULTI-CAMERA RECORDER STARTED", flush=True)
+            print("=" * 80, flush=True)
+            print("📹 Program will continue running even if recording is disabled.", flush=True)
+            print("📹 Settings will be checked every 30 seconds for changes.", flush=True)
+            print("📹 Press Ctrl+C to stop the program.", flush=True)
+            print("=" * 80 + "\n", flush=True)
+            
+            last_settings_reload = time.time()
+            settings_reload_interval = 30  # 30초마다 설정 다시 로드
             
             while self.running:
+                current_time = time.time()
+                
+                # 30초마다 설정 다시 로드
+                if current_time - last_settings_reload >= settings_reload_interval:
+                    print("🔄 RELOADING SETTINGS FROM DATABASE...", flush=True)
+                    load_event_settings()
+                    last_settings_reload = current_time
+                    
+                    # 설정이 변경되었는지 확인하고 필요시 녹화기 재시작
+                    self._check_and_restart_recorders_if_needed()
+                
                 time.sleep(1)
                 
         except KeyboardInterrupt:
-            print("\nInterrupted by user.")
+            print("\n" + "=" * 80, flush=True)
+            print("⏹️ PROGRAM INTERRUPTED BY USER", flush=True)
+            print("=" * 80, flush=True)
         finally:
             self.stop_all_recorders()
             self.disconnect_db()
+    
+    def _check_and_restart_recorders_if_needed(self):
+        """설정 변경 시 녹화기 재시작이 필요한지 확인"""
+        try:
+            print("\n" + "-" * 60)
+            print("🔍 CHECKING RECORDING STATUS AND SETTINGS")
+            print("-" * 60)
+            recording_enabled = self._is_recording_enabled()
+            
+            # 레코딩이 비활성화된 경우
+            if not recording_enabled:
+                if self.recorders:
+                    print("🔴 Recording disabled, stopping all recorders...")
+                    self.stop_all_recorders()
+                else:
+                    print("🔴 Recording is disabled. No recorders running.")
+                print("-" * 60 + "\n")
+                return
+            
+            # 레코딩이 활성화된 경우
+            if recording_enabled:
+                # 녹화기가 없는 경우 시작
+                if not self.recorders:
+                    print("🟢 Recording enabled, starting recorders...")
+                    self.start_all_recorders()
+                    print("-" * 60 + "\n")
+                    return
+                
+                # 현재 실행 중인 녹화기들의 설정과 새로운 설정 비교
+                settings_changed = False
+                for name, recorder in self.recorders.items():
+                    current_segment_seconds = recorder.cfg.segment_seconds
+                    current_bitrate = recorder.cfg.video_bitrate
+                    
+                    # 설정이 변경되었으면 재시작
+                    if (current_segment_seconds != SPLIT_SECONDS or 
+                        current_bitrate != DEFAULT_BITRATE):
+                        
+                        settings_changed = True
+                        print(f"🔄 Settings changed for {name}, restarting recorder...")
+                        print(f"   📹 Segment: {current_segment_seconds}s → {SPLIT_SECONDS}s")
+                        print(f"   📹 Bitrate: {current_bitrate} → {DEFAULT_BITRATE}")
+                        
+                        # 기존 녹화기 중지
+                        recorder.stop()
+                        
+                        # 새로운 설정으로 녹화기 재시작
+                        config = RecorderConfig(
+                            rtsp_url=recorder.cfg.rtsp_url,
+                            camera_name=recorder.cfg.camera_name,
+                            output_dir=Path("./outputs/nvr/recordings"),
+                            segment_seconds=SPLIT_SECONDS,
+                            video_bitrate=DEFAULT_BITRATE,
+                            reencode_video=False,
+                            rtsp_transport="tcp",
+                            use_timeouts=True,
+                            timeout_mode="timeout",
+                            timeout_value_us=10_000_000
+                        )
+                        
+                        new_recorder = RTSPRecorder(config)
+                        new_recorder.original_camera_name = recorder.original_camera_name
+                        
+                        self.recorders[name] = new_recorder
+                        new_recorder.start()
+                        print(f"✅ Recorder {name} restarted with new settings")
+                
+                if not settings_changed:
+                    print("🟢 Recording enabled. All recorders running with current settings.")
+                    print(f"   📹 Active recorders: {len(self.recorders)}")
+                    for name in self.recorders.keys():
+                        print(f"   📹 - {name}")
+            
+            print("-" * 60 + "\n")
+                    
+        except Exception as e:
+            print(f"❌ Error checking and restarting recorders: {e}")
+            print("-" * 60 + "\n")
 
 
 if __name__ == "__main__":
@@ -1129,10 +1408,10 @@ if __name__ == "__main__":
         cfg = RecorderConfig(
             rtsp_url="rtsp://210.99.70.120:1935/live/cctv005.stream",
             camera_name="test_camera",
-            segment_seconds=SPLIT_SECONDS,               # 분할 길이(초)
+            segment_seconds=SPLIT_SECONDS,               # DB에서 로드된 분할 길이(초)
             output_dir=Path("./outputs/nvr/recordings"),
             reencode_video=False,             # True로 바꾸면 video_bitrate 적용됨
-            video_bitrate="1024k",            # reencode_video=True일 때만 효과
+            video_bitrate=DEFAULT_BITRATE,    # DB에서 로드된 비트레이트
             gop_seconds=None,                 # None이면 segment_seconds 사용
             rtsp_transport="tcp",
         )

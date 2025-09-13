@@ -88,8 +88,9 @@ logger.addHandler(console_handler)
 
 
 class VideoDataReceiver:
-    def __init__(self, debug_mode=False):
+    def __init__(self, debug_mode=False, test_mode=False):
         self.debug_mode = debug_mode
+        self.test_mode = test_mode
         self.config = config
         self.data_reception_enabled = True  # 데이터 수신 상태 플래그
         self.last_check_time = 0  # 마지막 상태 확인 시간
@@ -103,6 +104,12 @@ class VideoDataReceiver:
             logger.info(f"스냅샷 처리 간격 설정: {self.snapshot_interval}초")
         except Exception as e:
             logger.warning(f"설정 파일에서 스냅샷 간격을 읽을 수 없어 기본값 사용: {self.snapshot_interval}초")
+        
+        # 테스트 모드 설정
+        if self.test_mode:
+            logger.info("테스트 모드 활성화 - 가상 열화상 이미지 생성")
+            self.temp_min = 20.0  # 최소 온도
+            self.temp_max = 40.0  # 최대 온도
 
     def connect_to_db(self):
         global nvrdb
@@ -154,6 +161,74 @@ class VideoDataReceiver:
             return nvrdb.cursor(pymysql.cursors.DictCursor)
         except Exception as e:
             logger.error(f'Error getting cursor: {str(e)}')
+            return None
+
+    def generate_virtual_thermal_image(self):
+        """
+        테스트 모드용 가상 열화상 이미지 생성 (640x480)
+        5x5 그리드로 노란색->붉은색 그라데이션
+        """
+        try:
+            logger.info("가상 열화상 이미지 생성 시작")
+            
+            # 이미지 크기 설정
+            width, height = 640, 480
+            grid_size = 5  # 5x5 그리드
+            
+            # 그리드 크기 계산
+            grid_width = width // grid_size
+            grid_height = height // grid_size
+            
+            # 빈 이미지 생성 (BGR 형식)
+            img = np.zeros((height, width, 3), dtype=np.uint8)
+            
+            # 각 그리드에 대해 온도 기반 색상 생성
+            for row in range(grid_size):
+                for col in range(grid_size):
+                    # 20도~40도 사이의 랜덤 온도 생성
+                    temperature = np.random.uniform(self.temp_min, self.temp_max)
+                    
+                    # 온도를 0~1 범위로 정규화
+                    temp_normalized = (temperature - self.temp_min) / (self.temp_max - self.temp_min)
+                    
+                    # 노란색(20도) -> 붉은색(40도) 그라데이션
+                    # 노란색: BGR(0, 255, 255) -> 붉은색: BGR(0, 0, 255)
+                    if temp_normalized <= 0.5:
+                        # 노란색 -> 주황색 (0~0.5)
+                        ratio = temp_normalized * 2
+                        b = 0
+                        g = int(255 * (1 - ratio * 0.5))  # 255 -> 127
+                        r = 255
+                    else:
+                        # 주황색 -> 붉은색 (0.5~1.0)
+                        ratio = (temp_normalized - 0.5) * 2
+                        b = 0
+                        g = int(127 * (1 - ratio))  # 127 -> 0
+                        r = 255
+                    
+                    # 그리드 영역에 색상 적용
+                    start_x = col * grid_width
+                    end_x = min((col + 1) * grid_width, width)
+                    start_y = row * grid_height
+                    end_y = min((row + 1) * grid_height, height)
+                    
+                    img[start_y:end_y, start_x:end_x] = [b, g, r]
+            
+            # 이미지를 JPEG로 인코딩
+            success, encoded_img = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            
+            if success:
+                # base64로 인코딩
+                img_base64 = base64.b64encode(encoded_img).decode('utf-8')
+                logger.info(f"가상 열화상 이미지 생성 완료: {width}x{height}, 온도범위: {self.temp_min}°C~{self.temp_max}°C")
+                return img_base64
+            else:
+                logger.error("가상 이미지 인코딩 실패")
+                return None
+                
+        except Exception as e:
+            logger.error(f"가상 열화상 이미지 생성 오류: {str(e)}")
+            logger.error(traceback.format_exc())
             return None
 
     def capture_rtsp_snapshot(self):
@@ -319,6 +394,49 @@ class VideoDataReceiver:
             h, w, _ = img.shape
             logger.info(f"이미지 해상도: {w}x{h} (640x480)")
             
+            # 테스트 모드인 경우 가상 온도 데이터 생성
+            if self.test_mode:
+                logger.info("테스트 모드: 가상 온도 데이터 생성")
+                temperature_data = []
+                
+                # 5x5 그리드에 맞춰 온도 데이터 생성
+                grid_size = 5
+                grid_width = w // grid_size
+                grid_height = h // grid_size
+                
+                for r in range(h):
+                    for c in range(w):
+                        # 그리드 위치 계산
+                        grid_row = r // grid_height
+                        grid_col = c // grid_width
+                        
+                        # 그리드 내에서의 위치 (0~1)
+                        local_y = (r % grid_height) / grid_height
+                        local_x = (c % grid_width) / grid_width
+                        
+                        # 그리드 중심에서의 거리 (0~1)
+                        center_y = 0.5
+                        center_x = 0.5
+                        distance = np.sqrt((local_x - center_x)**2 + (local_y - center_y)**2)
+                        
+                        # 거리에 따른 온도 변화 (중심이 더 뜨거움)
+                        base_temp = np.random.uniform(self.temp_min, self.temp_max)
+                        temp_variation = (1 - distance) * 5  # 중심에서 최대 5도 차이
+                        temperature = base_temp + temp_variation
+                        
+                        # 온도 범위 제한
+                        temperature = max(self.temp_min, min(self.temp_max, temperature))
+                        
+                        temperature_data.append({
+                            'x': c,
+                            'y': r,
+                            'temperature': round(temperature, 2)
+                        })
+                
+                logger.info(f"테스트 모드 온도 데이터 생성 완료: {len(temperature_data)}개 픽셀")
+                return temperature_data
+            
+            # 일반 모드: 컬러바 분석 사용
             # 컬러바 이미지 경로 (기본값 설정)
             colorbar_path = os.path.join(os.path.dirname(__file__), 'temp_extractor', 'temp_extractor', 'color_bar.png')
             
@@ -441,11 +559,19 @@ class VideoDataReceiver:
             try:
                 logger.info(f"스냅샷 처리 시작 (간격: {self.snapshot_interval}초)")
                 
-                # RTSP 스냅샷 캡처
-                snapshot_data = self.capture_rtsp_snapshot()
-                if snapshot_data is None:
-                    logger.error("RTSP 스냅샷 캡처 실패")
-                    return
+                # 테스트 모드인지 확인
+                if self.test_mode:
+                    # 가상 열화상 이미지 생성
+                    snapshot_data = self.generate_virtual_thermal_image()
+                    if snapshot_data is None:
+                        logger.error("가상 열화상 이미지 생성 실패")
+                        return
+                else:
+                    # RTSP 스냅샷 캡처
+                    snapshot_data = self.capture_rtsp_snapshot()
+                    if snapshot_data is None:
+                        logger.error("RTSP 스냅샷 캡처 실패")
+                        return
                 
                 # 온도 데이터 추출
                 temperature_data = self.extract_temperature_data_optimized(snapshot_data)
@@ -781,9 +907,10 @@ if __name__ == "__main__":
         # 명령행 인자 파싱
         parser = argparse.ArgumentParser(description='Video Data Receiver')
         parser.add_argument('--debug', action='store_true', help='Enable debug mode with UI')
+        parser.add_argument('--test', action='store_true', help='Enable test mode with virtual thermal images')
         args = parser.parse_args()
         
-        dataReceiver = VideoDataReceiver(debug_mode=args.debug)
+        dataReceiver = VideoDataReceiver(debug_mode=args.debug, test_mode=args.test)
         dataReceiver.run()
 
     except Exception as e:
