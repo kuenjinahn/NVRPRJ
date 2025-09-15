@@ -42,22 +42,23 @@ function intToLE16(n) {
 }
 
 // PNT 프로토콜 PID 상수 (명세 V4.1 준수)
+// PID 타입: R=Read only, W=Parameter change(EEprom write), C=Command(Pan/tilt movement or action)
 const PNT_PID = {
   // 0~100: 1 Byte 데이터
-  PRESET_SAVE: 24,      // 0x18 - 프리셋 저장 (1 Byte)
-  PRESET_RECALL: 25,    // 0x19 - 프리셋 호출 (1 Byte)
-  ALARM_RESET: 26,      // 0x1A - 알람 리셋 (1 Byte)
-  AUTO_SCAN_CMD: 27,    // 0x1B - 자동 스캔 명령 (1 Byte)
-  PRESET_ACK: 32,       // 0x20 - 프리셋 호출 응답 (1 Byte)
-  TOUR: 46,             // 0x2E - 투어 제어 (1 Byte: 1=start, 0=stop)
+  PRESET_SAVE: 24,      // 0x18 - 프리셋 저장 (C: Command, 1 Byte)
+  PRESET_RECALL: 25,    // 0x19 - 프리셋 호출 (C: Command, 1 Byte)
+  ALARM_RESET: 26,      // 0x1A - 알람 리셋 (C: Command, 1 Byte)
+  AUTO_SCAN_CMD: 27,    // 0x1B - 자동 스캔 명령 (C: Command, 1 Byte)
+  PRESET_ACK: 32,       // 0x20 - 프리셋 호출 응답 (R: Read only, 1 Byte)
+  TOUR: 46,             // 0x2E - 투어 제어 (C: Command, 1 Byte: 1=start, 0=stop)
 
   // 101~191: 2 Bytes 데이터
   // (해당 범위의 PID들은 2바이트 데이터 사용)
 
   // 192~253: N Bytes 데이터
-  SET_EACH_TOUR_DATA: 222,  // 0xDE: N Bytes [D0=preset(1~8), D1~D2=speed(rpm LSB/MSB), D3=delay(1~255s)]
-  PRESET_DATA: 200,     // 0xC8 - 프리셋 데이터 (N Bytes: Pan, Tilt, Zoom, Focus)
-  LIMIT_POSI_DATA: 202  // 0xCA - PAN/TILT 제한 위치 데이터 (N Bytes)
+  SET_EACH_TOUR_DATA: 222,  // 0xDE: W: Parameter change, N Bytes [D0=preset(1~8), D1~D2=speed(rpm LSB/MSB), D3=delay(1~255s)]
+  PRESET_DATA: 200,     // 0xC8 - 프리셋 데이터 (R: Read only, N Bytes: Pan, Tilt, Zoom, Focus)
+  LIMIT_POSI_DATA: 202  // 0xCA - PAN/TILT 제한 위치 데이터 (R: Read only, N Bytes)
 };
 
 // PID에 따른 데이터 바이트 수 반환 함수 (명세 V4.1)
@@ -85,8 +86,8 @@ async function sendTCPPacket(ip, port, packet) {
       log.info(`[PNT 통신 시작] 대상: ${ip}:${port}, 패킷 크기: ${packet.length}바이트`);
       log.info(`[PNT 패킷 상세] 헥스: ${packet.toString('hex')}, ASCII: ${packet.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
 
-      // 연결 타임아웃 설정 (10초)
-      client.setTimeout(10000);
+      // 연결 타임아웃 설정 (7초 - 명세 V4.1: 7초 이상 패킷 미수신 시 컨트롤러 정지)
+      client.setTimeout(7000);
 
       // 연결 시도
       client.connect(port, ip, () => {
@@ -164,7 +165,7 @@ async function sendTCPPacket(ip, port, packet) {
         }
       });
 
-      // 추가 안전장치: 10초 후 응답이 없으면 성공으로 처리
+      // 추가 안전장치: 8초 후 응답이 없으면 성공으로 처리 (연결 타임아웃보다 길게)
       setTimeout(() => {
         if (!isResolved) {
           isResolved = true;
@@ -173,7 +174,7 @@ async function sendTCPPacket(ip, port, packet) {
           client.destroy();
           resolve({ success: true, message: '명령 전송 완료 (타임아웃)' });
         }
-      }, 10000);
+      }, 8000);
 
     }).catch(err => {
       log.error(`[PNT 모듈 오류] Net module import 실패: ${err.message}`);
@@ -233,7 +234,17 @@ function parsePNTResponse(responseData) {
     const total = rmid + tmid + id + pid + dataNumber + payload.reduce((sum, byte) => sum + byte, 0);
     const calculatedChecksum = ((~total) + 1) & 0xFF;
     const checksumValid = calculatedChecksum === checksum;
+
+    // 명세 검증: RMID+TMID+ID+PID+N+D0+D2...+Dn-1+CHK = 0
+    const packetSum = rmid + tmid + id + pid + dataNumber + payload.reduce((sum, byte) => sum + byte, 0) + checksum;
+    const packetSumValid = (packetSum & 0xFF) === 0;
+
     log.info(`[PNT 체크섬 검증] 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 유효: ${checksumValid}`);
+    log.info(`[PNT 패킷 합계 검증] 전체 패킷 합계: ${packetSum} (0x${packetSum.toString(16)}), 0이어야 함: ${packetSumValid}`);
+
+    if (!checksumValid || !packetSumValid) {
+      log.warn(`[PNT 체크섬 오류] 체크섬 검증 실패 - 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 패킷합계: ${packetSum}`);
+    }
 
     // 응답 코드 확인
     if (payload.length > 0) {
@@ -819,8 +830,8 @@ router.post('/ptz/wiper', async (req, res) => {
  *               presetNumber:
  *                 type: number
  *                 minimum: 1
- *                 maximum: 8
- *                 description: 프리셋 번호 (1-8)
+ *                 maximum: 99
+ *                 description: 프리셋 번호 (1-99)
  *               ip:
  *                 type: string
  *                 description: 카메라 IP 주소
@@ -851,11 +862,11 @@ router.post('/ptz/preset/save', async (req, res) => {
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 8) {
-      log.warn(`[프리셋 저장 API 오류] 잘못된 프리셋 번호: ${presetNumber} (1-8 범위 벗어남)`);
+    if (presetNumber < 1 || presetNumber > 99) {
+      log.warn(`[프리셋 저장 API 오류] 잘못된 프리셋 번호: ${presetNumber} (1-99 범위 벗어남)`);
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-8 사이여야 합니다'
+        message: '프리셋 번호는 1-99 사이여야 합니다'
       });
     }
 
@@ -1185,8 +1196,8 @@ client=${client}
  *               presetNumber:
  *                 type: number
  *                 minimum: 1
- *                 maximum: 8
- *                 description: 프리셋 번호 (1-8)
+ *                 maximum: 99
+ *                 description: 프리셋 번호 (1-99)
  *               ip:
  *                 type: string
  *                 description: 카메라 IP 주소
@@ -1212,10 +1223,10 @@ router.post('/ptz/preset/recall', async (req, res) => {
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 8) {
+    if (presetNumber < 1 || presetNumber > 99) {
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-8 사이여야 합니다'
+        message: '프리셋 번호는 1-99 사이여야 합니다'
       });
     }
 
@@ -1490,8 +1501,8 @@ router.post('/ptz/tour/stop', async (req, res) => {
  *               presetNumber:
  *                 type: number
  *                 minimum: 1
- *                 maximum: 8
- *                 description: 프리셋 번호 (1-8)
+ *                 maximum: 99
+ *                 description: 프리셋 번호 (1-99)
  *               speedRpm:
  *                 type: number
  *                 description: 투어 속도 (RPM)
@@ -1525,10 +1536,10 @@ router.post('/ptz/tour/step', async (req, res) => {
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 8) {
+    if (presetNumber < 1 || presetNumber > 99) {
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-8 사이여야 합니다'
+        message: '프리셋 번호는 1-99 사이여야 합니다'
       });
     }
 
@@ -1931,8 +1942,8 @@ router.get('/ptz/preset/list', async (req, res) => {
  *               presetNumber:
  *                 type: number
  *                 minimum: 1
- *                 maximum: 8
- *                 description: 프리셋 번호 (1-8)
+ *                 maximum: 99
+ *                 description: 프리셋 번호 (1-99)
  *               ip:
  *                 type: string
  *                 description: 카메라 IP 주소
@@ -1958,10 +1969,10 @@ router.delete('/ptz/preset/delete', async (req, res) => {
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 8) {
+    if (presetNumber < 1 || presetNumber > 99) {
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-8 사이여야 합니다'
+        message: '프리셋 번호는 1-99 사이여야 합니다'
       });
     }
 
