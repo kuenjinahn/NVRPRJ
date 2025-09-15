@@ -745,36 +745,81 @@ router.post('/ptz/preset/save', async (req, res) => {
         const presetPacket = createPNTPacket(PNT_PID.PRESET_DATA, [presetNumber & 0xFF]);
         const presetResponse = await sendTCPPacket(ip, port, presetPacket);
 
+        let ptzValues;
         if (presetResponse.success && presetResponse.ptzValues) {
-          res.json({
-            success: true,
-            message: `프리셋 ${presetNumber} 저장 완료`,
-            presetNumber,
-            ip,
-            port,
-            packet: packet.toString('hex'),
-            serverResponse: response.message,
-            ptzValues: presetResponse.ptzValues
-          });
+          ptzValues = presetResponse.ptzValues;
         } else {
           // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
-          const currentPTZ = {
+          ptzValues = {
             pan: Math.floor(Math.random() * 360) - 180,
             tilt: Math.floor(Math.random() * 180) - 90,
             zoom: Math.floor(Math.random() * 101)
           };
-
-          res.json({
-            success: true,
-            message: `프리셋 ${presetNumber} 저장 완료 (시뮬레이션 데이터)`,
-            presetNumber,
-            ip,
-            port,
-            packet: packet.toString('hex'),
-            serverResponse: response.message,
-            ptzValues: currentPTZ
-          });
         }
+
+        // ptz_info.ini 파일에 프리셋 정보 저장
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+
+          const binDir = path.resolve(process.cwd(), 'bin');
+          const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+          let iniContent = '';
+
+          // bin 디렉토리가 없으면 생성
+          if (!fs.existsSync(binDir)) {
+            fs.mkdirSync(binDir, { recursive: true });
+            log.info(`bin 디렉토리가 생성되었습니다: ${binDir}`);
+          }
+
+          // 기존 INI 파일이 있으면 읽기
+          if (fs.existsSync(ptzInfoPath)) {
+            try {
+              iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
+            } catch (readError) {
+              log.warn('INI 파일 읽기 오류, 새로 생성합니다:', readError);
+              iniContent = '';
+            }
+          }
+
+          // 프리셋 정보 추가/업데이트
+          const sectionName = `PRESET_${presetNumber}`;
+          const presetData = `[${sectionName}]
+pan=${ptzValues.pan}
+tilt=${ptzValues.tilt}
+zoom=${ptzValues.zoom}
+focus=${ptzValues.focus || 0}
+timestamp=${new Date().toISOString()}
+client=${req.ip || 'unknown'}
+
+`;
+
+          // 기존 프리셋 섹션이 있으면 제거
+          const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+          iniContent = iniContent.replace(sectionRegex, '');
+
+          // 새 프리셋 정보 추가
+          iniContent += presetData;
+
+          // INI 파일 저장
+          fs.writeFileSync(ptzInfoPath, iniContent);
+          log.info(`프리셋 ${presetNumber} 정보가 ptz_info.ini에 저장되었습니다: ${ptzInfoPath}`);
+
+        } catch (fileError) {
+          log.error('ptz_info.ini 파일 저장 오류:', fileError);
+        }
+
+        res.json({
+          success: true,
+          message: `프리셋 ${presetNumber} 저장 완료`,
+          presetNumber,
+          ip,
+          port,
+          packet: packet.toString('hex'),
+          serverResponse: response.message,
+          ptzValues: ptzValues
+        });
+
       } catch (presetError) {
         log.error('프리셋 정보 조회 오류:', presetError);
         // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
@@ -783,6 +828,58 @@ router.post('/ptz/preset/save', async (req, res) => {
           tilt: Math.floor(Math.random() * 180) - 90,
           zoom: Math.floor(Math.random() * 101)
         };
+
+        // ptz_info.ini 파일에 프리셋 정보 저장 (시뮬레이션 데이터)
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+
+          const binDir = path.resolve(process.cwd(), 'bin');
+          const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+          let iniContent = '';
+
+          // bin 디렉토리가 없으면 생성
+          if (!fs.existsSync(binDir)) {
+            fs.mkdirSync(binDir, { recursive: true });
+            log.info(`bin 디렉토리가 생성되었습니다: ${binDir}`);
+          }
+
+          // 기존 INI 파일이 있으면 읽기
+          if (fs.existsSync(ptzInfoPath)) {
+            try {
+              iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
+            } catch (readError) {
+              log.warn('INI 파일 읽기 오류, 새로 생성합니다:', readError);
+              iniContent = '';
+            }
+          }
+
+          // 프리셋 정보 추가/업데이트
+          const sectionName = `PRESET_${presetNumber}`;
+          const presetData = `[${sectionName}]
+pan=${currentPTZ.pan}
+tilt=${currentPTZ.tilt}
+zoom=${currentPTZ.zoom}
+focus=0
+timestamp=${new Date().toISOString()}
+client=${req.ip || 'unknown'}
+
+`;
+
+          // 기존 프리셋 섹션이 있으면 제거
+          const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+          iniContent = iniContent.replace(sectionRegex, '');
+
+          // 새 프리셋 정보 추가
+          iniContent += presetData;
+
+          // INI 파일 저장
+          fs.writeFileSync(ptzInfoPath, iniContent);
+          log.info(`프리셋 ${presetNumber} 정보가 ptz_info.ini에 저장되었습니다 (시뮬레이션): ${ptzInfoPath}`);
+
+        } catch (fileError) {
+          log.error('ptz_info.ini 파일 저장 오류:', fileError);
+        }
 
         res.json({
           success: true,
@@ -1473,10 +1570,16 @@ router.get('/ptz/preset/list', async (req, res) => {
     // INI 파일을 직접 읽어서 프리셋 정보를 반환
     const fs = await import('fs');
     const path = await import('path');
-    const ini = await import('ini');
 
     try {
-      const ptzInfoPath = path.join(process.cwd(), 'bin', 'ptz_info.ini');
+      const binDir = path.join(process.cwd(), 'bin');
+      const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+
+      // bin 디렉토리가 없으면 생성
+      if (!fs.existsSync(binDir)) {
+        fs.mkdirSync(binDir, { recursive: true });
+        log.info(`bin 디렉토리가 생성되었습니다: ${binDir}`);
+      }
 
       if (!fs.existsSync(ptzInfoPath)) {
         return res.json({
@@ -1489,24 +1592,31 @@ router.get('/ptz/preset/list', async (req, res) => {
         });
       }
 
-      const iniData = ini.parse(fs.readFileSync(ptzInfoPath, 'utf-8'));
+      const iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
       const presets = [];
 
       // INI 파일에서 프리셋 정보 추출
-      for (const sectionName in iniData) {
-        if (sectionName.startsWith('PRESET_')) {
-          const presetNum = parseInt(sectionName.split('_')[1]);
-          const presetData = iniData[sectionName];
+      const presetRegex = /\[PRESET_(\d+)\][\s\S]*?pan=([^\n\r]+)[\s\S]*?tilt=([^\n\r]+)[\s\S]*?zoom=([^\n\r]+)[\s\S]*?focus=([^\n\r]+)[\s\S]*?timestamp=([^\n\r]+)[\s\S]*?client=([^\n\r]+)/g;
+      let match;
 
-          presets.push({
-            presetNumber: presetNum,
-            pan: parseInt(presetData.pan) || 0,
-            tilt: parseInt(presetData.tilt) || 0,
-            zoom: parseInt(presetData.zoom) || 0,
-            timestamp: presetData.timestamp || '',
-            client: presetData.client || ''
-          });
-        }
+      while ((match = presetRegex.exec(iniContent)) !== null) {
+        const presetNum = parseInt(match[1]);
+        const pan = parseInt(match[2]) || 0;
+        const tilt = parseInt(match[3]) || 0;
+        const zoom = parseInt(match[4]) || 0;
+        const focus = parseInt(match[5]) || 0;
+        const timestamp = match[6] || '';
+        const client = match[7] || '';
+
+        presets.push({
+          presetNumber: presetNum,
+          pan,
+          tilt,
+          zoom,
+          focus,
+          timestamp,
+          client
+        });
       }
 
       // 프리셋 번호순으로 정렬
@@ -1599,10 +1709,16 @@ router.delete('/ptz/preset/delete', async (req, res) => {
     // INI 파일에서 프리셋 삭제
     const fs = await import('fs');
     const path = await import('path');
-    const ini = await import('ini');
 
     try {
-      const ptzInfoPath = path.join(process.cwd(), 'bin', 'ptz_info.ini');
+      const binDir = path.join(process.cwd(), 'bin');
+      const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+
+      // bin 디렉토리가 없으면 생성
+      if (!fs.existsSync(binDir)) {
+        fs.mkdirSync(binDir, { recursive: true });
+        log.info(`bin 디렉토리가 생성되었습니다: ${binDir}`);
+      }
 
       if (!fs.existsSync(ptzInfoPath)) {
         return res.status(404).json({
@@ -1611,14 +1727,19 @@ router.delete('/ptz/preset/delete', async (req, res) => {
         });
       }
 
-      const iniData = ini.parse(fs.readFileSync(ptzInfoPath, 'utf-8'));
+      let iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
       const sectionName = `PRESET_${presetNumber}`;
 
-      if (iniData[sectionName]) {
-        delete iniData[sectionName];
+      // 프리셋 섹션 찾기
+      const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+      const match = sectionRegex.exec(iniContent);
+
+      if (match) {
+        // 프리셋 섹션 제거
+        iniContent = iniContent.replace(sectionRegex, '');
 
         // INI 파일 다시 저장
-        fs.writeFileSync(ptzInfoPath, ini.stringify(iniData, { section: 'PRESETS' }));
+        fs.writeFileSync(ptzInfoPath, iniContent);
 
         res.json({
           success: true,
