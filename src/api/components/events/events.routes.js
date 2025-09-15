@@ -85,8 +85,8 @@ async function sendTCPPacket(ip, port, packet) {
       log.info(`[PNT 통신 시작] 대상: ${ip}:${port}, 패킷 크기: ${packet.length}바이트`);
       log.info(`[PNT 패킷 상세] 헥스: ${packet.toString('hex')}, ASCII: ${packet.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
 
-      // 연결 타임아웃 설정 (5초)
-      client.setTimeout(5000);
+      // 연결 타임아웃 설정 (10초)
+      client.setTimeout(10000);
 
       // 연결 시도
       client.connect(port, ip, () => {
@@ -118,7 +118,7 @@ async function sendTCPPacket(ip, port, packet) {
 
             client.destroy();
             resolve(parsedResponse);
-          }, 100); // 100ms 대기 후 연결 종료
+          }, 200); // 200ms 대기 후 연결 종료 (응답 완료 대기)
         }
       });
 
@@ -164,7 +164,7 @@ async function sendTCPPacket(ip, port, packet) {
         }
       });
 
-      // 추가 안전장치: 3초 후 응답이 없으면 성공으로 처리
+      // 추가 안전장치: 10초 후 응답이 없으면 성공으로 처리
       setTimeout(() => {
         if (!isResolved) {
           isResolved = true;
@@ -173,7 +173,7 @@ async function sendTCPPacket(ip, port, packet) {
           client.destroy();
           resolve({ success: true, message: '명령 전송 완료 (타임아웃)' });
         }
-      }, 3000);
+      }, 10000);
 
     }).catch(err => {
       log.error(`[PNT 모듈 오류] Net module import 실패: ${err.message}`);
@@ -1732,23 +1732,28 @@ router.post('/ptz/tour/setup', async (req, res) => {
  *         description: 서버 내부 오류
  */
 router.get('/ptz/status', async (req, res) => {
+  const startTime = Date.now();
   try {
     const { ip, port } = req.query;
 
     if (!ip || !port) {
+      log.warn(`[PNT 상태 확인] 필수 파라미터 누락: ip=${ip}, port=${port}`);
       return res.status(400).json({
         success: false,
         message: '필수 파라미터가 누락되었습니다: ip, port'
       });
     }
 
-    log.info(`PNT 서버 연결 상태 확인: ${ip}:${port}`);
+    log.info(`[PNT 상태 확인] 서버 연결 테스트 시작: ${ip}:${port}`);
 
     // 간단한 연결 테스트 패킷 (프리셋 호출 0번 - 존재하지 않는 프리셋)
     const packet = createPNTPacket(PNT_PID.PRESET_RECALL, [0]);
-    log.info(`PNT 연결 테스트 패킷: ${packet.toString('hex')}`);
+    log.info(`[PNT 상태 확인] 테스트 패킷: ${packet.toString('hex')}`);
 
     const response = await sendTCPPacket(ip, port, packet);
+    const totalTime = Date.now() - startTime;
+
+    log.info(`[PNT 상태 확인] 응답 수신: ${JSON.stringify(response)}, 소요 시간: ${totalTime}ms`);
 
     res.json({
       success: true,
@@ -1756,14 +1761,18 @@ router.get('/ptz/status', async (req, res) => {
       data: {
         ip,
         port,
-        connected: true,
+        connected: response.success,
         serverResponse: response.message,
-        packet: packet.toString('hex')
+        packet: packet.toString('hex'),
+        responseTime: totalTime
       }
     });
 
   } catch (error) {
-    log.error('PNT 서버 연결 상태 확인 실패:', error);
+    const totalTime = Date.now() - startTime;
+    log.error(`[PNT 상태 확인] 연결 실패: ${error.message}, 소요 시간: ${totalTime}ms`);
+    log.error(`[PNT 상태 확인] 오류 상세:`, error.stack);
+
     res.status(500).json({
       success: false,
       message: 'PNT 서버 연결 실패',
@@ -1771,7 +1780,8 @@ router.get('/ptz/status', async (req, res) => {
         ip: req.query.ip,
         port: req.query.port,
         connected: false,
-        error: error.message
+        error: error.message,
+        responseTime: totalTime
       }
     });
   }
