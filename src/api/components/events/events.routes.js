@@ -83,8 +83,8 @@ async function sendTCPPacket(ip, port, packet) {
       let isResolved = false;
       const startTime = Date.now();
 
-      log.info(`[PNT 통신 시작] 대상: ${ip}:${port}, 패킷 크기: ${packet.length}바이트`);
-      log.info(`[PNT 패킷 상세] 헥스: ${packet.toString('hex')}, ASCII: ${packet.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
+      // log.info(`[PNT 통신 시작] 대상: ${ip}:${port}, 패킷 크기: ${packet.length}바이트`);
+      // log.info(`[PNT 패킷 상세] 헥스: ${packet.toString('hex')}, ASCII: ${packet.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
 
       // 연결 타임아웃 설정 (7초 - 명세 V4.1: 7초 이상 패킷 미수신 시 컨트롤러 정지)
       client.setTimeout(7000);
@@ -92,30 +92,30 @@ async function sendTCPPacket(ip, port, packet) {
       // 연결 시도
       client.connect(port, ip, () => {
         const connectTime = Date.now() - startTime;
-        log.info(`[PNT 연결 성공] ${ip}:${port}, 연결 시간: ${connectTime}ms`);
+        // log.info(`[PNT 연결 성공] ${ip}:${port}, 연결 시간: ${connectTime}ms`);
 
         client.write(packet);
-        log.info(`[PNT 패킷 전송] ${packet.length}바이트 전송 완료, 헥스: ${packet.toString('hex')}`);
+        // log.info(`[PNT 패킷 전송] ${packet.length}바이트 전송 완료, 헥스: ${packet.toString('hex')}`);
       });
 
       client.on('data', (data) => {
         const receiveTime = Date.now() - startTime;
         responseData = Buffer.concat([responseData, data]);
 
-        log.info(`[PNT 응답 수신] ${receiveTime}ms 후, 크기: ${data.length}바이트`);
-        log.info(`[PNT 응답 헥스] ${data.toString('hex')}`);
-        log.info(`[PNT 응답 ASCII] ${data.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
-        log.info(`[PNT 누적 응답] 총 ${responseData.length}바이트: ${responseData.toString('hex')}`);
+        // log.info(`[PNT 응답 수신] ${receiveTime}ms 후, 크기: ${data.length}바이트`);
+        // log.info(`[PNT 응답 헥스] ${data.toString('hex')}`);
+        // log.info(`[PNT 응답 ASCII] ${data.toString('ascii').replace(/[^\x20-\x7E]/g, '.')}`);
+        // log.info(`[PNT 누적 응답] 총 ${responseData.length}바이트: ${responseData.toString('hex')}`);
 
         // 응답 수신 시 즉시 처리
         if (!isResolved) {
           isResolved = true;
           setTimeout(() => {
             const totalTime = Date.now() - startTime;
-            log.info(`[PNT 통신 완료] 총 소요 시간: ${totalTime}ms, 응답 크기: ${responseData.length}바이트`);
+            // log.info(`[PNT 통신 완료] 총 소요 시간: ${totalTime}ms, 응답 크기: ${responseData.length}바이트`);
 
             const parsedResponse = parsePNTResponse(responseData);
-            log.info(`[PNT 응답 파싱] 결과: ${JSON.stringify(parsedResponse)}`);
+            // log.info(`[PNT 응답 파싱] 결과: ${JSON.stringify(parsedResponse)}`);
 
             client.destroy();
             resolve(parsedResponse);
@@ -125,14 +125,14 @@ async function sendTCPPacket(ip, port, packet) {
 
       client.on('close', () => {
         const totalTime = Date.now() - startTime;
-        log.info(`[PNT 연결 종료] ${ip}:${port}, 총 소요 시간: ${totalTime}ms`);
+        // log.info(`[PNT 연결 종료] ${ip}:${port}, 총 소요 시간: ${totalTime}ms`);
 
         if (!isResolved) {
           isResolved = true;
           if (responseData.length > 0) {
-            log.info(`[PNT 최종 응답] 연결 종료 시 응답 데이터 있음: ${responseData.toString('hex')}`);
+            // log.info(`[PNT 최종 응답] 연결 종료 시 응답 데이터 있음: ${responseData.toString('hex')}`);
             const parsedResponse = parsePNTResponse(responseData);
-            log.info(`[PNT 최종 파싱] 결과: ${JSON.stringify(parsedResponse)}`);
+            // log.info(`[PNT 최종 파싱] 결과: ${JSON.stringify(parsedResponse)}`);
             resolve(parsedResponse);
           } else {
             // 응답이 없어도 성공으로 처리 (PNT 서버가 응답하지 않는 경우)
@@ -144,8 +144,8 @@ async function sendTCPPacket(ip, port, packet) {
 
       client.on('error', (err) => {
         const totalTime = Date.now() - startTime;
-        log.error(`[PNT 연결 오류] ${ip}:${port}, 소요 시간: ${totalTime}ms, 오류: ${err.message}`);
-        log.error(`[PNT 오류 상세] ${err.stack || err.message}`);
+        // log.error(`[PNT 연결 오류] ${ip}:${port}, 소요 시간: ${totalTime}ms, 오류: ${err.message}`);
+        // log.error(`[PNT 오류 상세] ${err.stack || err.message}`);
 
         if (!isResolved) {
           isResolved = true;
@@ -156,7 +156,7 @@ async function sendTCPPacket(ip, port, packet) {
 
       client.on('timeout', () => {
         const totalTime = Date.now() - startTime;
-        log.error(`[PNT 연결 타임아웃] ${ip}:${port}, 소요 시간: ${totalTime}ms`);
+        // log.error(`[PNT 연결 타임아웃] ${ip}:${port}, 소요 시간: ${totalTime}ms`);
 
         if (!isResolved) {
           isResolved = true;
@@ -209,26 +209,26 @@ function parsePNTResponse(responseData) {
 
     // 데이터 길이 검증 (최소 6바이트: RMID+TMID+ID+PID+DataNumber+CHK)
     if (dataNumber < 0 || dataNumber > responseData.length - 6) {
-      log.warn(`[PNT 응답 오류] 잘못된 데이터 길이: ${dataNumber}바이트 (전체: ${responseData.length}바이트)`);
+      // log.warn(`[PNT 응답 오류] 잘못된 데이터 길이: ${dataNumber}바이트 (전체: ${responseData.length}바이트)`);
       return { success: false, message: '잘못된 데이터 길이' };
     }
 
     // PID에 따른 데이터 길이 검증 (명세 V4.1)
     const expectedDataBytes = getPIDDataBytes(pid);
     if (expectedDataBytes > 0 && dataNumber !== expectedDataBytes) {
-      log.warn(`[PNT 응답 오류] PID ${pid}는 ${expectedDataBytes}바이트 데이터를 예상하지만 ${dataNumber}바이트 수신`);
+      // log.warn(`[PNT 응답 오류] PID ${pid}는 ${expectedDataBytes}바이트 데이터를 예상하지만 ${dataNumber}바이트 수신`);
     } else if (expectedDataBytes === -1) {
-      log.info(`[PNT 응답] PID ${pid}는 가변 길이 데이터 (${dataNumber}바이트)`);
+      // log.info(`[PNT 응답] PID ${pid}는 가변 길이 데이터 (${dataNumber}바이트)`);
     } else if (expectedDataBytes === 0) {
-      log.warn(`[PNT 응답] 알 수 없는 PID: ${pid}`);
+      // log.warn(`[PNT 응답] 알 수 없는 PID: ${pid}`);
     }
 
     const payload = responseData.slice(5, 5 + dataNumber);
     const checksum = responseData[5 + dataNumber];
 
-    log.info(`[PNT 패킷 구조] RMID: 0x${rmid.toString(16)}, TMID: 0x${tmid.toString(16)}, ID: 0x${id.toString(16)}`);
-    log.info(`[PNT 패킷 구조] PID: 0x${pid.toString(16)} (${pid}), 데이터 길이: ${dataNumber}바이트`);
-    log.info(`[PNT 패킷 구조] 체크섬: 0x${checksum.toString(16)}, 페이로드: ${payload.toString('hex')}`);
+    // log.info(`[PNT 패킷 구조] RMID: 0x${rmid.toString(16)}, TMID: 0x${tmid.toString(16)}, ID: 0x${id.toString(16)}`);
+    // log.info(`[PNT 패킷 구조] PID: 0x${pid.toString(16)} (${pid}), 데이터 길이: ${dataNumber}바이트`);
+    // log.info(`[PNT 패킷 구조] 체크섬: 0x${checksum.toString(16)}, 페이로드: ${payload.toString('hex')}`);
 
     // 체크섬 검증 (명세 V4.1: CHK = ~(RMID+TMID+ID+PID+N+D0..+Dn-1) + 1)
     const total = rmid + tmid + id + pid + dataNumber + payload.reduce((sum, byte) => sum + byte, 0);
@@ -239,21 +239,21 @@ function parsePNTResponse(responseData) {
     const packetSum = rmid + tmid + id + pid + dataNumber + payload.reduce((sum, byte) => sum + byte, 0) + checksum;
     const packetSumValid = (packetSum & 0xFF) === 0;
 
-    log.info(`[PNT 체크섬 검증] 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 유효: ${checksumValid}`);
-    log.info(`[PNT 패킷 합계 검증] 전체 패킷 합계: ${packetSum} (0x${packetSum.toString(16)}), 0이어야 함: ${packetSumValid}`);
+    // log.info(`[PNT 체크섬 검증] 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 유효: ${checksumValid}`);
+    // log.info(`[PNT 패킷 합계 검증] 전체 패킷 합계: ${packetSum} (0x${packetSum.toString(16)}), 0이어야 함: ${packetSumValid}`);
 
     if (!checksumValid || !packetSumValid) {
-      log.warn(`[PNT 체크섬 오류] 체크섬 검증 실패 - 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 패킷합계: ${packetSum}`);
+      // log.warn(`[PNT 체크섬 오류] 체크섬 검증 실패 - 계산값: 0x${calculatedChecksum.toString(16)}, 수신값: 0x${checksum.toString(16)}, 패킷합계: ${packetSum}`);
     }
 
     // 응답 코드 확인
     if (payload.length > 0) {
       const responseCode = payload[0];
-      log.info(`[PNT 응답 코드] 0x${responseCode.toString(16)} (${responseCode})`);
+      // log.info(`[PNT 응답 코드] 0x${responseCode.toString(16)} (${responseCode})`);
 
       // 프리셋 데이터 응답 (PID 200 - 0xC8) - 매뉴얼 표준
       if (pid === PNT_PID.PRESET_DATA && responseCode === 0x00 && payload.length >= 9) {
-        log.info(`[PNT 프리셋 데이터] PID 200 (0xC8) 응답 파싱 시작`);
+        // log.info(`[PNT 프리셋 데이터] PID 200 (0xC8) 응답 파싱 시작`);
 
         // 매뉴얼에 따른 9바이트 데이터 구조 파싱
         // D0: 프리셋 번호, D1,2: Pan, D3,4: Tilt, D5,6: Zoom, D7,8: Focus
@@ -267,11 +267,11 @@ function parsePNTResponse(responseData) {
         const signedPan = pan > 32767 ? pan - 65536 : pan;
         const signedTilt = tilt > 32767 ? tilt - 65536 : tilt;
 
-        log.info(`[PNT 프리셋 데이터] 프리셋 번호: ${presetNum}`);
-        log.info(`[PNT 프리셋 데이터] Pan: ${pan} (부호: ${signedPan})`);
-        log.info(`[PNT 프리셋 데이터] Tilt: ${tilt} (부호: ${signedTilt})`);
-        log.info(`[PNT 프리셋 데이터] Zoom: ${zoom}`);
-        log.info(`[PNT 프리셋 데이터] Focus: ${focus}`);
+        // log.info(`[PNT 프리셋 데이터] 프리셋 번호: ${presetNum}`);
+        // log.info(`[PNT 프리셋 데이터] Pan: ${pan} (부호: ${signedPan})`);
+        // log.info(`[PNT 프리셋 데이터] Tilt: ${tilt} (부호: ${signedTilt})`);
+        // log.info(`[PNT 프리셋 데이터] Zoom: ${zoom}`);
+        // log.info(`[PNT 프리셋 데이터] Focus: ${focus}`);
 
         const result = {
           success: true,
@@ -285,7 +285,7 @@ function parsePNTResponse(responseData) {
           }
         };
 
-        log.info(`[PNT 프리셋 데이터] 파싱 완료: ${JSON.stringify(result)}`);
+        // log.info(`[PNT 프리셋 데이터] 파싱 완료: ${JSON.stringify(result)}`);
         return result;
       }
 
@@ -294,43 +294,43 @@ function parsePNTResponse(responseData) {
       switch (responseCode) {
         case 0x00:
           result = { success: true, message: '명령 실행 성공' };
-          log.info(`[PNT 응답 성공] 명령 실행 완료`);
+          // log.info(`[PNT 응답 성공] 명령 실행 완료`);
           break;
         case 0x01:
           result = { success: false, message: '잘못된 명령어' };
-          log.warn(`[PNT 응답 오류] 잘못된 명령어 (0x01)`);
+          // log.warn(`[PNT 응답 오류] 잘못된 명령어 (0x01)`);
           break;
         case 0x02:
           result = { success: false, message: '잘못된 매개변수' };
-          log.warn(`[PNT 응답 오류] 잘못된 매개변수 (0x02)`);
+          // log.warn(`[PNT 응답 오류] 잘못된 매개변수 (0x02)`);
           break;
         case 0x03:
           result = { success: false, message: '장치 사용 중' };
-          log.warn(`[PNT 응답 오류] 장치 사용 중 (0x03)`);
+          // log.warn(`[PNT 응답 오류] 장치 사용 중 (0x03)`);
           break;
         case 0x04:
           result = { success: false, message: '구현되지 않음' };
-          log.warn(`[PNT 응답 오류] 구현되지 않음 (0x04)`);
+          // log.warn(`[PNT 응답 오류] 구현되지 않음 (0x04)`);
           break;
         case 0xFF:
           result = { success: false, message: '일반 오류' };
-          log.error(`[PNT 응답 오류] 일반 오류 (0xFF)`);
+          // log.error(`[PNT 응답 오류] 일반 오류 (0xFF)`);
           break;
         default:
           result = { success: true, message: `응답 코드: 0x${responseCode.toString(16)}` };
-          log.info(`[PNT 응답 알 수 없음] 코드: 0x${responseCode.toString(16)}`);
+          // log.info(`[PNT 응답 알 수 없음] 코드: 0x${responseCode.toString(16)}`);
           break;
       }
 
-      log.info(`[PNT 응답 파싱 완료] 결과: ${JSON.stringify(result)}`);
+      // log.info(`[PNT 응답 파싱 완료] 결과: ${JSON.stringify(result)}`);
       return result;
     }
 
-    log.info(`[PNT 응답 완료] 페이로드 없음, 기본 성공 처리`);
+    // log.info(`[PNT 응답 완료] 페이로드 없음, 기본 성공 처리`);
     return { success: true, message: '응답 수신 완료' };
   } catch (error) {
-    log.error(`[PNT 응답 파싱 오류] 상세:`, error);
-    log.error(`[PNT 응답 파싱 오류] 데이터: ${responseData ? responseData.toString('hex') : 'null'}`);
+    // log.error(`[PNT 응답 파싱 오류] 상세:`, error);
+    // log.error(`[PNT 응답 파싱 오류] 데이터: ${responseData ? responseData.toString('hex') : 'null'}`);
     return { success: false, message: '응답 파싱 실패' };
   }
 }
@@ -807,370 +807,106 @@ router.post('/ptz/wiper', async (req, res) => {
 });
 
 // =========================
-// PNT 프리셋 및 투어 API
+// 웹 API 기반 PTZ 제어 API (포트 80)
 // =========================
 
 /**
  * @swagger
- * /api/ptz/preset/save:
- *   post:
+ * /api/ptz/getPosition:
+ *   get:
  *     tags: [PTZ Control]
- *     summary: PNT 프리셋 저장
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - presetNumber
- *               - ip
- *               - port
- *             properties:
- *               presetNumber:
- *                 type: number
- *                 minimum: 1
- *                 maximum: 99
- *                 description: 프리셋 번호 (1-99)
- *               ip:
- *                 type: string
- *                 description: 카메라 IP 주소
- *               port:
- *                 type: number
- *                 description: 카메라 포트
+ *     summary: PTZ 현재 위치 조회 (웹 API)
+ *     parameters:
+ *       - in: query
+ *         name: ip
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 카메라 IP 주소
+ *       - in: query
+ *         name: ptzNumber
+ *         required: false
+ *         schema:
+ *           type: number
+ *           minimum: 1
+ *           maximum: 3
+ *           default: 1
+ *         description: PTZ 번호 (1-3, 기본값: 1)
  *     responses:
  *       200:
- *         description: 프리셋 저장 성공
+ *         description: PTZ 위치 조회 성공
  *       400:
  *         description: 잘못된 요청 파라미터
  *       500:
  *         description: 서버 내부 오류
  */
-router.post('/ptz/preset/save', async (req, res) => {
-  const startTime = Date.now();
+router.get('/ptz/getPosition', async (req, res) => {
   try {
-    log.info(`[프리셋 저장 API 시작] 요청 수신: ${JSON.stringify(req.body)}`);
+    const { ip, ptzNumber = 1 } = req.query;
 
-    const { presetNumber, ip, port } = req.body;
-
-    // 파라미터 검증
-    if (!presetNumber || !ip || !port) {
-      log.warn(`[프리셋 저장 API 오류] 필수 파라미터 누락: presetNumber=${presetNumber}, ip=${ip}, port=${port}`);
+    if (!ip) {
       return res.status(400).json({
         success: false,
-        message: '필수 파라미터가 누락되었습니다: presetNumber, ip, port'
+        message: '필수 파라미터가 누락되었습니다: ip'
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 99) {
-      log.warn(`[프리셋 저장 API 오류] 잘못된 프리셋 번호: ${presetNumber} (1-99 범위 벗어남)`);
+    // PTZ 번호 유효성 검사
+    const ptzNum = parseInt(ptzNumber);
+    if (ptzNum < 1 || ptzNum > 3) {
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-99 사이여야 합니다'
+        message: 'PTZ 번호는 1-3 사이여야 합니다'
       });
     }
 
-    log.info(`[프리셋 저장 API] 프리셋 번호: ${presetNumber}, 대상: ${ip}:${port}`);
-    log.info(`[프리셋 저장 API] 클라이언트 IP: ${req.ip || 'unknown'}`);
-    log.info(`[프리셋 저장 API] User-Agent: ${req.get('User-Agent') || 'unknown'}`);
+    log.info(`[웹 API] PTZ 현재 위치 조회: ${ip}:80, PTZNumber=${ptzNum}`);
 
-    // PNT 패킷 생성
-    const packet = createPNTPacket(PNT_PID.PRESET_SAVE, [presetNumber & 0xFF]);
-    log.info(`[프리셋 저장 API] PNT 패킷 생성 완료: ${packet.toString('hex')}`);
-    log.info(`[프리셋 저장 API] 패킷 크기: ${packet.length}바이트`);
+    // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={ptzNumber}&GetPTZPosition=do
+    const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${ptzNum}&GetPTZPosition=do`;
 
-    // PNT 서버로 패킷 전송
-    log.info(`[프리셋 저장 API] PNT 서버로 패킷 전송 시작: ${ip}:${port}`);
-    const response = await sendTCPPacket(ip, port, packet);
-    const communicationTime = Date.now() - startTime;
-    log.info(`[프리셋 저장 API] PNT 서버 통신 완료: ${communicationTime}ms 소요`);
+    // axios 사용
+    const axios = (await import('axios')).default;
+    const response = await axios.get(apiUrl, {
+      timeout: 5000
+    });
 
-    if (response.success) {
-      log.info(`[프리셋 저장 API] PNT 서버 응답 성공: ${response.message}`);
+    const responseText = response.data;
+    log.info(`[웹 API] 응답: ${responseText}`);
 
-      // PNT 서버에서 저장된 프리셋 데이터를 조회 (매뉴얼 표준 PID 200)
-      try {
-        log.info(`[프리셋 저장 API] 프리셋 데이터 조회 시작: 프리셋 ${presetNumber}`);
-        const presetPacket = createPNTPacket(PNT_PID.PRESET_DATA, [presetNumber & 0xFF]);
-        log.info(`[프리셋 저장 API] 프리셋 데이터 조회 패킷: ${presetPacket.toString('hex')}`);
+    // 응답 파싱: PTZ.{ptzNumber}.Position=345.88,38.00,1.0000
+    const positionMatch = responseText.match(new RegExp(`PTZ\\.${ptzNum}\\.Position=([^,]+),([^,]+),([^,]+)`));
 
-        const presetResponse = await sendTCPPacket(ip, port, presetPacket);
-        log.info(`[프리셋 저장 API] 프리셋 데이터 조회 응답: ${JSON.stringify(presetResponse)}`);
+    if (!positionMatch) {
+      throw new Error(`위치 정보를 파싱할 수 없습니다. 응답: ${responseText}`);
+    }
 
-        let ptzValues;
-        if (presetResponse.success && presetResponse.ptzValues) {
-          ptzValues = presetResponse.ptzValues;
-          log.info(`[프리셋 저장 API] 실제 PTZ 값 조회 성공: ${JSON.stringify(ptzValues)}`);
-        } else {
-          // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
-          ptzValues = {
-            pan: Math.floor(Math.random() * 360) - 180,
-            tilt: Math.floor(Math.random() * 180) - 90,
-            zoom: Math.floor(Math.random() * 101)
-          };
-          log.warn(`[프리셋 저장 API] 실제 PTZ 값 조회 실패, 시뮬레이션 데이터 사용: ${JSON.stringify(ptzValues)}`);
-        }
+    const pan = parseFloat(positionMatch[1]);
+    const tilt = parseFloat(positionMatch[2]);
+    const zoom = parseFloat(positionMatch[3]);
 
-        // ptz_info.ini 파일에 프리셋 정보 저장
-        try {
-          log.info(`[INI 파일 저장 시작] 프리셋 ${presetNumber} 정보 저장`);
+    log.info(`[웹 API] 파싱된 위치: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
 
-          const fs = await import('fs');
-          const path = await import('path');
-
-          const binDir = path.resolve(process.cwd(), 'bin');
-          const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
-          let iniContent = '';
-
-          log.info(`[INI 파일 경로] bin 디렉토리: ${binDir}`);
-          log.info(`[INI 파일 경로] INI 파일: ${ptzInfoPath}`);
-
-          // bin 디렉토리가 없으면 생성
-          if (!fs.existsSync(binDir)) {
-            log.info(`[INI 디렉토리 생성] bin 디렉토리가 존재하지 않음, 생성 중...`);
-            fs.mkdirSync(binDir, { recursive: true });
-            log.info(`[INI 디렉토리 생성] bin 디렉토리 생성 완료: ${binDir}`);
-          } else {
-            log.info(`[INI 디렉토리 확인] bin 디렉토리 존재: ${binDir}`);
-          }
-
-          // 기존 INI 파일이 있으면 읽기
-          if (fs.existsSync(ptzInfoPath)) {
-            log.info(`[INI 파일 읽기] 기존 파일 존재, 읽기 시작`);
-            try {
-              iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
-              log.info(`[INI 파일 읽기] 파일 크기: ${iniContent.length}바이트`);
-              log.info(`[INI 파일 읽기] 기존 내용 미리보기: ${iniContent.substring(0, 200)}...`);
-            } catch (readError) {
-              log.warn(`[INI 파일 읽기 오류] 파일 읽기 실패, 새로 생성:`, readError);
-              iniContent = '';
-            }
-          } else {
-            log.info(`[INI 파일 읽기] 기존 파일 없음, 새로 생성`);
-          }
-
-          // 프리셋 정보 추가/업데이트
-          const sectionName = `PRESET_${presetNumber}`;
-          const timestamp = new Date().toISOString();
-          const client = req.ip || 'unknown';
-
-          log.info(`[INI 프리셋 데이터] 섹션명: ${sectionName}`);
-          log.info(`[INI 프리셋 데이터] Pan: ${ptzValues.pan}`);
-          log.info(`[INI 프리셋 데이터] Tilt: ${ptzValues.tilt}`);
-          log.info(`[INI 프리셋 데이터] Zoom: ${ptzValues.zoom}`);
-          log.info(`[INI 프리셋 데이터] Focus: ${ptzValues.focus || 0}`);
-          log.info(`[INI 프리셋 데이터] 타임스탬프: ${timestamp}`);
-          log.info(`[INI 프리셋 데이터] 클라이언트: ${client}`);
-
-          const presetData = `[${sectionName}]
-pan=${ptzValues.pan}
-tilt=${ptzValues.tilt}
-zoom=${ptzValues.zoom}
-focus=${ptzValues.focus || 0}
-timestamp=${timestamp}
-client=${client}
-
-`;
-
-          log.info(`[INI 프리셋 데이터] 생성된 섹션 데이터:\n${presetData}`);
-
-          // 기존 프리셋 섹션이 있으면 제거
-          const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
-          const beforeReplace = iniContent.length;
-          iniContent = iniContent.replace(sectionRegex, '');
-          const afterReplace = iniContent.length;
-
-          if (beforeReplace !== afterReplace) {
-            log.info(`[INI 프리셋 업데이트] 기존 섹션 제거됨: ${beforeReplace - afterReplace}바이트 제거`);
-          } else {
-            log.info(`[INI 프리셋 신규] 기존 섹션 없음, 새로 추가`);
-          }
-
-          // 새 프리셋 정보 추가
-          iniContent += presetData;
-          log.info(`[INI 프리셋 추가] 최종 파일 크기: ${iniContent.length}바이트`);
-
-          // INI 파일 저장
-          log.info(`[INI 파일 저장] 파일 쓰기 시작: ${ptzInfoPath}`);
-          fs.writeFileSync(ptzInfoPath, iniContent);
-          log.info(`[INI 파일 저장] 프리셋 ${presetNumber} 정보 저장 완료: ${ptzInfoPath}`);
-
-          // 저장된 파일 검증
-          try {
-            const savedContent = fs.readFileSync(ptzInfoPath, 'utf-8');
-            log.info(`[INI 파일 검증] 저장된 파일 크기: ${savedContent.length}바이트`);
-            log.info(`[INI 파일 검증] 저장된 내용 확인: ${savedContent.includes(sectionName) ? '성공' : '실패'}`);
-          } catch (verifyError) {
-            log.error(`[INI 파일 검증] 저장된 파일 확인 실패:`, verifyError);
-          }
-
-        } catch (fileError) {
-          log.error(`[INI 파일 저장 오류] 프리셋 ${presetNumber} 저장 실패:`, fileError);
-          log.error(`[INI 파일 저장 오류] 오류 상세:`, fileError.stack);
-        }
-
-        const totalTime = Date.now() - startTime;
-        log.info(`[프리셋 저장 API] 성공 응답 전송: 총 소요 시간 ${totalTime}ms`);
-
-        res.json({
-          success: true,
-          message: `프리셋 ${presetNumber} 저장 완료`,
-          presetNumber,
-          ip,
-          port,
-          packet: packet.toString('hex'),
-          serverResponse: response.message,
-          ptzValues: ptzValues
-        });
-
-      } catch (presetError) {
-        log.error(`[프리셋 저장 API] 프리셋 정보 조회 오류:`, presetError);
-        log.error(`[프리셋 저장 API] 오류 상세:`, presetError.stack);
-
-        // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
-        const currentPTZ = {
-          pan: Math.floor(Math.random() * 360) - 180,
-          tilt: Math.floor(Math.random() * 180) - 90,
-          zoom: Math.floor(Math.random() * 101)
-        };
-        log.warn(`[프리셋 저장 API] 시뮬레이션 데이터로 대체: ${JSON.stringify(currentPTZ)}`);
-
-        // ptz_info.ini 파일에 프리셋 정보 저장 (시뮬레이션 데이터)
-        try {
-          log.info(`[INI 파일 저장 시작] 프리셋 ${presetNumber} 정보 저장 (시뮬레이션 데이터)`);
-
-          const fs = await import('fs');
-          const path = await import('path');
-
-          const binDir = path.resolve(process.cwd(), 'bin');
-          const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
-          let iniContent = '';
-
-          log.info(`[INI 파일 경로] bin 디렉토리: ${binDir}`);
-          log.info(`[INI 파일 경로] INI 파일: ${ptzInfoPath}`);
-
-          // bin 디렉토리가 없으면 생성
-          if (!fs.existsSync(binDir)) {
-            log.info(`[INI 디렉토리 생성] bin 디렉토리가 존재하지 않음, 생성 중...`);
-            fs.mkdirSync(binDir, { recursive: true });
-            log.info(`[INI 디렉토리 생성] bin 디렉토리 생성 완료: ${binDir}`);
-          } else {
-            log.info(`[INI 디렉토리 확인] bin 디렉토리 존재: ${binDir}`);
-          }
-
-          // 기존 INI 파일이 있으면 읽기
-          if (fs.existsSync(ptzInfoPath)) {
-            log.info(`[INI 파일 읽기] 기존 파일 존재, 읽기 시작`);
-            try {
-              iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
-              log.info(`[INI 파일 읽기] 파일 크기: ${iniContent.length}바이트`);
-              log.info(`[INI 파일 읽기] 기존 내용 미리보기: ${iniContent.substring(0, 200)}...`);
-            } catch (readError) {
-              log.warn(`[INI 파일 읽기 오류] 파일 읽기 실패, 새로 생성:`, readError);
-              iniContent = '';
-            }
-          } else {
-            log.info(`[INI 파일 읽기] 기존 파일 없음, 새로 생성`);
-          }
-
-          // 프리셋 정보 추가/업데이트 (시뮬레이션 데이터)
-          const sectionName = `PRESET_${presetNumber}`;
-          const timestamp = new Date().toISOString();
-          const client = req.ip || 'unknown';
-
-          log.info(`[INI 프리셋 데이터] 섹션명: ${sectionName} (시뮬레이션)`);
-          log.info(`[INI 프리셋 데이터] Pan: ${currentPTZ.pan} (시뮬레이션)`);
-          log.info(`[INI 프리셋 데이터] Tilt: ${currentPTZ.tilt} (시뮬레이션)`);
-          log.info(`[INI 프리셋 데이터] Zoom: ${currentPTZ.zoom} (시뮬레이션)`);
-          log.info(`[INI 프리셋 데이터] Focus: 0 (시뮬레이션)`);
-          log.info(`[INI 프리셋 데이터] 타임스탬프: ${timestamp}`);
-          log.info(`[INI 프리셋 데이터] 클라이언트: ${client}`);
-
-          const presetData = `[${sectionName}]
-pan=${currentPTZ.pan}
-tilt=${currentPTZ.tilt}
-zoom=${currentPTZ.zoom}
-focus=0
-timestamp=${timestamp}
-client=${client}
-
-`;
-
-          log.info(`[INI 프리셋 데이터] 생성된 섹션 데이터 (시뮬레이션):\n${presetData}`);
-
-          // 기존 프리셋 섹션이 있으면 제거
-          const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
-          const beforeReplace = iniContent.length;
-          iniContent = iniContent.replace(sectionRegex, '');
-          const afterReplace = iniContent.length;
-
-          if (beforeReplace !== afterReplace) {
-            log.info(`[INI 프리셋 업데이트] 기존 섹션 제거됨: ${beforeReplace - afterReplace}바이트 제거`);
-          } else {
-            log.info(`[INI 프리셋 신규] 기존 섹션 없음, 새로 추가`);
-          }
-
-          // 새 프리셋 정보 추가
-          iniContent += presetData;
-          log.info(`[INI 프리셋 추가] 최종 파일 크기: ${iniContent.length}바이트`);
-
-          // INI 파일 저장
-          log.info(`[INI 파일 저장] 파일 쓰기 시작: ${ptzInfoPath}`);
-          fs.writeFileSync(ptzInfoPath, iniContent);
-          log.info(`[INI 파일 저장] 프리셋 ${presetNumber} 정보 저장 완료 (시뮬레이션): ${ptzInfoPath}`);
-
-          // 저장된 파일 검증
-          try {
-            const savedContent = fs.readFileSync(ptzInfoPath, 'utf-8');
-            log.info(`[INI 파일 검증] 저장된 파일 크기: ${savedContent.length}바이트`);
-            log.info(`[INI 파일 검증] 저장된 내용 확인: ${savedContent.includes(sectionName) ? '성공' : '실패'}`);
-          } catch (verifyError) {
-            log.error(`[INI 파일 검증] 저장된 파일 확인 실패:`, verifyError);
-          }
-
-        } catch (fileError) {
-          log.error(`[INI 파일 저장 오류] 프리셋 ${presetNumber} 저장 실패 (시뮬레이션):`, fileError);
-          log.error(`[INI 파일 저장 오류] 오류 상세:`, fileError.stack);
-        }
-
-        const totalTime = Date.now() - startTime;
-        log.info(`[프리셋 저장 API] 시뮬레이션 성공 응답 전송: 총 소요 시간 ${totalTime}ms`);
-
-        res.json({
-          success: true,
-          message: `프리셋 ${presetNumber} 저장 완료 (시뮬레이션 데이터)`,
-          presetNumber,
-          ip,
-          port,
-          packet: packet.toString('hex'),
-          serverResponse: response.message,
-          ptzValues: currentPTZ
-        });
-      }
-    } else {
-      const totalTime = Date.now() - startTime;
-      log.error(`[프리셋 저장 API] PNT 서버 응답 실패: ${response.message}, 소요 시간: ${totalTime}ms`);
-      log.error(`[프리셋 저장 API] 실패 응답 상세: ${JSON.stringify(response)}`);
-
-      res.status(400).json({
-        success: false,
-        message: `프리셋 ${presetNumber} 저장 실패: ${response.message}`,
-        presetNumber,
+    res.json({
+      success: true,
+      message: 'PTZ 현재 위치 조회 성공',
+      data: {
         ip,
-        port,
-        packet: packet.toString('hex'),
-        serverResponse: response.message
-      });
-    }
+        port: 80,
+        ptzValues: {
+          pan,
+          tilt,
+          zoom
+        },
+        rawResponse: responseText
+      }
+    });
 
   } catch (error) {
-    const totalTime = Date.now() - startTime;
-    log.error(`[프리셋 저장 API] 예외 발생: 소요 시간 ${totalTime}ms`, error);
-    log.error(`[프리셋 저장 API] 예외 상세:`, error.stack);
-
+    log.error('[웹 API] PTZ 위치 조회 오류:', error);
     res.status(500).json({
       success: false,
-      message: '프리셋 저장 실패',
+      message: 'PTZ 위치 조회 실패',
       error: error.message
     });
   }
@@ -1178,10 +914,10 @@ client=${client}
 
 /**
  * @swagger
- * /api/ptz/preset/recall:
+ * /api/ptz/setPosition:
  *   post:
  *     tags: [PTZ Control]
- *     summary: PNT 프리셋 호출
+ *     summary: PTZ 절대 위치 설정 (웹 API)
  *     requestBody:
  *       required: true
  *       content:
@@ -1189,127 +925,307 @@ client=${client}
  *           schema:
  *             type: object
  *             required:
- *               - presetNumber
  *               - ip
- *               - port
+ *               - pan
+ *               - tilt
+ *               - zoom
+ *               - presetNumber
  *             properties:
- *               presetNumber:
- *                 type: number
- *                 minimum: 1
- *                 maximum: 99
- *                 description: 프리셋 번호 (1-99)
  *               ip:
  *                 type: string
  *                 description: 카메라 IP 주소
- *               port:
+ *               pan:
  *                 type: number
- *                 description: 카메라 포트
+ *                 minimum: 0
+ *                 maximum: 359
+ *                 description: Pan 값 (0-359)
+ *               tilt:
+ *                 type: number
+ *                 minimum: -90
+ *                 maximum: 90
+ *                 description: Tilt 값 (-90-90)
+ *               zoom:
+ *                 type: number
+ *                 minimum: 1
+ *                 description: Zoom 값 (1-Max Zoom)
+ *               presetNumber:
+ *                 type: number
+ *                 minimum: 1
+ *                 maximum: 3
+ *                 description: 프리셋 번호 (1-3)
  *     responses:
  *       200:
- *         description: 프리셋 호출 성공
+ *         description: PTZ 위치 설정 성공
  *       400:
  *         description: 잘못된 요청 파라미터
  *       500:
  *         description: 서버 내부 오류
  */
-router.post('/ptz/preset/recall', async (req, res) => {
+router.post('/ptz/setPosition', async (req, res) => {
   try {
-    const { presetNumber, ip, port } = req.body;
+    const { ip, pan, tilt, zoom, presetNumber } = req.body;
 
-    if (!presetNumber || !ip || !port) {
+    if (!ip || pan === undefined || tilt === undefined || zoom === undefined || !presetNumber) {
       return res.status(400).json({
         success: false,
-        message: '필수 파라미터가 누락되었습니다: presetNumber, ip, port'
+        message: '필수 파라미터가 누락되었습니다: ip, pan, tilt, zoom, presetNumber'
       });
     }
 
-    if (presetNumber < 1 || presetNumber > 99) {
+    // 프리셋 번호 유효성 검사
+    if (presetNumber < 1 || presetNumber > 3) {
       return res.status(400).json({
         success: false,
-        message: '프리셋 번호는 1-99 사이여야 합니다'
+        message: '프리셋 번호는 1-3 사이여야 합니다'
       });
     }
 
-    log.info(`PNT Preset Recall: ${presetNumber}, target: ${ip}:${port}`);
+    // 파라미터 범위 검증
+    if (pan < 0 || pan > 359) {
+      return res.status(400).json({
+        success: false,
+        message: 'Pan 값은 0-359 사이여야 합니다'
+      });
+    }
 
-    const packet = createPNTPacket(PNT_PID.PRESET_RECALL, [presetNumber & 0xFF]);
-    log.info(`PNT Preset Recall packet: ${packet.toString('hex')}`);
+    if (tilt < -90 || tilt > 90) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tilt 값은 -90-90 사이여야 합니다'
+      });
+    }
 
-    const response = await sendTCPPacket(ip, port, packet);
+    if (zoom < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Zoom 값은 1 이상이어야 합니다'
+      });
+    }
 
-    if (response.success) {
-      // PNT 서버에서 프리셋 데이터를 조회 (매뉴얼 표준 PID 200)
-      try {
-        const presetPacket = createPNTPacket(PNT_PID.PRESET_DATA, [presetNumber & 0xFF]);
-        const presetResponse = await sendTCPPacket(ip, port, presetPacket);
+    log.info(`[웹 API] PTZ 위치 설정: ${ip}:80, Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}, Preset=${presetNumber}`);
 
-        if (presetResponse.success && presetResponse.ptzValues) {
-          res.json({
-            success: true,
-            message: `프리셋 ${presetNumber} 호출 완료`,
-            presetNumber,
-            ip,
-            port,
-            packet: packet.toString('hex'),
-            serverResponse: response.message,
-            ptzValues: presetResponse.ptzValues
-          });
-        } else {
-          // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
-          const presetPTZ = {
-            pan: Math.floor(Math.random() * 360) - 180,
-            tilt: Math.floor(Math.random() * 180) - 90,
-            zoom: Math.floor(Math.random() * 101)
-          };
+    // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={presetNumber}&GotoAbsolutePosition=Pan,Tilt,Zoom
+    const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${presetNumber}&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
 
-          res.json({
-            success: true,
-            message: `프리셋 ${presetNumber} 호출 완료 (시뮬레이션 데이터)`,
-            presetNumber,
-            ip,
-            port,
-            packet: packet.toString('hex'),
-            serverResponse: response.message,
-            ptzValues: presetPTZ
-          });
+    // axios 사용
+    const axios = (await import('axios')).default;
+    const response = await axios.get(apiUrl, {
+      timeout: 10000
+    });
+
+    const responseText = response.data;
+    log.info(`[웹 API] 응답: ${responseText}`);
+
+    // ptz_info.ini에 해당 프리셋으로 저장
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+
+      const binDir = path.resolve(process.cwd(), 'bin');
+      const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+      let iniContent = '';
+
+      // bin 디렉토리가 없으면 생성
+      if (!fs.existsSync(binDir)) {
+        fs.mkdirSync(binDir, { recursive: true });
+      }
+
+      // 기존 INI 파일이 있으면 읽기
+      if (fs.existsSync(ptzInfoPath)) {
+        try {
+          iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
+        } catch (readError) {
+          log.warn(`[INI 파일 읽기 오류] 파일 읽기 실패, 새로 생성:`, readError);
+          iniContent = '';
         }
-      } catch (presetError) {
-        log.error('프리셋 정보 조회 오류:', presetError);
-        // 프리셋 정보 조회 실패 시 시뮬레이션 데이터 사용
-        const presetPTZ = {
-          pan: Math.floor(Math.random() * 360) - 180,
-          tilt: Math.floor(Math.random() * 180) - 90,
-          zoom: Math.floor(Math.random() * 101)
-        };
+      }
 
-        res.json({
-          success: true,
-          message: `프리셋 ${presetNumber} 호출 완료 (시뮬레이션 데이터)`,
-          presetNumber,
-          ip,
-          port,
-          packet: packet.toString('hex'),
-          serverResponse: response.message,
-          ptzValues: presetPTZ
+      // 해당 프리셋 정보 추가/업데이트
+      const sectionName = `PRESET_${presetNumber}`;
+      const timestamp = new Date().toISOString();
+      const client = req.ip || 'unknown';
+
+      const presetData = `[${sectionName}]
+pan=${pan}
+tilt=${tilt}
+zoom=${zoom}
+focus=0
+timestamp=${timestamp}
+client=${client}
+
+`;
+
+      // 기존 1번 프리셋 섹션이 있으면 제거
+      const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+      iniContent = iniContent.replace(sectionRegex, '');
+
+      // 새 1번 프리셋 정보 추가
+      iniContent += presetData;
+
+      // INI 파일 저장
+      fs.writeFileSync(ptzInfoPath, iniContent);
+      log.info(`[웹 API] 1번 프리셋 정보 저장 완료: ${ptzInfoPath}`);
+
+    } catch (fileError) {
+      log.error(`[웹 API] INI 파일 저장 오류:`, fileError);
+    }
+
+    res.json({
+      success: true,
+      message: 'PTZ 위치 설정 성공',
+      data: {
+        ip,
+        port: 80,
+        ptzValues: {
+          pan,
+          tilt,
+          zoom
+        },
+        rawResponse: responseText
+      }
+    });
+
+  } catch (error) {
+    log.error('[웹 API] PTZ 위치 설정 오류:', error);
+    res.status(500).json({
+      success: false,
+      message: 'PTZ 위치 설정 실패',
+      error: error.message
+    });
+  }
+});
+
+// =========================
+// PNT 프리셋 및 투어 API
+// =========================
+
+
+
+
+
+/**
+ * @swagger
+ * /api/ptz/home:
+ *   post:
+ *     tags: [PTZ Control]
+ *     summary: 홈프리셋 이동 (1번 프리셋)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - ip
+ *             properties:
+ *               ip:
+ *                 type: string
+ *                 description: 카메라 IP 주소
+ *     responses:
+ *       200:
+ *         description: 홈프리셋 이동 성공
+ *       400:
+ *         description: 잘못된 요청 파라미터
+ *       500:
+ *         description: 서버 내부 오류
+ */
+router.post('/ptz/home', async (req, res) => {
+  try {
+    const { ip } = req.body;
+
+    if (!ip) {
+      return res.status(400).json({
+        success: false,
+        message: '필수 파라미터가 누락되었습니다: ip'
+      });
+    }
+
+    log.info(`[웹 API] 홈프리셋 이동: ${ip}:80`);
+
+    // ptz_info.ini에서 1번 프리셋 값 읽기
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+
+      const binDir = path.resolve(process.cwd(), 'bin');
+      const ptzInfoPath = path.join(binDir, 'ptz_info.ini');
+
+      if (!fs.existsSync(ptzInfoPath)) {
+        return res.status(404).json({
+          success: false,
+          message: '프리셋 파일이 없습니다'
         });
       }
-    } else {
-      res.status(400).json({
+
+      const iniContent = fs.readFileSync(ptzInfoPath, 'utf-8');
+      const sectionName = 'PRESET_1';
+
+      // 1번 프리셋 섹션 찾기
+      const sectionRegex = new RegExp(`\\[${sectionName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+      const match = sectionRegex.exec(iniContent);
+
+      if (!match) {
+        return res.status(404).json({
+          success: false,
+          message: '1번 프리셋을 찾을 수 없습니다'
+        });
+      }
+
+      const sectionContent = match[0];
+
+      // Pan, Tilt, Zoom 값 추출
+      const panMatch = sectionContent.match(/pan=([^\n\r]+)/);
+      const tiltMatch = sectionContent.match(/tilt=([^\n\r]+)/);
+      const zoomMatch = sectionContent.match(/zoom=([^\n\r]+)/);
+
+      if (!panMatch || !tiltMatch || !zoomMatch) {
+        return res.status(400).json({
+          success: false,
+          message: '1번 프리셋 데이터 형식이 올바르지 않습니다'
+        });
+      }
+
+      const pan = parseFloat(panMatch[1]);
+      const tilt = parseFloat(tiltMatch[1]);
+      const zoom = parseFloat(zoomMatch[1]);
+
+      log.info(`[웹 API] 1번 프리셋 데이터: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+      // PTZ 위치 설정 (setPosition API 호출)
+      const setPositionUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=1&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
+      const axios = (await import('axios')).default;
+      const response = await axios.get(setPositionUrl, {
+        timeout: 10000
+      });
+
+      const responseText = response.data;
+      log.info(`[웹 API] 홈프리셋 이동 응답: ${responseText}`);
+
+      res.json({
+        success: true,
+        message: '홈프리셋 이동 성공',
+        data: {
+          ip,
+          port: 80,
+          ptzValues: { pan, tilt, zoom },
+          rawResponse: responseText
+        }
+      });
+
+    } catch (fileError) {
+      log.error('[웹 API] 홈프리셋 이동 오류:', fileError);
+      res.status(500).json({
         success: false,
-        message: `프리셋 ${presetNumber} 호출 실패: ${response.message}`,
-        presetNumber,
-        ip,
-        port,
-        packet: packet.toString('hex'),
-        serverResponse: response.message
+        message: '홈프리셋 이동 실패',
+        error: fileError.message
       });
     }
 
   } catch (error) {
-    log.error('PNT Preset Recall Error:', error);
+    log.error('[웹 API] 홈프리셋 이동 오류:', error);
     res.status(500).json({
       success: false,
-      message: '프리셋 호출 실패',
+      message: '홈프리셋 이동 실패',
       error: error.message
     });
   }

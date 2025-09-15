@@ -39,6 +39,59 @@ def load_config():
     config.read(config_path, encoding='utf-8')
     return config
 
+def read_ptz_info_ini(preset_number):
+    """ptz_info.ini 파일에서 프리셋 값 읽기"""
+    try:
+        # ptz_info.ini 파일 경로
+        ptz_info_path = os.path.join(os.path.dirname(__file__), 'ptz_info.ini')
+        
+        if not os.path.exists(ptz_info_path):
+            logger.error(f"ptz_info.ini 파일을 찾을 수 없습니다: {ptz_info_path}")
+            return None
+        
+        # INI 파일 읽기
+        config = ConfigParser()
+        config.read(ptz_info_path, encoding='utf-8')
+        
+        section_name = f'PRESET_{preset_number}'
+        if not config.has_section(section_name):
+            logger.error(f"프리셋 {preset_number} 섹션을 찾을 수 없습니다")
+            return None
+        
+        # 프리셋 값 읽기
+        pan = config.getfloat(section_name, 'pan')
+        tilt = config.getfloat(section_name, 'tilt')
+        zoom = config.getfloat(section_name, 'zoom')
+        
+        logger.info(f"프리셋 {preset_number} 값 읽기 성공: Pan={pan}, Tilt={tilt}, Zoom={zoom}")
+        return {'pan': pan, 'tilt': tilt, 'zoom': zoom}
+        
+    except Exception as e:
+        logger.error(f"ptz_info.ini 읽기 실패: {e}")
+        return None
+
+def call_set_position_api(ip, pan, tilt, zoom, preset_number):
+    """setPosition 웹 API 호출"""
+    try:
+        # 웹 API URL 구성
+        api_url = f"http://{ip}:80/api/ptz.cgi?PTZNumber={preset_number}&GotoAbsolutePosition={pan},{tilt},{zoom}"
+        
+        logger.info(f"웹 API 호출: {api_url}")
+        
+        # HTTP GET 요청
+        response = requests.get(api_url, timeout=10)
+        
+        if response.status_code == 200:
+            logger.info(f"프리셋 {preset_number} 이동 성공: {response.text}")
+            return True
+        else:
+            logger.error(f"프리셋 {preset_number} 이동 실패: HTTP {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"웹 API 호출 실패: {e}")
+        return False
+
 # 설정 로드
 config = load_config()
 
@@ -463,42 +516,38 @@ class PanoramaGenerator:
             return False
 
     def move_to_preset(self, preset_number):
-        """지정된 프리셋으로 이동 (개선된 에러 처리 및 응답 확인)"""
+        """지정된 프리셋으로 이동 (웹 API 방식)"""
         try:
-            if ENABLE_PRESET_MOVEMENT and self.ptz_client:
+            if ENABLE_PRESET_MOVEMENT:
                 logger.info(f"프리셋 {preset_number}로 이동 중...")
                 
-                # PNT 서버 연결 상태 확인 및 재연결 시도
-                if not self.ptz_client.connected:
-                    logger.warning(f"PNT 서버 연결이 끊어짐. 프리셋 {preset_number} 이동 전 재연결 시도...")
-                    if not self.connect_ptz():
-                        logger.error(f"프리셋 {preset_number} 이동 실패: PNT 서버 재연결 실패")
-                        return False
+                # 1. ptz_info.ini에서 프리셋 값 읽기
+                preset_values = read_ptz_info_ini(preset_number)
+                if not preset_values:
+                    logger.error(f"프리셋 {preset_number} 값을 읽을 수 없습니다")
+                    return False
                 
-                # PNT 서버에 프리셋 호출 명령 전송
-                result = self.ptz_client.preset_recall(preset_number)
+                # 2. 열화상 카메라 IP 가져오기
+                if not self.thermal_camera_ip:
+                    logger.error("열화상 카메라 IP가 설정되지 않았습니다")
+                    return False
                 
-                if result['success']:
-                    logger.info(f"프리셋 {preset_number} 이동 명령 성공")
+                # 3. 웹 API로 프리셋 이동
+                success = call_set_position_api(
+                    self.thermal_camera_ip,
+                    preset_values['pan'],
+                    preset_values['tilt'],
+                    preset_values['zoom'],
+                    preset_number
+                )
+                
+                if success:
+                    logger.info(f"프리셋 {preset_number} 이동 성공")
                     time.sleep(3)  # 카메라 이동 대기
                     logger.info(f"프리셋 {preset_number} 이동 완료")
                     return True
                 else:
-                    logger.error(f"프리셋 {preset_number} 이동 명령 실패: {result['message']}")
-                    # 연결 상태 재확인
-                    if not self.ptz_client.connected:
-                        logger.warning("PNT 서버 연결이 끊어진 것으로 보입니다. 재연결을 시도합니다.")
-                        if self.connect_ptz():
-                            logger.info("PNT 서버 재연결 성공. 프리셋 호출을 재시도합니다.")
-                            # 재연결 후 한 번 더 시도
-                            retry_result = self.ptz_client.preset_recall(preset_number)
-                            if retry_result['success']:
-                                logger.info(f"프리셋 {preset_number} 재시도 성공")
-                                time.sleep(3)
-                                logger.info(f"프리셋 {preset_number} 이동 완료")
-                                return True
-                            else:
-                                logger.error(f"프리셋 {preset_number} 재시도 실패: {retry_result['message']}")
+                    logger.error(f"프리셋 {preset_number} 이동 실패")
                     return False
             else:
                 logger.info(f"프리셋 이동 비활성화됨 - 프리셋 {preset_number} 위치에서 {PRESET_WAIT_SECONDS}초 대기...")
@@ -693,24 +742,14 @@ class PanoramaGenerator:
             if ENABLE_PRESET_MOVEMENT:
                 if not self.get_thermal_camera_config():
                     return False
-                
-                # 2. PTZ 카메라 연결
-                if not self.connect_ptz():
-                    return False
+                logger.info("웹 API 방식으로 프리셋 이동을 수행합니다")
             else:
-                logger.info("프리셋 이동이 비활성화되어 PTZ 설정 조회 및 연결을 건너뜁니다")
+                logger.info("프리셋 이동이 비활성화되어 PTZ 설정 조회를 건너뜁니다")
             
             # 3. 3개 프리셋에서 스냅샷 캡처
             snapshots = []
             for preset_num in [1, 2, 3]:
                 logger.info(f"=== 프리셋 {preset_num} 처리 시작 ===")
-                
-                # 프리셋 이동 전 연결 상태 확인
-                if ENABLE_PRESET_MOVEMENT and self.ptz_client and not self.ptz_client.connected:
-                    logger.warning(f"프리셋 {preset_num} 처리 전 PNT 서버 연결이 끊어짐. 재연결 시도...")
-                    if not self.connect_ptz():
-                        logger.error(f"프리셋 {preset_num} 처리 실패: PNT 서버 재연결 실패")
-                        return False
                 
                 if not self.move_to_preset(preset_num):
                     logger.error(f"프리셋 {preset_num} 이동 실패")
@@ -749,9 +788,6 @@ class PanoramaGenerator:
             logger.error(f"파노라마 생성 중 오류: {e}")
             logger.error(traceback.format_exc())
             return False
-        finally:
-            if ENABLE_PRESET_MOVEMENT and self.ptz_client:
-                self.ptz_client.close()
 
     def run_scheduler(self):
         """스케줄러 실행 (설정된 간격마다)"""
