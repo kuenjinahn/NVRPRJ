@@ -154,7 +154,6 @@ async function sendTCPPacket(ip, port, packet) {
       const client = new net.Socket();
       let responseData = Buffer.alloc(0);
       let isResolved = false;
-      const startTime = Date.now();
 
       // 연결 타임아웃 설정 (5초)
       client.setTimeout(5000);
@@ -222,7 +221,7 @@ async function sendTCPPacket(ip, port, packet) {
       }, 3000);
 
     }).catch(err => {
-      log.error(`[PNT 모듈 오류] Net module import 실패: ${err.message}`);
+      log.error('Net module import 오류:', err);
       reject(new Error('Net module을 불러올 수 없습니다'));
     });
   });
