@@ -57,22 +57,35 @@ async function makeDigestRequest(url, username, password, options = {}) {
   const axios = (await import('axios')).default;
   const crypto = await import('crypto');
 
-  // 첫 번째 요청 (인증 없이)
+  log.info(`[인증] 요청 시작: ${url}`);
+
+  // 먼저 Basic 인증 시도
   try {
+    log.info(`[인증] Basic 인증 시도`);
     const response = await axios.get(url, {
       ...options,
-      validateStatus: (status) => status === 401 // 401만 허용
+      auth: {
+        username: username,
+        password: password
+      }
     });
+    log.info(`[인증] Basic 인증 성공: ${response.status}`);
     return response;
-  } catch (error) {
-    if (error.response && error.response.status === 401) {
-      const wwwAuthenticate = error.response.headers['www-authenticate'];
+  } catch (basicError) {
+    log.info(`[인증] Basic 인증 실패: ${basicError.response?.status}`);
+
+    // Basic 인증 실패 시 Digest 인증 시도
+    if (basicError.response && basicError.response.status === 401) {
+      const wwwAuthenticate = basicError.response.headers['www-authenticate'];
+      log.info(`[인증] WWW-Authenticate 헤더: ${wwwAuthenticate}`);
 
       if (wwwAuthenticate && wwwAuthenticate.startsWith('Digest')) {
         // Digest 인증 파라미터 파싱
         const realmMatch = wwwAuthenticate.match(/realm="([^"]+)"/);
         const nonceMatch = wwwAuthenticate.match(/nonce="([^"]+)"/);
         const qopMatch = wwwAuthenticate.match(/qop="([^"]+)"/);
+
+        log.info(`[인증] Digest 파싱 결과 - realm: ${realmMatch?.[1]}, nonce: ${nonceMatch?.[1]}, qop: ${qopMatch?.[1]}`);
 
         if (realmMatch && nonceMatch && qopMatch) {
           const realm = realmMatch[1];
@@ -87,10 +100,14 @@ async function makeDigestRequest(url, username, password, options = {}) {
           const urlObj = new URL(url);
           const uri = urlObj.pathname + urlObj.search;
 
+          log.info(`[인증] Digest URI: ${uri}, cnonce: ${cnonce}, nc: ${nc}`);
+
           // Digest 인증 헤더 생성
           const authHeader = await createDigestAuth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce);
+          log.info(`[인증] Digest 헤더: ${authHeader}`);
 
-          // 두 번째 요청 (Digest 인증 포함)
+          // Digest 인증으로 두 번째 요청
+          log.info(`[인증] Digest 인증 요청 시작`);
           return await axios.get(url, {
             ...options,
             headers: {
@@ -98,10 +115,14 @@ async function makeDigestRequest(url, username, password, options = {}) {
               'Authorization': authHeader
             }
           });
+        } else {
+          log.error(`[인증] Digest 파라미터 파싱 실패 - realm: ${!!realmMatch}, nonce: ${!!nonceMatch}, qop: ${!!qopMatch}`);
         }
+      } else {
+        log.error(`[인증] Digest 인증이 아닙니다: ${wwwAuthenticate}`);
       }
     }
-    throw error;
+    throw basicError;
   }
 }
 
