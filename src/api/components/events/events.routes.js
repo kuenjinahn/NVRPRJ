@@ -1741,10 +1741,10 @@ router.get('/ptz/preset/list', async (req, res) => {
 
       while ((match = presetRegex.exec(iniContent)) !== null) {
         const presetNum = parseInt(match[1]);
-        const pan = parseInt(match[2]) || 0;
-        const tilt = parseInt(match[3]) || 0;
-        const zoom = parseInt(match[4]) || 0;
-        const focus = parseInt(match[5]) || 0;
+        const pan = parseFloat(match[2]) || 0;
+        const tilt = parseFloat(match[3]) || 0;
+        const zoom = parseFloat(match[4]) || 0;
+        const focus = parseFloat(match[5]) || 0;
         const timestamp = match[6] || '';
         const client = match[7] || '';
 
