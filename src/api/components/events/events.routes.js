@@ -37,8 +37,8 @@ function intToLE16(n) {
 }
 
 // Digest 인증을 위한 헬퍼 함수
-function createDigestAuth(username, password, method, uri, realm, nonce, qop, nc, cnonce) {
-  const crypto = require('crypto');
+async function createDigestAuth(username, password, method, uri, realm, nonce, qop, nc, cnonce) {
+  const crypto = await import('crypto');
 
   // HA1 = MD5(username:realm:password)
   const ha1 = crypto.createHash('md5').update(`${username}:${realm}:${password}`).digest('hex');
@@ -55,7 +55,7 @@ function createDigestAuth(username, password, method, uri, realm, nonce, qop, nc
 // Digest 인증을 사용한 HTTP 요청 함수
 async function makeDigestRequest(url, username, password, options = {}) {
   const axios = (await import('axios')).default;
-  const crypto = require('crypto');
+  const crypto = await import('crypto');
 
   // 첫 번째 요청 (인증 없이)
   try {
@@ -88,7 +88,7 @@ async function makeDigestRequest(url, username, password, options = {}) {
           const uri = urlObj.pathname + urlObj.search;
 
           // Digest 인증 헤더 생성
-          const authHeader = createDigestAuth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce);
+          const authHeader = await createDigestAuth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce);
 
           // 두 번째 요청 (Digest 인증 포함)
           return await axios.get(url, {
