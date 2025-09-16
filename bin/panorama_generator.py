@@ -27,6 +27,93 @@ from PIL import Image
 import io
 import subprocess
 import tempfile
+import hashlib
+import random
+import string
+
+def create_digest_auth(username, password, method, uri, realm, nonce, qop, nc, cnonce):
+    """Digest 인증 헤더 생성"""
+    # HA1 = MD5(username:realm:password)
+    ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode('utf-8')).hexdigest()
+    
+    # HA2 = MD5(method:uri)
+    ha2 = hashlib.md5(f"{method}:{uri}".encode('utf-8')).hexdigest()
+    
+    # response = MD5(HA1:nonce:nc:cnonce:qop:HA2)
+    response = hashlib.md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}".encode('utf-8')).hexdigest()
+    
+    return f'Digest username="{username}", realm="{realm}", nonce="{nonce}", uri="{uri}", qop={qop}, nc={nc}, cnonce="{cnonce}", response="{response}"'
+
+def make_digest_request(url, username, password, timeout=10):
+    """Digest 인증을 사용한 HTTP 요청"""
+    try:
+        logger.info(f"[인증] 요청 시작: {url}")
+        
+        # 먼저 Basic 인증 시도
+        try:
+            logger.info("[인증] Basic 인증 시도")
+            response = requests.get(url, auth=(username, password), timeout=timeout)
+            if response.status_code == 200:
+                logger.info(f"[인증] Basic 인증 성공: {response.status_code}")
+                return response
+            else:
+                # 401이 아닌 다른 오류도 처리
+                response.raise_for_status()
+        except requests.exceptions.RequestException as basic_error:
+            if hasattr(basic_error, 'response') and basic_error.response and basic_error.response.status_code == 401:
+                logger.info(f"[인증] Basic 인증 실패: {basic_error.response.status_code}")
+                
+                # Digest 인증 시도
+                www_authenticate = basic_error.response.headers.get('www-authenticate')
+                logger.info(f"[인증] WWW-Authenticate 헤더: {www_authenticate}")
+                
+                if www_authenticate and www_authenticate.startswith('Digest'):
+                    # Digest 인증 파라미터 파싱
+                    import re
+                    realm_match = re.search(r'realm="([^"]+)"', www_authenticate)
+                    nonce_match = re.search(r'nonce="([^"]+)"', www_authenticate)
+                    qop_match = re.search(r'qop="([^"]+)"', www_authenticate)
+                    
+                    logger.info(f"[인증] Digest 파싱 결과 - realm: {realm_match.group(1) if realm_match else None}, nonce: {nonce_match.group(1) if nonce_match else None}, qop: {qop_match.group(1) if qop_match else None}")
+                    
+                    if realm_match and nonce_match and qop_match:
+                        realm = realm_match.group(1)
+                        nonce = nonce_match.group(1)
+                        qop = qop_match.group(1)
+                        
+                        # cnonce와 nc 생성
+                        cnonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+                        nc = '00000001'
+                        
+                        # URI 추출
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(url)
+                        uri = parsed_url.path + (f"?{parsed_url.query}" if parsed_url.query else "")
+                        
+                        logger.info(f"[인증] Digest URI: {uri}, cnonce: {cnonce}, nc: {nc}")
+                        
+                        # Digest 인증 헤더 생성
+                        auth_header = create_digest_auth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce)
+                        logger.info(f"[인증] Digest 헤더: {auth_header}")
+                        
+                        # Digest 인증으로 두 번째 요청
+                        logger.info("[인증] Digest 인증 요청 시작")
+                        try:
+                            return requests.get(url, headers={'Authorization': auth_header}, timeout=timeout)
+                        except requests.exceptions.RequestException as digest_error:
+                            logger.error(f"[인증] Digest 인증 요청 실패: {digest_error}")
+                            raise digest_error
+                    else:
+                        logger.error(f"[인증] Digest 파라미터 파싱 실패 - realm: {bool(realm_match)}, nonce: {bool(nonce_match)}, qop: {bool(qop_match)}")
+                else:
+                    logger.error(f"[인증] Digest 인증이 아닙니다: {www_authenticate}")
+            raise basic_error
+        else:
+            # 401이 아닌 다른 오류
+            raise basic_error
+    except Exception as e:
+        logger.error(f"[인증] 요청 실패: {e}")
+        raise
 
 def load_config():
     """설정 파일 로드"""
@@ -71,15 +158,15 @@ def read_ptz_info_ini(preset_number):
         return None
 
 def call_set_position_api(ip, pan, tilt, zoom, preset_number):
-    """setPosition 웹 API 호출"""
+    """setPosition 웹 API 호출 (Digest 인증 사용)"""
     try:
         # 웹 API URL 구성
         api_url = f"http://{ip}:80/api/ptz.cgi?PTZNumber={preset_number}&GotoAbsolutePosition={pan},{tilt},{zoom}"
         
         logger.info(f"웹 API 호출: {api_url}")
         
-        # HTTP GET 요청
-        response = requests.get(api_url, timeout=10)
+        # Digest 인증을 사용한 HTTP GET 요청
+        response = make_digest_request(api_url, 'root', 'cctv1350!!', timeout=10)
         
         if response.status_code == 200:
             logger.info(f"프리셋 {preset_number} 이동 성공: {response.text}")
