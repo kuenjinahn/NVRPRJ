@@ -739,12 +739,16 @@ router.get('/ptz/getPosition', async (req, res) => {
     log.info(`[웹 API] PTZ 현재 위치 조회: ${ip}:80, PTZNumber=${ptzNum}`);
 
     // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={ptzNumber}&GetPTZPosition=do
-    const apiUrl = `http://root:cctv1350!!@${ip}:80/api/ptz.cgi?PTZNumber=${ptzNum}&GetPTZPosition=do`;
+    const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${ptzNum}&GetPTZPosition=do`;
 
-    // axios 사용
+    // axios 사용 (Digest 인증 지원)
     const axios = (await import('axios')).default;
     const response = await axios.get(apiUrl, {
-      timeout: 5000
+      timeout: 5000,
+      auth: {
+        username: 'root',
+        password: 'cctv1350!!'
+      }
     });
 
     const responseText = response.data;
@@ -881,12 +885,16 @@ router.post('/ptz/setPosition', async (req, res) => {
     log.info(`[웹 API] PTZ 위치 설정: ${ip}:80, Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}, Preset=${presetNumber}`);
 
     // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={presetNumber}&GotoAbsolutePosition=Pan,Tilt,Zoom
-    const apiUrl = `http://root:cctv1350!!@${ip}:80/api/ptz.cgi?PTZNumber=${presetNumber}&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
+    const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${presetNumber}&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
 
-    // axios 사용
+    // axios 사용 (Digest 인증 지원)
     const axios = (await import('axios')).default;
     const response = await axios.get(apiUrl, {
-      timeout: 10000
+      timeout: 10000,
+      auth: {
+        username: 'root',
+        password: 'cctv1350!!'
+      }
     });
 
     const responseText = response.data;
@@ -1068,10 +1076,14 @@ router.post('/ptz/home', async (req, res) => {
       log.info(`[웹 API] 1번 프리셋 데이터: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
 
       // PTZ 위치 설정 (setPosition API 호출)
-      const setPositionUrl = `http://root:cctv1350!!@${ip}:80/api/ptz.cgi?PTZNumber=1&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
+      const setPositionUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=1&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
       const axios = (await import('axios')).default;
       const response = await axios.get(setPositionUrl, {
-        timeout: 10000
+        timeout: 10000,
+        auth: {
+          username: 'root',
+          password: 'cctv1350!!'
+        }
       });
 
       const responseText = response.data;
