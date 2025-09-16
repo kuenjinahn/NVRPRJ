@@ -800,7 +800,7 @@ class PanoramaGenerator:
                 "type": "panorama",
                 "timestamp": datetime.now().isoformat(),
                 "image": panorama_base64,
-                "presets": [1, 2, 3],
+                "presets": [2, 1, 3],
                 "description": "PTZ 프리셋 투어 파노라마",
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -832,7 +832,7 @@ class PanoramaGenerator:
             
             # 3. 3개 프리셋에서 스냅샷 캡처
             snapshots = []
-            for preset_num in [1, 2, 3]:
+            for preset_num in [2, 1, 3]:
                 logger.info(f"=== 프리셋 {preset_num} 처리 시작 ===")
                 
                 if not self.move_to_preset(preset_num):
