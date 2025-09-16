@@ -945,27 +945,6 @@ router.post('/ptz/setPosition', async (req, res) => {
       });
     }
 
-    // 파라미터 범위 검증
-    if (pan < 0 || pan > 359) {
-      return res.status(400).json({
-        success: false,
-        message: 'Pan 값은 0-359 사이여야 합니다'
-      });
-    }
-
-    if (tilt < -90 || tilt > 90) {
-      return res.status(400).json({
-        success: false,
-        message: 'Tilt 값은 -90-90 사이여야 합니다'
-      });
-    }
-
-    if (zoom < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Zoom 값은 1 이상이어야 합니다'
-      });
-    }
 
     log.info(`[웹 API] PTZ 위치 설정: ${ip}:80, Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}, Preset=${presetNumber}`);
 
