@@ -154,6 +154,7 @@ async function sendTCPPacket(ip, port, packet) {
       const client = new net.Socket();
       let responseData = Buffer.alloc(0);
       let isResolved = false;
+      const startTime = Date.now();
 
       // 연결 타임아웃 설정 (5초)
       client.setTimeout(5000);
@@ -221,7 +222,7 @@ async function sendTCPPacket(ip, port, packet) {
       }, 3000);
 
     }).catch(err => {
-      log.error('Net module import 오류:', err);
+      log.error(`[PNT 모듈 오류] Net module import 실패: ${err.message}`);
       reject(new Error('Net module을 불러올 수 없습니다'));
     });
   });
@@ -370,7 +371,8 @@ router.delete('/detectionZone/:id', EventsController.deleteDetectionZone);
  */
 router.post('/ptz/move', async (req, res) => {
   try {
-    const { direction, speed, ip, port } = req.body;
+    const { direction, speed, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!direction || !ip || !port) {
       return res.status(400).json({
@@ -463,7 +465,8 @@ router.post('/ptz/move', async (req, res) => {
  */
 router.post('/ptz/stop', async (req, res) => {
   try {
-    const { ip, port } = req.body;
+    const { ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!ip || !port) {
       return res.status(400).json({
@@ -537,7 +540,8 @@ router.post('/ptz/stop', async (req, res) => {
  */
 router.post('/ptz/zoom', async (req, res) => {
   try {
-    const { direction, ip, port } = req.body;
+    const { direction, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!direction || !ip || !port) {
       return res.status(400).json({
@@ -627,7 +631,8 @@ router.post('/ptz/zoom', async (req, res) => {
  */
 router.post('/ptz/focus', async (req, res) => {
   try {
-    const { direction, ip, port } = req.body;
+    const { direction, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!direction || !ip || !port) {
       return res.status(400).json({
@@ -716,7 +721,8 @@ router.post('/ptz/focus', async (req, res) => {
  */
 router.post('/ptz/wiper', async (req, res) => {
   try {
-    const { action, ip, port } = req.body;
+    const { action, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!action || !ip || !port) {
       return res.status(400).json({
@@ -1204,7 +1210,8 @@ router.post('/ptz/home', async (req, res) => {
  */
 router.post('/ptz/tour/start', async (req, res) => {
   try {
-    const { ip, port } = req.body;
+    const { ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!ip || !port) {
       return res.status(400).json({
@@ -1286,7 +1293,8 @@ router.post('/ptz/tour/start', async (req, res) => {
  */
 router.post('/ptz/tour/stop', async (req, res) => {
   try {
-    const { ip, port } = req.body;
+    const { ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!ip || !port) {
       return res.status(400).json({
@@ -1384,7 +1392,8 @@ router.post('/ptz/tour/stop', async (req, res) => {
  */
 router.post('/ptz/tour/step', async (req, res) => {
   try {
-    const { presetNumber, speedRpm, delaySec, ip, port } = req.body;
+    const { presetNumber, speedRpm, delaySec, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!presetNumber || !speedRpm || !delaySec || !ip || !port) {
       return res.status(400).json({
@@ -1506,7 +1515,8 @@ router.post('/ptz/tour/step', async (req, res) => {
  */
 router.post('/ptz/tour/setup', async (req, res) => {
   try {
-    const { speedRpm, delaySec, ip, port } = req.body;
+    const { speedRpm, delaySec, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!speedRpm || !delaySec || !ip || !port) {
       return res.status(400).json({
@@ -1646,7 +1656,7 @@ router.get('/ptz/status', async (req, res) => {
       message: 'PNT 서버 연결 실패',
       data: {
         ip: req.query.ip,
-        port: req.query.port,
+        port: 33000,
         connected: false,
         error: error.message,
         responseTime: totalTime
@@ -1684,12 +1694,13 @@ router.get('/ptz/status', async (req, res) => {
  */
 router.get('/ptz/preset/list', async (req, res) => {
   try {
-    const { ip, port } = req.query;
+    const { ip } = req.query;
+    const port = 33000; // PNT 서버 포트 고정
 
-    if (!ip || !port) {
+    if (!ip) {
       return res.status(400).json({
         success: false,
-        message: '필수 파라미터가 누락되었습니다: ip, port'
+        message: '필수 파라미터가 누락되었습니다: ip'
       });
     }
 
@@ -1817,7 +1828,8 @@ router.get('/ptz/preset/list', async (req, res) => {
  */
 router.delete('/ptz/preset/delete', async (req, res) => {
   try {
-    const { presetNumber, ip, port } = req.body;
+    const { presetNumber, ip } = req.body;
+    const port = 33000; // PNT 서버 포트 고정
 
     if (!presetNumber || !ip || !port) {
       return res.status(400).json({
