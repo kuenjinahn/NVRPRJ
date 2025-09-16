@@ -36,6 +36,75 @@ function intToLE16(n) {
   return [n & 0xFF, (n >> 8) & 0xFF];
 }
 
+// Digest 인증을 위한 헬퍼 함수
+function createDigestAuth(username, password, method, uri, realm, nonce, qop, nc, cnonce) {
+  const crypto = require('crypto');
+
+  // HA1 = MD5(username:realm:password)
+  const ha1 = crypto.createHash('md5').update(`${username}:${realm}:${password}`).digest('hex');
+
+  // HA2 = MD5(method:uri)
+  const ha2 = crypto.createHash('md5').update(`${method}:${uri}`).digest('hex');
+
+  // response = MD5(HA1:nonce:nc:cnonce:qop:HA2)
+  const response = crypto.createHash('md5').update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`).digest('hex');
+
+  return `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"`;
+}
+
+// Digest 인증을 사용한 HTTP 요청 함수
+async function makeDigestRequest(url, username, password, options = {}) {
+  const axios = (await import('axios')).default;
+  const crypto = require('crypto');
+
+  // 첫 번째 요청 (인증 없이)
+  try {
+    const response = await axios.get(url, {
+      ...options,
+      validateStatus: (status) => status === 401 // 401만 허용
+    });
+    return response;
+  } catch (error) {
+    if (error.response && error.response.status === 401) {
+      const wwwAuthenticate = error.response.headers['www-authenticate'];
+
+      if (wwwAuthenticate && wwwAuthenticate.startsWith('Digest')) {
+        // Digest 인증 파라미터 파싱
+        const realmMatch = wwwAuthenticate.match(/realm="([^"]+)"/);
+        const nonceMatch = wwwAuthenticate.match(/nonce="([^"]+)"/);
+        const qopMatch = wwwAuthenticate.match(/qop="([^"]+)"/);
+
+        if (realmMatch && nonceMatch && qopMatch) {
+          const realm = realmMatch[1];
+          const nonce = nonceMatch[1];
+          const qop = qopMatch[1];
+
+          // cnonce와 nc 생성
+          const cnonce = crypto.randomBytes(16).toString('hex');
+          const nc = '00000001';
+
+          // URI 추출
+          const urlObj = new URL(url);
+          const uri = urlObj.pathname + urlObj.search;
+
+          // Digest 인증 헤더 생성
+          const authHeader = createDigestAuth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce);
+
+          // 두 번째 요청 (Digest 인증 포함)
+          return await axios.get(url, {
+            ...options,
+            headers: {
+              ...options.headers,
+              'Authorization': authHeader
+            }
+          });
+        }
+      }
+    }
+    throw error;
+  }
+}
+
 // PNT 프로토콜 PID 상수 (명세 V4.1 준수)
 // PID 타입: R=Read only, W=Parameter change(EEprom write), C=Command(Pan/tilt movement or action)
 const PNT_PID = {
@@ -741,14 +810,9 @@ router.get('/ptz/getPosition', async (req, res) => {
     // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={ptzNumber}&GetPTZPosition=do
     const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${ptzNum}&GetPTZPosition=do`;
 
-    // axios 사용 (Digest 인증 지원)
-    const axios = (await import('axios')).default;
-    const response = await axios.get(apiUrl, {
-      timeout: 5000,
-      auth: {
-        username: 'root',
-        password: 'cctv1350!!'
-      }
+    // Digest 인증을 사용한 요청
+    const response = await makeDigestRequest(apiUrl, 'root', 'cctv1350!!', {
+      timeout: 5000
     });
 
     const responseText = response.data;
@@ -887,14 +951,9 @@ router.post('/ptz/setPosition', async (req, res) => {
     // 웹 API 호출: http://IP:80/api/ptz.cgi?PTZNumber={presetNumber}&GotoAbsolutePosition=Pan,Tilt,Zoom
     const apiUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=${presetNumber}&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
 
-    // axios 사용 (Digest 인증 지원)
-    const axios = (await import('axios')).default;
-    const response = await axios.get(apiUrl, {
-      timeout: 10000,
-      auth: {
-        username: 'root',
-        password: 'cctv1350!!'
-      }
+    // Digest 인증을 사용한 요청
+    const response = await makeDigestRequest(apiUrl, 'root', 'cctv1350!!', {
+      timeout: 10000
     });
 
     const responseText = response.data;
@@ -1077,13 +1136,8 @@ router.post('/ptz/home', async (req, res) => {
 
       // PTZ 위치 설정 (setPosition API 호출)
       const setPositionUrl = `http://${ip}:80/api/ptz.cgi?PTZNumber=1&GotoAbsolutePosition=${pan},${tilt},${zoom}`;
-      const axios = (await import('axios')).default;
-      const response = await axios.get(setPositionUrl, {
-        timeout: 10000,
-        auth: {
-          username: 'root',
-          password: 'cctv1350!!'
-        }
+      const response = await makeDigestRequest(setPositionUrl, 'root', 'cctv1350!!', {
+        timeout: 10000
       });
 
       const responseText = response.data;
