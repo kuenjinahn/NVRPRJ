@@ -50,67 +50,64 @@ def make_digest_request(url, username, password, timeout=10):
         logger.info(f"[인증] 요청 시작: {url}")
         
         # 먼저 Basic 인증 시도
-        try:
-            logger.info("[인증] Basic 인증 시도")
-            response = requests.get(url, auth=(username, password), timeout=timeout)
-            if response.status_code == 200:
-                logger.info(f"[인증] Basic 인증 성공: {response.status_code}")
-                return response
-            else:
-                # 401이 아닌 다른 오류도 처리
-                response.raise_for_status()
-        except requests.exceptions.RequestException as basic_error:
-            if hasattr(basic_error, 'response') and basic_error.response and basic_error.response.status_code == 401:
-                logger.info(f"[인증] Basic 인증 실패: {basic_error.response.status_code}")
+        logger.info("[인증] Basic 인증 시도")
+        response = requests.get(url, auth=(username, password), timeout=timeout)
+        
+        if response.status_code == 200:
+            logger.info(f"[인증] Basic 인증 성공: {response.status_code}")
+            return response
+        elif response.status_code == 401:
+            logger.info(f"[인증] Basic 인증 실패: {response.status_code}")
+            
+            # Digest 인증 시도
+            www_authenticate = response.headers.get('www-authenticate')
+            logger.info(f"[인증] WWW-Authenticate 헤더: {www_authenticate}")
+            
+            if www_authenticate and www_authenticate.startswith('Digest'):
+                # Digest 인증 파라미터 파싱
+                import re
+                realm_match = re.search(r'realm="([^"]+)"', www_authenticate)
+                nonce_match = re.search(r'nonce="([^"]+)"', www_authenticate)
+                qop_match = re.search(r'qop="([^"]+)"', www_authenticate)
                 
-                # Digest 인증 시도
-                www_authenticate = basic_error.response.headers.get('www-authenticate')
-                logger.info(f"[인증] WWW-Authenticate 헤더: {www_authenticate}")
+                logger.info(f"[인증] Digest 파싱 결과 - realm: {realm_match.group(1) if realm_match else None}, nonce: {nonce_match.group(1) if nonce_match else None}, qop: {qop_match.group(1) if qop_match else None}")
                 
-                if www_authenticate and www_authenticate.startswith('Digest'):
-                    # Digest 인증 파라미터 파싱
-                    import re
-                    realm_match = re.search(r'realm="([^"]+)"', www_authenticate)
-                    nonce_match = re.search(r'nonce="([^"]+)"', www_authenticate)
-                    qop_match = re.search(r'qop="([^"]+)"', www_authenticate)
+                if realm_match and nonce_match and qop_match:
+                    realm = realm_match.group(1)
+                    nonce = nonce_match.group(1)
+                    qop = qop_match.group(1)
                     
-                    logger.info(f"[인증] Digest 파싱 결과 - realm: {realm_match.group(1) if realm_match else None}, nonce: {nonce_match.group(1) if nonce_match else None}, qop: {qop_match.group(1) if qop_match else None}")
+                    # cnonce와 nc 생성
+                    cnonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+                    nc = '00000001'
                     
-                    if realm_match and nonce_match and qop_match:
-                        realm = realm_match.group(1)
-                        nonce = nonce_match.group(1)
-                        qop = qop_match.group(1)
-                        
-                        # cnonce와 nc 생성
-                        cnonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-                        nc = '00000001'
-                        
-                        # URI 추출
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(url)
-                        uri = parsed_url.path + (f"?{parsed_url.query}" if parsed_url.query else "")
-                        
-                        logger.info(f"[인증] Digest URI: {uri}, cnonce: {cnonce}, nc: {nc}")
-                        
-                        # Digest 인증 헤더 생성
-                        auth_header = create_digest_auth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce)
-                        logger.info(f"[인증] Digest 헤더: {auth_header}")
-                        
-                        # Digest 인증으로 두 번째 요청
-                        logger.info("[인증] Digest 인증 요청 시작")
-                        try:
-                            return requests.get(url, headers={'Authorization': auth_header}, timeout=timeout)
-                        except requests.exceptions.RequestException as digest_error:
-                            logger.error(f"[인증] Digest 인증 요청 실패: {digest_error}")
-                            raise digest_error
-                    else:
-                        logger.error(f"[인증] Digest 파라미터 파싱 실패 - realm: {bool(realm_match)}, nonce: {bool(nonce_match)}, qop: {bool(qop_match)}")
+                    # URI 추출
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(url)
+                    uri = parsed_url.path + (f"?{parsed_url.query}" if parsed_url.query else "")
+                    
+                    logger.info(f"[인증] Digest URI: {uri}, cnonce: {cnonce}, nc: {nc}")
+                    
+                    # Digest 인증 헤더 생성
+                    auth_header = create_digest_auth(username, password, 'GET', uri, realm, nonce, qop, nc, cnonce)
+                    logger.info(f"[인증] Digest 헤더: {auth_header}")
+                    
+                    # Digest 인증으로 두 번째 요청
+                    logger.info("[인증] Digest 인증 요청 시작")
+                    try:
+                        return requests.get(url, headers={'Authorization': auth_header}, timeout=timeout)
+                    except requests.exceptions.RequestException as digest_error:
+                        logger.error(f"[인증] Digest 인증 요청 실패: {digest_error}")
+                        raise digest_error
                 else:
-                    logger.error(f"[인증] Digest 인증이 아닙니다: {www_authenticate}")
-            raise basic_error
+                    logger.error(f"[인증] Digest 파라미터 파싱 실패 - realm: {bool(realm_match)}, nonce: {bool(nonce_match)}, qop: {bool(qop_match)}")
+                    raise requests.exceptions.HTTPError(f"Digest 파라미터 파싱 실패")
+            else:
+                logger.error(f"[인증] Digest 인증이 아닙니다: {www_authenticate}")
+                raise requests.exceptions.HTTPError(f"Digest 인증이 아닙니다: {www_authenticate}")
         else:
             # 401이 아닌 다른 오류
-            raise basic_error
+            response.raise_for_status()
     except Exception as e:
         logger.error(f"[인증] 요청 실패: {e}")
         raise
