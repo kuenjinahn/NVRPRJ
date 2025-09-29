@@ -395,10 +395,20 @@ def upload_panorama_to_sftp(panorama_base64, timestamp):
                     logger.warning("홈 디렉토리를 찾을 수 없어 상대 경로로 시도")
                     root_path = relative_path
             
-            # 원격 폴더 구조 생성
-            remote_day_path = create_remote_directory_tree(sftp_client, root_path, year, month, day)
-            if not remote_day_path:
-                logger.error("폴더 생성 실패")
+            # ftp_data 폴더가 없으면 생성
+            try:
+                sftp_client.stat(root_path)
+                logger.info(f"폴더 존재 확인: {root_path}")
+            except FileNotFoundError:
+                logger.info(f"폴더가 없어서 생성 시도: {root_path}")
+                try:
+                    sftp_client.mkdir(root_path)
+                    logger.info(f"폴더 생성 완료: {root_path}")
+                except Exception as e:
+                    logger.error(f"폴더 생성 실패: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"폴더 확인 실패: {e}")
                 return False
             
             # 파일명 생성: {date_time}_{댐코드}.jpg 형식
@@ -410,7 +420,8 @@ def upload_panorama_to_sftp(panorama_base64, timestamp):
             
             # 파일명 생성: {date_time}_{댐코드}.jpg
             filename = f"{date_time}_{dam_code}.jpg"
-            remote_file_path = f"{remote_day_path}/{filename}"
+            # ftp_data 폴더에 직접 저장
+            remote_file_path = f"{root_path}/{filename}"
             
             # Base64 이미지를 바이너리로 변환
             image_data = base64.b64decode(panorama_base64)
