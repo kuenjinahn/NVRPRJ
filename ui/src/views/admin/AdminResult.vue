@@ -7,8 +7,8 @@
         <v-img
           src="@/assets/img/logo.png"
           alt="Welcome to SDMS "
-          width="200"
-          max-height="40"
+          width="160"
+          max-height="80"
           class="mr-3"
         />
       </div>

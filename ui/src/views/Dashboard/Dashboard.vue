@@ -49,7 +49,13 @@
         .no-map-image(v-else)
           .no-map-text 지도 이미지가 없습니다
   .cell.cell-topright
-    .box-title 열화상 영상
+    .box-title
+      span 열화상 영상
+      v-btn(
+        color="secondary"
+        size="small"
+        @click="showPanorama"
+      ) 파노라마
     .video-container
       vue-aspect-ratio(ar="4:3")
         VideoCard(
@@ -63,6 +69,394 @@
           @cameraStatus="cameraStatus"
         )
         .no-camera(v-else) No thermal camera available
+
+  // 파노라마 슬라이더 팝업 다이얼로그
+  v-dialog(
+    v-model="panoramaDialog"
+    max-width="1400"
+    persistent
+    content-class="panorama-dialog"
+  )
+    v-card.panorama-dialog-card
+      v-card-title.headline
+        span 파노라마 이미지
+        v-spacer
+        v-btn.close-btn(
+          color="secondary"
+          @click="panoramaDialog = false"
+        ) X
+      
+      v-card-text
+        .panorama-container
+          .panorama-image-container
+            v-img(
+              v-if="currentPanoramaImage"
+              :src="currentPanoramaImage"
+              height="500"
+              width="100%"
+              contain
+              class="panorama-image"
+            )
+            .no-image(v-else)
+              .no-image-text 이미지가 없습니다
+          
+          .panorama-controls
+            v-btn(
+              :disabled="currentPanoramaIndex <= 0"
+              @click="previousPanorama"
+              color="primary"
+              outlined
+            )
+              v-icon mdi-chevron-left
+              | 이전
+            .panorama-info
+              span {{ currentPanoramaIndex + 1 }} / {{ panoramaDataList.length }}
+              .panorama-date(v-if="currentPanoramaData")
+                | {{ formatDate(currentPanoramaData.create_date) }}
+            v-btn(
+              :disabled="currentPanoramaIndex >= panoramaDataList.length - 1"
+              @click="nextPanorama"
+              color="primary"
+              outlined
+            )
+              | 다음
+              v-icon mdi-chevron-right
+
+  // PTZ 제어 팝업 다이얼로그
+  v-dialog(
+    v-model="ptzDialog"
+    max-width="1200"
+    persistent
+    content-class="ptz-dialog"
+  )
+    v-card.ptz-dialog-card(
+      ref="ptzDialogCard"
+      @mousedown="startDrag"
+    )
+      v-card-title.headline.draggable-header(
+        @mousedown="startDrag"
+      )
+        span PTZ 카메라 제어
+        v-spacer
+        v-btn.close-btn(
+          color="white"
+          @click="ptzDialog = false"
+        ) X
+      
+      v-card-text
+        .ptz-dialog-container
+          // 왼쪽 영역 - 기존 PTZ 제어
+          .ptz-left-panel
+            .ptz-control-container
+              // 연결 정보
+              .connection-info
+                v-row
+                  v-col(cols="8")
+                    v-text-field(
+                      v-model="ptzConfig.ip"
+                      label="카메라 IP"
+                      outlined
+                      dense
+                      :error-messages="ipError"
+                      @input="validateIP"
+                    )
+                  v-col(cols="4")
+                    v-text-field(
+                      v-model="ptzConfig.speed"
+                      label="속도 (1-63)"
+                      outlined
+                      dense
+                      type="number"
+                      min="1"
+                      max="63"
+                    )
+                
+                // 연결 상태 표시
+                .connection-status(v-if="connectionStatus")
+                  v-alert(
+                    :type="connectionStatus.type"
+                    :text="connectionStatus.message"
+                    dense
+                    outlined
+                  )
+              
+              // PTZ 제어 버튼
+              .ptz-buttons
+                .ptz-row
+                  v-btn(
+                    fab
+                    large
+                    color="secondary"
+                    @mousedown="ptzMove('up')"
+                    @mouseup="ptzStop"
+                    @mouseleave="ptzStop"
+                  )
+                    v-icon(:icon="ptzIcons.up")
+                    .ptz-label 상
+                .ptz-row
+                  v-btn(
+                    fab
+                    large
+                    color="secondary"
+                    @mousedown="ptzMove('left')"
+                    @mouseup="ptzStop"
+                    @mouseleave="ptzStop"
+                  )
+                    v-icon(:icon="ptzIcons.left")
+                    .ptz-label 좌
+                  v-btn(
+                    fab
+                    large
+                    color="secondary"
+                    @mousedown="ptzMove('right')"
+                    @mouseup="ptzStop"
+                    @mouseleave="ptzStop"
+                  )
+                    v-icon(:icon="ptzIcons.right")
+                    .ptz-label 우
+                .ptz-row
+                  v-btn(
+                    fab
+                    large
+                    color="secondary"
+                    @mousedown="ptzMove('down')"
+                    @mouseup="ptzStop"
+                    @mouseleave="ptzStop"
+                  )
+                    v-icon(:icon="ptzIcons.down")
+                    .ptz-label 하
+              
+              // 줌 및 포커스 제어
+              .zoom-focus-controls
+                v-row
+                  v-col(cols="6")
+                    .control-group
+                      .control-label 줌 제어
+                      .control-buttons
+                        v-btn(
+                          color="secondary"
+                          @mousedown="ptzZoom('in')"
+                          @mouseup="ptzStop"
+                          @mouseleave="ptzStop"
+                        )
+                          v-icon(:icon="ptzIcons.zoomIn" size="small")
+                          span.ml-2 줌 인
+                        v-btn(
+                          color="secondary"
+                          @mousedown="ptzZoom('out')"
+                          @mouseup="ptzStop"
+                          @mouseleave="ptzStop"
+                        )
+                          v-icon(:icon="ptzIcons.zoomOut" size="small")
+                          span.ml-2 줌 아웃
+                  v-col(cols="6")
+                    .control-group
+                      .control-label 포커스 제어
+                      .control-buttons
+                        v-btn(
+                          color="secondary"
+                          @mousedown="ptzFocus('in')"
+                          @mouseup="ptzStop"
+                          @mouseleave="ptzStop"
+                        )
+                          v-icon(:icon="ptzIcons.focusIn" size="small")
+                          span.ml-2 포커스 인
+                        v-btn(
+                          color="secondary"
+                          @mousedown="ptzFocus('out')"
+                          @mouseup="ptzStop"
+                          @mouseleave="ptzStop"
+                        )
+                          v-icon(:icon="ptzIcons.focusOut" size="small")
+                          span.ml-2 포커스 아웃
+              
+              // 와이퍼 제어
+              .wiper-controls
+                .control-group
+                  .control-label 와이퍼 제어
+                  .control-buttons
+                    v-btn(
+                      color="success"
+                      @click="ptzWiper('on')"
+                    )
+                      v-icon(:icon="ptzIcons.wiperOn" size="small")
+                      span.ml-2 와이퍼 ON
+                    v-btn(
+                      color="error"
+                      @click="ptzWiper('off')"
+                    )
+                      v-icon(:icon="ptzIcons.wiperOff" size="small")
+                      span.ml-2 와이퍼 OFF
+
+          // 오른쪽 영역 - 프리셋 및 투어 제어
+          .ptz-right-panel
+            .preset-section
+              .section-title 프리셋
+              .preset-controls
+                .preset-row
+                  .preset-label Preset1
+                  .preset-inputs
+                    v-text-field(
+                      v-model="presetValues.preset1.pan"
+                      label="Pan"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset1.tilt"
+                      label="Tilt"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset1.zoom"
+                      label="Zoom"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                  .preset-buttons
+                    v-btn(
+                      color="secondary"
+                      small
+                      @click="loadPreset1"
+                    ) 불러오기
+                    v-btn(
+                      color="success"
+                      small
+                      @click="savePreset1"
+                    ) 저장하기
+                
+                .preset-row
+                  .preset-label Preset2
+                  .preset-inputs
+                    v-text-field(
+                      v-model="presetValues.preset2.pan"
+                      label="Pan"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset2.tilt"
+                      label="Tilt"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset2.zoom"
+                      label="Zoom"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                  .preset-buttons
+                    v-btn(
+                      color="secondary"
+                      small
+                      @click="loadPreset2"
+                    ) 불러오기
+                    v-btn(
+                      color="success"
+                      small
+                      @click="savePreset2"
+                    ) 저장하기
+                
+                .preset-row
+                  .preset-label Preset3
+                  .preset-inputs
+                    v-text-field(
+                      v-model="presetValues.preset3.pan"
+                      label="Pan"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset3.tilt"
+                      label="Tilt"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                    v-text-field(
+                      v-model="presetValues.preset3.zoom"
+                      label="Zoom"
+                      outlined
+                      dense
+                      hide-details
+                    )
+                  .preset-buttons
+                    v-btn(
+                      color="secondary"
+                      small
+                      @click="loadPreset3"
+                    ) 불러오기
+                    v-btn(
+                      color="success"
+                      small
+                      @click="savePreset3"
+                    ) 저장하기
+
+            // 홈 프리셋으로 이동 버튼
+            .home-preset-section
+              .section-title 홈 프리셋
+              .home-preset-controls
+                v-btn(
+                  color="success"
+                  large
+                  @click="goToHomePreset"
+                  :disabled="!connected"
+                )
+                  v-icon(left)
+                  | 홈 프리셋으로 이동
+
+            .tour-section
+              .section-title 장치 투어(1→2→3) & 시간
+              .tour-controls
+                .tour-speed
+                  v-text-field(
+                    v-model="tourSpeed"
+                    label="투어 속도(rpm)"
+                    outlined
+                    dense
+                    type="number"
+                    hide-details
+                  )
+                .step-write
+                  v-text-field(
+                    v-model="stepWrite"
+                    label="스텝 쓰기(1~3)"
+                    outlined
+                    dense
+                    type="number"
+                    min="1"
+                    max="3"
+                    hide-details
+                  )
+                  v-btn(
+                    color="success"
+                    small
+                    @click="writeTourSteps"
+                    :disabled="!connected"
+                  ) 스텝 쓰기
+
+
+            .log-section
+              .section-title 로그
+              .log-area(ref="logArea")
+                v-textarea(
+                  v-model="logContent"
+                  readonly
+                  outlined
+                  no-resize
+                  hide-details
+                  rows="5"
+                )
+
   .cell.cell-bottomleft
     .bottomleft-inner-col
       .bottomleft-inner-top
@@ -72,8 +466,8 @@
             thead
               tr
                 th ROI
-                th Min Temp
                 th Max Temp
+                th Min Temp
                 th Avg Temp
                 th Graph
                 th Download
@@ -85,9 +479,9 @@
                 @click="showChart(zone)"
               )
                 td {{ zone.zone_desc }}
-                td 최대온도: {{ zone.maxTemp }}
-                td 최소온도: {{ zone.minTemp }}
-                td 평균온도: {{ zone.avgTemp }}
+                td 최대온도: {{ zone.minTemp }}
+                td 최소온도: {{ zone.maxTemp }}
+                td 평균온도: {{ zone.avgTemp }} 
                 td 경보단계: {{ zone.alertLevel }}
                 td
                   span.icon-chart 📈
@@ -98,7 +492,13 @@
           .chart-container
             v-chart(:options="chartOption" autoresize ref="trendChart" class="trend-chart")
   .cell.cell-bottomright
-    .box-title 실화상 영상
+    .box-title
+      span 실화상 영상
+      v-btn(
+        color="secondary"
+        size="small"
+        @click="showPTZControl"
+      ) 팬틸트
     .video-container
       vue-aspect-ratio(ar="4:3")
         VideoCard(
@@ -128,7 +528,52 @@ import socket from '@/mixins/socket';
 import * as XLSX from 'xlsx';
 import * as echarts from 'echarts';
 import { getAlerts} from '@/api/alerts.api';
-import { getEventSetting } from '@/api/eventSetting.api.js'
+import { getEventSetting } from '@/api/eventSetting.api.js';
+import { ptzMove, ptzStop, ptzZoom, ptzFocus, ptzWiper, pntTourStart, pntTourStop, pntTourSetup } from '@/api/ptz.api';
+import { getPanoramaData } from '@/api/panorama.api';
+
+// 새로운 웹 API 함수들
+const getPTZPosition = async (ip, ptzNumber = 1) => {
+  const response = await fetch(`/api/ptz/getPosition?ip=${ip}&ptzNumber=${ptzNumber}`);
+  return await response.json();
+};
+
+const setPTZPosition = async (ip, pan, tilt, zoom, presetNumber = 1) => {
+  const response = await fetch('/api/ptz/setPosition', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ip, pan, tilt, zoom, presetNumber })
+  });
+  return await response.json();
+};
+
+// 프리셋 목록 조회 API 함수
+const getPresetList = async (ip) => {
+  const response = await fetch(`/api/ptz/preset/list?ip=${ip}`);
+  return await response.json();
+};
+
+
+
+
+
+// PTZ 아이콘 import
+import { 
+  mdiChevronUp, 
+  mdiChevronDown, 
+  mdiChevronLeft, 
+  mdiChevronRight,
+  mdiMagnifyPlus,
+  mdiMagnifyMinus,
+  mdiFocus,
+  mdiFocusOutline,
+  mdiWater,
+  mdiWaterOff,
+  mdiClose,
+  mdiHome
+} from '@mdi/js';
 use([
   CanvasRenderer,
   BarChart,
@@ -173,6 +618,57 @@ data() {
     mapImagePreview: null,
     selectedStatusButton: null,
     latestAlertInfo: null,
+    // PTZ 제어 관련 데이터
+    ptzDialog: false,
+    ptzConfig: {
+      ip: '175.201.204.165',
+      port: '80',
+      speed: 32
+    },
+    // IP 유효성 검사 관련 데이터
+    ipError: '',
+    connectionStatus: null,
+    // PTZ 아이콘
+    ptzIcons: {
+      up: mdiChevronUp,
+      down: mdiChevronDown,
+      left: mdiChevronLeft,
+      right: mdiChevronRight,
+      zoomIn: mdiMagnifyPlus,
+      zoomOut: mdiMagnifyMinus,
+      focusIn: mdiFocus,
+      focusOut: mdiFocusOutline,
+      wiperOn: mdiWater,
+      wiperOff: mdiWaterOff,
+      close: mdiClose,
+      home: mdiHome
+    },
+    // 프리셋 값들
+    presetValues: {
+      preset1: { pan: '', tilt: '', zoom: '' },
+      preset2: { pan: '', tilt: '', zoom: '' },
+      preset3: { pan: '', tilt: '', zoom: '' }
+    },
+    // 투어 관련 데이터
+    tourSpeed: 600,
+    stepWrite: '',
+    cycleProgress: 0,
+    logContent: '',
+    tourRunning: false,
+    tourStatus: '대기 중',
+    connected: false,
+    // 드래그 관련 데이터
+    isDragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    dialogOffsetX: 0,
+    dialogOffsetY: 0,
+    // 파노라마 관련 데이터
+    panoramaDialog: false,
+    panoramaDataList: [],
+    currentPanoramaIndex: 0,
+    currentPanoramaImage: null,
+    currentPanoramaData: null
   };
 },
 computed: {
@@ -428,6 +924,850 @@ methods: {
     this.selectedZoneIdx = idx;
     this.selectedZone = this.zones[idx];
   },
+  // PTZ 제어 관련 메서드
+  async showPTZControl() {
+    try {
+      console.log('PTZ 팝업 열기 시작...');
+      
+      // EventSetting에서 열화상 카메라 설정 조회
+      const eventSetting = await getEventSetting();
+      console.log('EventSetting 조회 결과:', eventSetting);
+      
+      if (eventSetting && eventSetting.object_json) {
+        try {
+          const objectConfig = JSON.parse(eventSetting.object_json);
+          console.log('object_json 파싱 결과:', objectConfig);
+          
+          if (objectConfig.thermalCamera) {
+            console.log('thermalCamera 설정 발견:', objectConfig.thermalCamera);
+            
+            // IP 설정
+            if (objectConfig.thermalCamera.ip) {
+              this.ptzConfig.ip = objectConfig.thermalCamera.ip;
+              console.log('IP 설정 완료:', this.ptzConfig.ip);
+            } else {
+              console.log('IP 설정이 없어 기본값 사용:', this.ptzConfig.ip);
+            }
+            
+            // Port 설정 (팬틸트 제어용으로 32000, 웹 API는 별도 처리)
+            this.ptzConfig.port = '32000';
+            console.log('Port 설정 완료 (팬틸트 제어용):', this.ptzConfig.port);
+            
+            // Speed 설정 (있는 경우)
+            if (objectConfig.thermalCamera.speed) {
+              this.ptzConfig.speed = objectConfig.thermalCamera.speed;
+              console.log('Speed 설정 완료:', this.ptzConfig.speed);
+            }
+            
+            console.log('최종 PTZ 설정:', this.ptzConfig);
+          } else {
+            console.log('thermalCamera 설정이 object_json에 없음, 기본값 사용');
+          }
+        } catch (parseError) {
+          console.error('object_json 파싱 실패:', parseError);
+          console.log('기본 PTZ 설정 사용');
+        }
+      } else {
+        console.log('object_json이 없음, 기본값 사용');
+      }
+      
+      // 연결 상태 초기화
+      this.connectionStatus = null;
+      this.ipError = '';
+      
+    } catch (error) {
+      console.error('EventSetting 조회 실패:', error);
+      console.log('기본 PTZ 설정 사용');
+    }
+    
+    // 연결 상태 설정 (홈프리셋 버튼 활성화를 위해)
+    this.connected = true;
+    this.connectionStatus = { 
+      type: 'success', 
+      message: `연결 준비 완료: ${this.ptzConfig.ip}:80 (웹 API)` 
+    };
+    
+    // 프리셋 팝업 열기
+    this.ptzDialog = true;
+    console.log('PTZ 팝업 열기 완료');
+    
+    // 3개 프리셋 값을 자동으로 로드
+    await this.loadAllPresets();
+  },
+
+  // IP 유효성 검사
+  validateIP() {
+    const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    
+    if (!this.ptzConfig.ip) {
+      this.ipError = 'IP 주소를 입력해주세요';
+      this.connectionStatus = { type: 'warning', message: 'IP 주소를 입력해주세요' };
+    } else if (!ipRegex.test(this.ptzConfig.ip)) {
+      this.ipError = '올바른 IP 주소 형식이 아닙니다';
+      this.connectionStatus = { type: 'warning', message: '올바른 IP 주소 형식이 아닙니다' };
+    } else {
+      this.ipError = '';
+      this.updateConnectionStatus();
+    }
+  },
+
+
+  // 연결 상태 업데이트
+  updateConnectionStatus() {
+    console.log('🔗 연결 상태 업데이트');
+    console.log('🔍 IP Error:', this.ipError);
+    console.log('🔍 PTZ Config:', this.ptzConfig);
+    
+    if (!this.ipError) {
+      this.connectionStatus = { 
+        type: 'success', 
+        message: `연결 준비 완료: ${this.ptzConfig.ip}:80 (웹 API)` 
+      };
+      this.connected = true;
+      console.log('✅ 연결 상태: 준비 완료');
+    } else {
+      this.connectionStatus = { 
+        type: 'error', 
+        message: 'IP 주소를 올바르게 입력해주세요' 
+      };
+      this.connected = false;
+      console.log('❌ 연결 상태: 오류');
+    }
+  },
+
+  async ptzMove(direction) {
+    // IP 유효성 검사
+    if (this.ipError) {
+      this.$toast.error('IP 주소를 올바르게 입력해주세요');
+      return;
+    }
+    
+    try {
+      await ptzMove(direction, this.ptzConfig.speed, this.ptzConfig.ip, this.ptzConfig.port);
+      console.log(`PTZ Move: ${direction} with speed ${this.ptzConfig.speed}`);
+    } catch (error) {
+      console.error('PTZ Move Error:', error);
+      this.$toast.error('PTZ 제어 명령 전송 실패');
+    }
+  },
+
+  async ptzStop() {
+    // IP 유효성 검사
+    if (this.ipError) {
+      this.$toast.error('IP 주소를 올바르게 입력해주세요');
+      return;
+    }
+    
+    try {
+      await ptzStop(this.ptzConfig.ip, this.ptzConfig.port);
+      console.log('PTZ Stop command sent');
+    } catch (error) {
+      console.error('PTZ Stop Error:', error);
+    }
+  },
+
+  async ptzZoom(direction) {
+    // IP 유효성 검사
+    if (this.ipError) {
+      this.$toast.error('IP 주소를 올바르게 입력해주세요');
+      return;
+    }
+    
+    try {
+      await ptzZoom(direction, this.ptzConfig.ip, this.ptzConfig.port);
+      console.log(`PTZ Zoom: ${direction}`);
+    } catch (error) {
+      console.error('PTZ Zoom Error:', error);
+      this.$toast.error('줌 제어 명령 전송 실패');
+    }
+  },
+
+  async ptzFocus(direction) {
+    // IP 유효성 검사
+    if (this.ipError) {
+      this.$toast.error('IP 주소를 올바르게 입력해주세요');
+      this.connectionStatus = { type: 'error', message: 'IP 주소를 올바르게 입력해주세요' };
+      return;
+    }
+    
+    try {
+      await ptzFocus(direction, this.ptzConfig.ip, this.ptzConfig.port);
+      console.log(`PTZ Focus: ${direction}`);
+    } catch (error) {
+      console.error('PTZ Focus Error:', error);
+      this.$toast.error('포커스 제어 명령 전송 실패');
+    }
+  },
+
+  async ptzWiper(action) {
+    // IP 유효성 검사
+    if (this.ipError) {
+      this.$toast.error('IP 주소를 올바르게 입력해주세요');
+      this.connectionStatus = { type: 'error', message: 'IP 주소를 올바르게 입력해주세요' };
+      return;
+    }
+    
+    try {
+      await ptzWiper(action, this.ptzConfig.ip, this.ptzConfig.port);
+      console.log(`PTZ Wiper: ${action}`);
+      this.$toast.success(`와이퍼 ${action === 'on' ? 'ON' : 'OFF'} 명령 전송 완료`);
+    } catch (error) {
+      console.error('PTZ Wiper Error:', error);
+      this.$toast.error('와이퍼 제어 명령 전송 실패');
+    }
+  },
+
+  // 파노라마 버튼 클릭
+  async showPanorama() {
+    try {
+      this.$toast.info('파노라마 데이터를 불러오는 중...');
+      await this.loadPanoramaData();
+      this.panoramaDialog = true;
+    } catch (error) {
+      console.error('파노라마 데이터 로드 실패:', error);
+      this.$toast.error('파노라마 데이터를 불러올 수 없습니다.');
+    }
+  },
+
+  // 파노라마 데이터 로드
+  async loadPanoramaData() {
+    try {
+      const response = await getPanoramaData(5);
+      this.panoramaDataList = response.data || [];
+      
+      if (this.panoramaDataList.length > 0) {
+        this.currentPanoramaIndex = 0;
+        this.setCurrentPanoramaImage();
+      } else {
+        this.$toast.warning('파노라마 데이터가 없습니다.');
+      }
+    } catch (error) {
+      console.error('파노라마 데이터 로드 오류:', error);
+      throw error;
+    }
+  },
+
+  // 현재 파노라마 이미지 설정
+  setCurrentPanoramaImage() {
+    if (this.panoramaDataList.length > 0 && this.currentPanoramaIndex < this.panoramaDataList.length) {
+      const panoramaData = this.panoramaDataList[this.currentPanoramaIndex];
+      this.currentPanoramaData = panoramaData;
+      
+      try {
+        // panoramaData JSON 파싱
+        const parsedData = JSON.parse(panoramaData.panoramaData);
+        if (parsedData.image) {
+          this.currentPanoramaImage = `data:image/jpeg;base64,${parsedData.image}`;
+        } else {
+          this.currentPanoramaImage = null;
+        }
+      } catch (error) {
+        console.error('파노라마 데이터 파싱 오류:', error);
+        this.currentPanoramaImage = null;
+      }
+    } else {
+      this.currentPanoramaImage = null;
+      this.currentPanoramaData = null;
+    }
+  },
+
+  // 이전 파노라마 이미지
+  previousPanorama() {
+    if (this.currentPanoramaIndex > 0) {
+      this.currentPanoramaIndex--;
+      this.setCurrentPanoramaImage();
+    }
+  },
+
+  // 다음 파노라마 이미지
+  nextPanorama() {
+    if (this.currentPanoramaIndex < this.panoramaDataList.length - 1) {
+      this.currentPanoramaIndex++;
+      this.setCurrentPanoramaImage();
+    }
+  },
+
+  // 현재 위치 불러오기 (웹 API)
+  async getCurrentPosition() {
+    try {
+      console.log('📍 현재 위치 불러오기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('현재 위치 불러오기 실패: IP 오류');
+        return;
+      }
+
+      this.addLog('현재 위치 불러오기 요청 중...');
+      
+      const response = await getPTZPosition(this.ptzConfig.ip, 1);
+      
+      console.log('🔍 Current Position Response:', response);
+      
+      if (response.success && response.data && response.data.ptzValues) {
+        const { pan, tilt, zoom } = response.data.ptzValues;
+
+        console.log(`🔍 Current Position: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+        this.$toast.success(`현재 위치 불러오기 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`현재 위치 불러오기 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`현재 위치 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`현재 위치 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Current Position Error:', error);
+      this.$toast.error('현재 위치 불러오기 실패');
+      this.addLog(`현재 위치 불러오기 실패: ${error.message}`);
+    }
+  },
+
+  // 현재 위치 저장하기 (웹 API)
+  async setCurrentPosition() {
+    try {
+      console.log('💾 현재 위치 저장하기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('현재 위치 저장하기 실패: IP 오류');
+        return;
+      }
+
+      // 먼저 현재 위치를 불러옴
+      this.addLog('현재 위치 조회 중...');
+      const getResponse = await getPTZPosition(this.ptzConfig.ip, 1);
+      
+      if (!getResponse.success || !getResponse.data || !getResponse.data.ptzValues) {
+        this.$toast.error('현재 위치를 조회할 수 없습니다');
+        this.addLog('현재 위치 저장하기 실패: 위치 조회 실패');
+        return;
+      }
+
+      const { pan, tilt, zoom } = getResponse.data.ptzValues;
+      this.addLog(`현재 위치: Pan=${pan}°, Tilt=${tilt}°, Zoom=${zoom}%`);
+
+      // 1번 프리셋으로 저장
+      this.addLog('1번 프리셋으로 저장 중...');
+      const response = await setPTZPosition(this.ptzConfig.ip, pan, tilt, zoom, 1);
+      
+      console.log('🔍 Set Position Response:', response);
+      
+      if (response.success) {
+        this.$toast.success(`현재 위치 저장 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`현재 위치 저장 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`현재 위치 저장 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`현재 위치 저장 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Set Position Error:', error);
+      this.$toast.error('현재 위치 저장 실패');
+      this.addLog(`현재 위치 저장 실패: ${error.message}`);
+    }
+  },
+
+  // 1번 프리셋 불러오기
+  async loadPreset1() {
+    try {
+      console.log('📍 1번 프리셋 불러오기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('1번 프리셋 불러오기 실패: IP 오류');
+        return;
+      }
+
+      this.addLog('1번 프리셋 조회 중...');
+      
+      const response = await getPTZPosition(this.ptzConfig.ip, 1);
+      
+      console.log('🔍 Preset 1 Response:', response);
+      
+      if (response.success && response.data && response.data.ptzValues) {
+        const { pan, tilt, zoom } = response.data.ptzValues;
+
+        console.log(`🔍 Preset 1 Values: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+        // 1번 프리셋 입력 필드에 값 적용
+        this.presetValues.preset1.pan = pan;
+        this.presetValues.preset1.tilt = tilt;
+        this.presetValues.preset1.zoom = zoom;
+
+        this.$toast.success(`1번 프리셋 불러오기 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`1번 프리셋 불러오기 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`1번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`1번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 1 Error:', error);
+      this.$toast.error('1번 프리셋 불러오기 실패');
+      this.addLog(`1번 프리셋 불러오기 실패: ${error.message}`);
+    }
+  },
+
+  // 2번 프리셋 불러오기
+  async loadPreset2() {
+    try {
+      console.log('📍 2번 프리셋 불러오기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('2번 프리셋 불러오기 실패: IP 오류');
+        return;
+      }
+
+      this.addLog('2번 프리셋 조회 중...');
+      
+      const response = await getPTZPosition(this.ptzConfig.ip, 2);
+      
+      console.log('🔍 Preset 2 Response:', response);
+      
+      if (response.success && response.data && response.data.ptzValues) {
+        const { pan, tilt, zoom } = response.data.ptzValues;
+
+        console.log(`🔍 Preset 2 Values: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+        // 2번 프리셋 입력 필드에 값 적용
+        this.presetValues.preset2.pan = pan;
+        this.presetValues.preset2.tilt = tilt;
+        this.presetValues.preset2.zoom = zoom;
+
+        this.$toast.success(`2번 프리셋 불러오기 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`2번 프리셋 불러오기 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`2번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`2번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 2 Error:', error);
+      this.$toast.error('2번 프리셋 불러오기 실패');
+      this.addLog(`2번 프리셋 불러오기 실패: ${error.message}`);
+    }
+  },
+
+  // 3번 프리셋 불러오기
+  async loadPreset3() {
+    try {
+      console.log('📍 3번 프리셋 불러오기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('3번 프리셋 불러오기 실패: IP 오류');
+        return;
+      }
+
+      this.addLog('3번 프리셋 조회 중...');
+      
+      const response = await getPTZPosition(this.ptzConfig.ip, 3);
+      
+      console.log('🔍 Preset 3 Response:', response);
+      
+      if (response.success && response.data && response.data.ptzValues) {
+        const { pan, tilt, zoom } = response.data.ptzValues;
+
+        console.log(`🔍 Preset 3 Values: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+        // 3번 프리셋 입력 필드에 값 적용
+        this.presetValues.preset3.pan = pan;
+        this.presetValues.preset3.tilt = tilt;
+        this.presetValues.preset3.zoom = zoom;
+
+        this.$toast.success(`3번 프리셋 불러오기 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`3번 프리셋 불러오기 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`3번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`3번 프리셋 불러오기 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 3 Error:', error);
+      this.$toast.error('3번 프리셋 불러오기 실패');
+      this.addLog(`3번 프리셋 불러오기 실패: ${error.message}`);
+    }
+  },
+
+  // 모든 프리셋 값 자동 로드 (팝업 열 때 호출)
+  async loadAllPresets() {
+    try {
+      console.log('📍 모든 프리셋 값 자동 로드 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        console.log('IP 오류로 인해 프리셋 로드 건너뜀');
+        return;
+      }
+
+      this.addLog('서버에서 프리셋 목록 조회 중...');
+      
+      // 서버에서 프리셋 목록 조회
+      const response = await getPresetList(this.ptzConfig.ip);
+      
+      console.log('🔍 Preset List Response:', response);
+      
+      if (response.success && response.data && response.data.presets) {
+        const presets = response.data.presets;
+        console.log(`🔍 Found ${presets.length} presets:`, presets);
+        
+        // 각 프리셋에 대해 값 설정
+        for (const preset of presets) {
+          const presetNum = preset.presetNumber;
+          const pan = preset.pan || 0;
+          const tilt = preset.tilt || 0;
+          const zoom = preset.zoom || 1;
+          
+          console.log(`🔍 Preset ${presetNum} Values: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+          
+          // 해당 프리셋 입력 필드에 값 적용
+          if (presetNum === 1) {
+            this.presetValues.preset1.pan = pan;
+            this.presetValues.preset1.tilt = tilt;
+            this.presetValues.preset1.zoom = zoom;
+          } else if (presetNum === 2) {
+            this.presetValues.preset2.pan = pan;
+            this.presetValues.preset2.tilt = tilt;
+            this.presetValues.preset2.zoom = zoom;
+          } else if (presetNum === 3) {
+            this.presetValues.preset3.pan = pan;
+            this.presetValues.preset3.tilt = tilt;
+            this.presetValues.preset3.zoom = zoom;
+          }
+        }
+        
+        this.$toast.success(`프리셋 값 자동 로드 완료 (${presets.length}개)`);
+        this.addLog(`프리셋 값 자동 로드 완료 - ${presets.length}개 프리셋`);
+      } else {
+        console.log('프리셋 목록이 없거나 오류 발생, 개별 로드 시도');
+        this.addLog('프리셋 목록 조회 실패, 개별 로드 시도');
+        
+        // 개별 프리셋 로드 시도
+        await Promise.all([
+          this.loadPreset1(),
+          this.loadPreset2(),
+          this.loadPreset3()
+        ]);
+      }
+    } catch (error) {
+      console.error('Load All Presets Error:', error);
+      this.$toast.warning('프리셋 자동 로드 실패, 수동으로 불러오기를 시도해주세요');
+      this.addLog(`프리셋 자동 로드 실패: ${error.message}`);
+    }
+  },
+
+  // 1번 프리셋 저장하기
+  async savePreset1() {
+    try {
+      console.log('💾 1번 프리셋 저장하기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('1번 프리셋 저장하기 실패: IP 오류');
+        return;
+      }
+
+      // 입력된 값들을 가져옴
+      const presetData = this.presetValues.preset1;
+      
+      if (!presetData.pan || !presetData.tilt || !presetData.zoom) {
+        this.$toast.error('1번 프리셋의 Pan, Tilt, Zoom 값을 모두 입력해주세요');
+        this.addLog('1번 프리셋 저장하기 실패: 값이 누락됨');
+        return;
+      }
+
+      const { pan, tilt, zoom } = presetData;
+      this.addLog(`1번 프리셋 저장 중: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+      const response = await setPTZPosition(this.ptzConfig.ip, pan, tilt, zoom, 1);
+      
+      console.log('🔍 Preset 1 Save Response:', response);
+      
+      if (response.success) {
+        this.$toast.success(`1번 프리셋 저장 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`1번 프리셋 저장 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`1번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`1번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 1 Save Error:', error);
+      this.$toast.error('1번 프리셋 저장 실패');
+      this.addLog(`1번 프리셋 저장 실패: ${error.message}`);
+    }
+  },
+
+  // 2번 프리셋 저장하기
+  async savePreset2() {
+    try {
+      console.log('💾 2번 프리셋 저장하기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('2번 프리셋 저장하기 실패: IP 오류');
+        return;
+      }
+
+      // 입력된 값들을 가져옴
+      const presetData = this.presetValues.preset2;
+      
+      if (!presetData.pan || !presetData.tilt || !presetData.zoom) {
+        this.$toast.error('2번 프리셋의 Pan, Tilt, Zoom 값을 모두 입력해주세요');
+        this.addLog('2번 프리셋 저장하기 실패: 값이 누락됨');
+        return;
+      }
+
+      const { pan, tilt, zoom } = presetData;
+      this.addLog(`2번 프리셋 저장 중: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+      const response = await setPTZPosition(this.ptzConfig.ip, pan, tilt, zoom, 2);
+      
+      console.log('🔍 Preset 2 Save Response:', response);
+      
+      if (response.success) {
+        this.$toast.success(`2번 프리셋 저장 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`2번 프리셋 저장 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`2번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`2번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 2 Save Error:', error);
+      this.$toast.error('2번 프리셋 저장 실패');
+      this.addLog(`2번 프리셋 저장 실패: ${error.message}`);
+    }
+  },
+
+  // 3번 프리셋 저장하기
+  async savePreset3() {
+    try {
+      console.log('💾 3번 프리셋 저장하기 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('3번 프리셋 저장하기 실패: IP 오류');
+        return;
+      }
+
+      // 입력된 값들을 가져옴
+      const presetData = this.presetValues.preset3;
+      
+      if (!presetData.pan || !presetData.tilt || !presetData.zoom) {
+        this.$toast.error('3번 프리셋의 Pan, Tilt, Zoom 값을 모두 입력해주세요');
+        this.addLog('3번 프리셋 저장하기 실패: 값이 누락됨');
+        return;
+      }
+
+      const { pan, tilt, zoom } = presetData;
+      this.addLog(`3번 프리셋 저장 중: Pan=${pan}, Tilt=${tilt}, Zoom=${zoom}`);
+
+      const response = await setPTZPosition(this.ptzConfig.ip, pan, tilt, zoom, 3);
+      
+      console.log('🔍 Preset 3 Save Response:', response);
+      
+      if (response.success) {
+        this.$toast.success(`3번 프리셋 저장 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`3번 프리셋 저장 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`3번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+        this.addLog(`3번 프리셋 저장 실패: ${response.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Preset 3 Save Error:', error);
+      this.$toast.error('3번 프리셋 저장 실패');
+      this.addLog(`3번 프리셋 저장 실패: ${error.message}`);
+    }
+  },
+
+  // 홈 프리셋으로 이동 (웹 API)
+  async goToHomePreset() {
+    try {
+      console.log('🏠 홈 프리셋 이동 시작');
+      
+      // IP 유효성 검사
+      if (this.ipError) {
+        this.$toast.error('IP 주소를 올바르게 입력해주세요');
+        this.addLog('홈 프리셋 이동 실패: IP 오류');
+        return;
+      }
+
+      this.addLog('홈 프리셋 이동 요청 중...');
+      
+      // 홈 프리셋 이동 API 호출 (INI 파일에서 1번 프리셋 값을 읽어서 setPosition 호출)
+      const response = await fetch('/api/ptz/home', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ip: this.ptzConfig.ip })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        const { pan, tilt, zoom } = data.data.ptzValues;
+        this.$toast.success(`홈 프리셋으로 이동 완료 (Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%)`);
+        this.addLog(`홈 프리셋으로 이동 완료 - Pan: ${pan}°, Tilt: ${tilt}°, Zoom: ${zoom}%`);
+      } else {
+        this.$toast.error(`홈 프리셋 이동 실패: ${data.message || '알 수 없는 오류'}`);
+        this.addLog(`홈 프리셋 이동 실패: ${data.message || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('Home Preset Error:', error);
+      this.$toast.error('홈 프리셋으로 이동 실패');
+      this.addLog(`홈 프리셋으로 이동 실패: ${error.message}`);
+    }
+  },
+
+  // 로그 추가
+  addLog(message) {
+    const timestamp = new Date().toLocaleTimeString('ko-KR');
+    this.logContent += `[${timestamp}] ${message}\n`;
+    
+    // 다음 틱에서 자동 스크롤
+    this.$nextTick(() => {
+      this.scrollToBottom();
+    });
+  },
+
+  // 로그 영역을 맨 아래로 스크롤
+  scrollToBottom() {
+    this.$nextTick(() => {
+      const logArea = this.$refs.logArea;
+      if (logArea) {
+        const textarea = logArea.querySelector('textarea');
+        if (textarea) {
+          // 스크롤을 맨 아래로
+          textarea.scrollTop = textarea.scrollHeight;
+          
+          // 추가적인 스크롤 보장
+          setTimeout(() => {
+            textarea.scrollTop = textarea.scrollHeight;
+          }, 10);
+        }
+      }
+    });
+  },
+
+  // 투어 스텝 쓰기
+  async writeTourSteps() {
+    try {
+      console.log('⚙️ 투어 스텝 쓰기 시작');
+      console.log('🔍 IP Error:', this.ipError);
+      console.log('🔍 Port Error:', this.portError);
+      console.log('🔍 Tour Speed:', this.tourSpeed);
+      console.log('🔍 PTZ Config:', this.ptzConfig);
+      
+      // IP와 Port 유효성 검사
+      if (this.ipError || this.portError) {
+        this.$toast.error('IP 주소와 포트를 올바르게 입력해주세요');
+        this.addLog('투어 스텝 설정 실패: IP/Port 오류');
+        return;
+      }
+
+      if (!this.tourSpeed || this.tourSpeed <= 0) {
+        this.$toast.error('투어 속도를 올바르게 입력해주세요');
+        this.addLog('투어 스텝 설정 실패: 속도 오류');
+        return;
+      }
+
+      this.addLog('투어 스텝 설정 요청 중...');
+      console.log('📡 API 호출: pntTourSetup(' + this.tourSpeed + ', 60, ' + this.ptzConfig.ip + ', ' + this.ptzConfig.port + ')');
+      
+      await pntTourSetup(this.tourSpeed, 60, this.ptzConfig.ip, this.ptzConfig.port);
+      this.$toast.success('투어 스텝 설정 완료 (Preset 1-3)');
+      this.addLog(`투어 스텝 설정: 속도=${this.tourSpeed}rpm, 지연=60초`);
+    } catch (error) {
+      console.error('Tour Setup Error:', error);
+      this.$toast.error('투어 스텝 설정 실패');
+      this.addLog(`투어 스텝 설정 실패: ${error.message}`);
+    }
+  },
+
+  // 투어 시작
+  async startTour() {
+    try {
+      await pntTourStart(this.ptzConfig.ip, this.ptzConfig.port);
+      this.tourRunning = true;
+      this.tourStatus = '투어 실행 중';
+      this.$toast.success('투어 시작');
+      this.addLog('투어 시작');
+    } catch (error) {
+      console.error('Tour Start Error:', error);
+      this.$toast.error('투어 시작 실패');
+      this.addLog(`투어 시작 실패: ${error.message}`);
+    }
+  },
+
+  // 투어 정지
+  async stopTour() {
+    try {
+      await pntTourStop(this.ptzConfig.ip, this.ptzConfig.port);
+      this.tourRunning = false;
+      this.tourStatus = '대기 중';
+      this.$toast.success('투어 정지');
+      this.addLog('투어 정지');
+    } catch (error) {
+      console.error('Tour Stop Error:', error);
+      this.$toast.error('투어 정지 실패');
+      this.addLog(`투어 정지 실패: ${error.message}`);
+    }
+  },
+
+  // 드래그 시작
+  startDrag(event) {
+    if (event.target.closest('.close-btn')) return; // 닫기 버튼 클릭 시 드래그 방지
+    
+    this.isDragging = true;
+    this.dragStartX = event.clientX;
+    this.dragStartY = event.clientY;
+    
+    const dialogElement = this.$refs.ptzDialogCard?.$el;
+    if (dialogElement) {
+      const rect = dialogElement.getBoundingClientRect();
+      this.dialogOffsetX = rect.left;
+      this.dialogOffsetY = rect.top;
+    }
+    
+    document.addEventListener('mousemove', this.onDrag);
+    document.addEventListener('mouseup', this.stopDrag);
+    event.preventDefault();
+  },
+
+  // 드래그 중
+  onDrag(event) {
+    if (!this.isDragging) return;
+    
+    const deltaX = event.clientX - this.dragStartX;
+    const deltaY = event.clientY - this.dragStartY;
+    
+    const newX = this.dialogOffsetX + deltaX;
+    const newY = this.dialogOffsetY + deltaY;
+    
+    const dialogElement = this.$refs.ptzDialogCard?.$el;
+    if (dialogElement) {
+      dialogElement.style.position = 'fixed';
+      dialogElement.style.left = `${newX}px`;
+      dialogElement.style.top = `${newY}px`;
+      dialogElement.style.margin = '0';
+      dialogElement.style.transform = 'none';
+      dialogElement.style.width = '1200px'; // 원래 크기 유지
+      dialogElement.style.maxWidth = '1200px'; // 원래 크기 유지
+    }
+  },
+
+  // 드래그 종료
+  stopDrag() {
+    this.isDragging = false;
+    document.removeEventListener('mousemove', this.onDrag);
+    document.removeEventListener('mouseup', this.stopDrag);
+  },
+
   async loadCameras() {
     try {
       const response = await getCameras();
@@ -981,6 +2321,344 @@ methods: {
   height: 100%;
 }
 
+// PTZ 제어 관련 스타일
+.box-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+  margin-bottom: 10px;
+  
+  .v-btn {
+    background: #6c757d;  // secondary 색상
+    color: white;
+    font-size: 12px;
+    padding: 4px 12px;
+    height: 28px;
+    margin-left: auto;  // 버튼을 오른쪽 끝으로 밀어냄
+    
+    &:hover {
+      background: #5a6268;  // secondary hover 색상
+    }
+  }
+}
+
+// PTZ 다이얼로그 스타일
+.ptz-dialog {
+  .v-dialog__content {
+    position: relative;
+  }
+}
+
+.ptz-dialog-card {
+  .draggable-header {
+    cursor: move;
+    background: #333;
+    color: white;
+    border-bottom: 1px solid #555;
+    user-select: none;
+    
+    &:active {
+      cursor: grabbing;
+    }
+  }
+}
+
+.ptz-dialog-container {
+  display: flex;
+  gap: 20px;
+  min-height: 500px;
+
+}
+
+.ptz-left-panel {
+  flex: 1;
+  border-right: 1px solid #555;
+  padding-right: 20px;
+}
+
+.ptz-right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.preset-section, .home-preset-section, .tour-section, .log-section {
+  .section-title {
+    font-size: 16px;
+    font-weight: bold;
+    color: white;
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #ddd;
+  }
+}
+
+.preset-controls {
+  .preset-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+    gap: 10px;
+    
+    .preset-label {
+      min-width: 80px;
+      font-weight: bold;
+      color: white;
+    }
+    
+    .preset-inputs {
+      display: flex;
+      gap: 8px;
+      flex: 1;
+      
+      .v-text-field {
+        flex: 1;
+      }
+    }
+    
+    .preset-buttons {
+      display: flex;
+      gap: 8px;
+    }
+  }
+}
+
+.home-preset-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px 0;
+  
+  .v-btn {
+    width: 200px;
+    height: 50px;
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 12px;
+    
+    .v-icon {
+      margin-right: 0px;
+      font-size: 20px;
+    }
+  }
+}
+
+.tour-controls {
+  .tour-speed, .step-write {
+    margin-bottom: 15px;
+  }
+  
+  .step-write {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    
+    .v-btn {
+      margin-top: 20px;
+    }
+  }
+  
+  .cycle-progress {
+    .progress-title {
+      font-weight: bold;
+      color: white;
+      margin-bottom: 8px;
+    }
+    
+    .progress-bar {
+      margin-bottom: 8px;
+    }
+    
+    .progress-status {
+      text-align: center;
+      color: white;
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+    
+    .tour-buttons {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+  }
+}
+
+.log-section {
+  .log-area {
+    max-height: 200px;
+    overflow: hidden;
+    border: 1px solid #555;
+    border-radius: 4px;
+    
+    .v-textarea {
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      height: 200px !important;
+      max-height: 200px !important;
+      overflow-y: auto !important;
+      
+      // 스크롤바 스타일링
+      &::-webkit-scrollbar {
+        width: 8px;
+      }
+      
+      &::-webkit-scrollbar-track {
+        background: #333;
+        border-radius: 4px;
+      }
+      
+      &::-webkit-scrollbar-thumb {
+        background: #666;
+        border-radius: 4px;
+        
+        &:hover {
+          background: #888;
+        }
+      }
+      
+      // textarea 내부 스타일
+      textarea {
+        height: 200px !important;
+        max-height: 200px !important;
+        overflow-y: auto !important;
+        resize: none !important;
+      }
+    }
+  }
+}
+
+.video-header {
+  margin-bottom: 10px;
+  
+  .video-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 16px;
+    font-weight: bold;
+    color: #fff;
+    
+    .v-btn {
+      background: #6c757d;  // secondary 색상
+      color: white;
+      font-size: 12px;
+      padding: 4px 12px;
+      height: 28px;
+      
+      &:hover {
+        background: #5a6268;  // secondary hover 색상
+      }
+    }
+  }
+}
+
+.ptz-control-container {
+  // 닫기 버튼 스타일
+  .close-btn {
+    background-color: #221c1c !important;
+    border: 0px solid white !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
+    border-radius: 4px !important;
+    font-weight: bold !important;
+    font-size: 16px !important;
+    
+    &:hover {
+      background-color: #cccccc !important;
+    }
+  }
+  
+  .connection-info {
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #545454;
+    border-radius: 8px;
+  }
+  
+  .ptz-buttons {
+    text-align: center;
+    margin-bottom: 20px;
+    
+    .ptz-row {
+      display: flex;
+      justify-content: center;
+      margin: 15px 0;
+      
+      .v-btn {
+        margin: 0 8px;
+        
+        &.v-btn--fab {
+          width: 80px;
+          height: 80px;
+          position: relative;
+          
+          .ptz-label {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            font-weight: bold;
+            color: #d6d6d6;
+            white-space: nowrap;
+          }
+        }
+      }
+      
+      // 중간 행 (좌우 버튼)의 간격을 더 크게
+      &:nth-child(2) {
+        .v-btn {
+          margin: 0 40px;  // 좌우 버튼 간격 더 증가
+        }
+      }
+    }
+  }
+  
+  .zoom-focus-controls {
+    margin-bottom: 20px;
+    
+    .control-group {
+      .control-label {
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: #333;
+      }
+      
+      .control-buttons {
+        display: flex;
+        gap: 10px;
+        
+        .v-btn {
+          flex: 1;
+        }
+      }
+    }
+  }
+  
+  .wiper-controls {
+    .control-group {
+      .control-label {
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: #333;
+      }
+      
+      .control-buttons {
+        display: flex;
+        gap: 10px;
+        
+        .v-btn {
+          flex: 1;
+        }
+      }
+    }
+  }
+}
+
 .time-layer {
   background: #3659e2;
   color: white;
@@ -1404,6 +3082,97 @@ methods: {
     color: #888;
     font-size: 16px;
     text-align: center;
+  }
+}
+
+// 파노라마 다이얼로그 스타일
+.panorama-dialog {
+  .panorama-dialog-card {
+    background: #1e1e1e;
+    color: white;
+    
+    .headline {
+      background: #2a3042;
+      color: white;
+      padding: 16px 24px;
+      border-bottom: 1px solid #444;
+      
+      .close-btn {
+        min-width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: #f44336;
+        color: white;
+        
+        &:hover {
+          background: #d32f2f;
+        }
+      }
+    }
+    
+    .panorama-container {
+      padding: 20px;
+      
+      .panorama-image-container {
+        margin-bottom: 20px;
+        text-align: center;
+        background: #2a2a2a;
+        border-radius: 8px;
+        padding: 10px;
+        
+        .panorama-image {
+          border-radius: 8px;
+          max-height: 500px;
+          object-fit: contain;
+        }
+        
+        .no-image {
+          height: 300px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          
+          .no-image-text {
+            color: #888;
+            font-size: 18px;
+          }
+        }
+      }
+      
+      .panorama-controls {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        padding: 20px;
+        background: #2a3042;
+        border-radius: 8px;
+        
+        .v-btn {
+          min-width: 100px;
+          height: 40px;
+          
+          &.v-btn--disabled {
+            opacity: 0.5;
+          }
+        }
+        
+        .panorama-info {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 5px;
+          color: white;
+          font-weight: bold;
+          
+          .panorama-date {
+            font-size: 14px;
+            color: #ccc;
+            font-weight: normal;
+          }
+        }
+      }
+    }
   }
 }
 </style>

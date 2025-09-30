@@ -65,9 +65,23 @@ export const getActiveRecordings = async () => {
   return response.data;
 };
 
+// 특정 날짜의 모든 MP4 segment 파일 목록 조회
+export const getRecordingSegments = async (date, file_path = null) => {
+  const params = { date };
+
+  // file_path가 제공된 경우 추가
+  if (file_path) {
+    params.file_path = file_path;
+  }
+
+  const response = await api.get(`${resource}/segments`, { params });
+  return response.data;
+};
+
 export default {
   getRecordingHistory,
   getVideoThumbnail,
   getRecordingStatus,
-  getActiveRecordings
+  getActiveRecordings,
+  getRecordingSegments
 }; 

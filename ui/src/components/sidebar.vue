@@ -16,8 +16,8 @@
         <v-img
           src="@/assets/img/logo.png"
           alt="Welcome to SDMS "
-          width="40"
-          height="40"
+          width="30"
+          height="65"
           class="logo-image"
           @click="moveFirstStart"
         />
@@ -87,6 +87,7 @@
           <v-icon>mdi-blog</v-icon>
         </v-btn>
         <v-btn
+          v-if="showAdminButton"
           small
           outlined
           class="admin-btn"
@@ -201,6 +202,9 @@ export default {
         // permissionRequired가 있으면 해당 권한 레벨 이상만 접근 가능
         return this.userPermissionLevel == item.permissionRequired;
       });
+    },
+    showAdminButton() {
+      return this.userPermissionLevel === 1;
     }
   },
   
@@ -326,8 +330,7 @@ export default {
       display: flex;
       align-items: center;
       transform: scale(0.8);
-      transform-origin: left center;
-      
+      transform-origin: center center;
       .logo-image {
         border-radius: 10%;
         background: #f3f5f6;

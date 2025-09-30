@@ -9,8 +9,8 @@
           <v-img
             src="@/assets/img/logo.png"
             alt="Welcome to SDMS "
-            width="40"
-            height="50"
+            width="60"
+            height="80"
             class="logo-image"
           />
         </div>
@@ -65,6 +65,11 @@
                 >
                   로그인
                 </v-btn>
+
+                <!-- Version Info -->
+                <div class="version-info">
+                  <span class="version-text">v{{ version }}</span>
+                </div>
               </div>
             </v-card-text>
           </v-card>
@@ -108,7 +113,7 @@
           interval="5000"
         >
           <v-carousel-item
-            v-for="(image, index) in slideshowImages"
+            v-for="(image, index) in (customSlideshowImages.length > 0 ? customSlideshowImages : slideshowImages)"
             :key="index"
             class="slideshow-item"
           >
@@ -136,6 +141,7 @@
 <script>
 import { mapActions } from 'vuex';
 import { getConfig } from '@/api/config.api';
+import { getEventSetting } from '@/api/eventSetting.api.js';
 export default {
   name: 'Login',
   data() {
@@ -143,6 +149,7 @@ export default {
       currentSlide: 0,
       isLoading: false,
       showPassword: false,
+      version: '1.0.0', // 기본 버전
       user: {
         userId: process.env.NODE_ENV === 'development' ? 'akj' : '',
         password: process.env.NODE_ENV === 'development' ? 'test123' : ''
@@ -160,11 +167,48 @@ export default {
           src: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2071&q=80',
           alt: 'Forest and Water'
         }
-      ]
+      ],
+      customSlideshowImages: [] // EventSetting에서 설정한 커스텀 배경이미지
     };
   },
+  mounted() {
+    this.loadVersionInfo();
+    this.loadCustomSlideshowImages();
+  },
+  
   methods: {
     ...mapActions('auth', ['login']),
+    
+    // config.ini에서 version 정보 가져오기
+    async loadVersionInfo() {
+      try {
+        const response = await getConfig();
+        if (response.data && response.data.web && response.data.web.version) {
+          this.version = response.data.web.version;
+        }
+      } catch (error) {
+        console.warn('Failed to load version info:', error);
+        // 에러가 발생해도 기본 버전 사용
+      }
+    },
+    
+    // EventSetting에서 설정한 커스텀 배경이미지 로드
+    async loadCustomSlideshowImages() {
+      try {
+        const data = await getEventSetting();
+        if (data && data.system_json) {
+          const system = JSON.parse(data.system_json);
+          if (system.slideshowImages && Array.isArray(system.slideshowImages)) {
+            // null이 아닌 이미지만 필터링
+            this.customSlideshowImages = system.slideshowImages.filter(img => img && img.src);
+            console.log('커스텀 슬라이드쇼 이미지 로드됨:', this.customSlideshowImages);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load custom slideshow images:', error);
+        // 에러가 발생해도 기본 이미지 사용
+      }
+    },
     
     async handleLogin() {
       if (!this.user.userId || !this.user.password) {
@@ -178,6 +222,15 @@ export default {
         await this.$store.dispatch('auth/login', { ...this.user });
 
         await getConfig();
+
+        // 로그인 성공 후 Socket.IO 연결 시작
+        try {
+          const { connectSocket } = await import('@/common/socket-instance.js');
+          connectSocket();
+          console.log('[Login] Socket connection initiated');
+        } catch (socketError) {
+          console.warn('[Login] Socket connection failed:', socketError);
+        }
 
         this.$router.push('/first-start');
       } catch (error) {
@@ -231,8 +284,9 @@ export default {
   .logo-container {
     display: flex;
     align-items: center;
-    transform: scale(0.7);
-    transform-origin: left center;
+    justify-content: center;
+    transform: scale(0.6);
+    transform-origin: center center;
     
     .logo-image {
       border-radius: 10%;
@@ -304,6 +358,18 @@ export default {
         color: #f3f5f6 !important;
         &:hover {
           background: linear-gradient(135deg, #1565c0, #0d47a1);
+        }
+      }
+
+      .version-info {
+        text-align: center;
+        margin-top: 15px;
+        
+        .version-text {
+          font-size: 14px;
+          color: #666;
+          font-weight: 500;
+          letter-spacing: 0.5px;
         }
       }
       

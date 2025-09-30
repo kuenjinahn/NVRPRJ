@@ -1,13 +1,11 @@
 
-// API 타겟 URL 반환 (vue.config.js와 server.js에서 사용)
+// config.ini에서 IP 설정을 읽어오는 함수 (브라우저 환경에서는 기본값 사용)
 const getApiTarget = () => {
-  const env = process.env.NODE_ENV || 'development';
-  const url = env === 'production'
-    ? 'http://192.168.0.24:9091'
-    : 'http://localhost:9091';
+  // 브라우저 환경에서는 config.ini를 직접 읽을 수 없으므로 기본값 사용
+  // 실제 IP는 server.js와 vue.config.js에서 config.ini를 읽어서 프록시로 처리
 
-  // 디버깅용 로그
-  console.log(`[API Config] Environment: ${env}, URL: ${url}`);
+  // 모든 환경에서 현재 호스트의 포트를 사용 (프록시를 통해 처리)
+  const url = `${location.protocol}//${location.hostname}:${location.port}`;
 
   return url;
 };
@@ -29,8 +27,8 @@ const getSocketBaseUrl = () => {
   return getApiTarget();
 };
 
-// CommonJS export
-module.exports = {
+// ES6 export
+export {
   getApiBaseUrl,
   getSocketBaseUrl,
   getApiTarget

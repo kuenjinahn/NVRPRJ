@@ -14,7 +14,7 @@
           interval="5000"
         >
           <v-carousel-item
-            v-for="(image, index) in slideshowImages"
+            v-for="(image, index) in (customSlideshowImages.length > 0 ? customSlideshowImages : slideshowImages)"
             :key="index"
             class="slideshow-item"
           >
@@ -41,6 +41,8 @@
 </template>
 
 <script>
+import { getEventSetting } from '@/api/eventSetting.api.js';
+
 export default {
   name: 'Dashboard',
   data() {
@@ -59,8 +61,33 @@ export default {
           src: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2071&q=80',
           alt: 'Forest and Water'
         }
-      ]
+      ],
+      customSlideshowImages: [] // EventSetting에서 설정한 커스텀 배경이미지
     };
+  },
+  
+  mounted() {
+    this.loadCustomSlideshowImages();
+  },
+  
+  methods: {
+    // EventSetting에서 설정한 커스텀 배경이미지 로드
+    async loadCustomSlideshowImages() {
+      try {
+        const data = await getEventSetting();
+        if (data && data.system_json) {
+          const system = JSON.parse(data.system_json);
+          if (system.slideshowImages && Array.isArray(system.slideshowImages)) {
+            // null이 아닌 이미지만 필터링
+            this.customSlideshowImages = system.slideshowImages.filter(img => img && img.src);
+            console.log('커스텀 슬라이드쇼 이미지 로드됨:', this.customSlideshowImages);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load custom slideshow images:', error);
+        // 에러가 발생해도 기본 이미지 사용
+      }
+    }
   }
 };
 </script>
