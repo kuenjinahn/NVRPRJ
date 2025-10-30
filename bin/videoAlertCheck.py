@@ -18,6 +18,7 @@ import requests
 from datetime import datetime, timedelta
 import traceback
 from pathlib import Path
+from scipy import stats
 import argparse
 import pymysql
 import socket
@@ -349,21 +350,18 @@ class VideoAlertChecker:
             if cursor:
                 cursor.close()
 
-
-
     def get_latest_temperature_data(self):
         """
-        현재시간 10분전 마지막 온도 데이터 조회
+        tb_video_panorama_data 테이블에서 마지막 파노라마 이미지 데이터 조회
         """
         try:
             cursor = self.get_db_cursor()
             if not cursor:
                 return None
 
-            # 현재시간 10분전 데이터 조회
+            # 최신 파노라마 데이터 조회
             query = """
-                SELECT * FROM tb_video_snapshot_data 
-                WHERE create_date >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+                SELECT * FROM tb_video_panorama_data 
                 ORDER BY create_date DESC 
                 LIMIT 1
             """
@@ -371,22 +369,92 @@ class VideoAlertChecker:
             result = cursor.fetchone()
             
             if result:
-                logger.info(f"온도 데이터 조회 성공: {result['create_date']}")
+                logger.info(f"파노라마 데이터 조회 성공: ID={result.get('id')}, 생성일={result['create_date']}")
+                logger.info(f"파노라마 데이터 필드: {list(result.keys())}")
+                panorama_data_json = result.get('panoramaData')
+                if panorama_data_json:
+                    logger.info(f"panoramaData 필드 존재, 길이: {len(panorama_data_json)} 문자")
+                else:
+                    logger.warning("panoramaData 필드가 없습니다")
                 return result
             else:
-                logger.info("최근 10분 내 온도 데이터가 없습니다")
+                logger.info("파노라마 데이터가 없습니다")
                 return None
 
         except Exception as e:
-            logger.error(f"온도 데이터 조회 오류: {str(e)}")
+            logger.error(f"파노라마 데이터 조회 오류: {str(e)}")
             return None
         finally:
             if cursor:
                 cursor.close()
 
+    def extract_panorama_temperature_data(self, panorama_data_json):
+        """
+        파노라마 데이터에서 온도 데이터 추출 및 생성
+        파노라마 이미지는 1920x480 크기이므로 온도 데이터도 이에 맞게 생성
+        """
+        try:
+            if not panorama_data_json:
+                return None
+            
+            # panoramaData JSON 파싱
+            panorama_data = json.loads(panorama_data_json)
+            
+            # image base64 데이터 추출
+            image_base64 = panorama_data.get('image')
+            if not image_base64:
+                logger.error("파노라마 데이터에 image 필드가 없습니다")
+                return None
+            
+            # base64 이미지를 디코딩하여 OpenCV로 로드
+            image_data = base64.b64decode(image_base64)
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                logger.error("파노라마 이미지 디코딩 실패")
+                return None
+            
+            # 이미지 크기 확인 (1920x480 예상)
+            height, width = image.shape[:2]
+            logger.info(f"파노라마 이미지 크기: {width}x{height}")
+            
+            # 파노라마 이미지에서 온도 데이터 생성 (가상의 온도 데이터)
+            # 실제로는 열화상 카메라에서 온도 데이터를 받아야 하지만,
+            # 여기서는 이미지의 밝기나 색상 정보를 기반으로 가상 온도 데이터 생성
+            temperature_data = []
+            
+            # 샘플링 간격 (성능을 위해 모든 픽셀을 사용하지 않고 샘플링)
+            sample_interval = 4  # 4픽셀마다 샘플링
+            
+            for y in range(0, height, sample_interval):
+                for x in range(0, width, sample_interval):
+                    # BGR 이미지에서 픽셀 값 추출
+                    pixel = image[y, x]
+                    b, g, r = pixel[0], pixel[1], pixel[2]
+                    
+                    # 간단한 온도 변환 (실제로는 열화상 카메라의 온도 데이터 사용)
+                    # 밝기 기반 가상 온도 계산 (20-60도 범위)
+                    brightness = (r + g + b) / 3
+                    temperature = 20 + (brightness / 255) * 40  # 20-60도 범위
+                    
+                    temperature_data.append({
+                        'x': x,
+                        'y': y,
+                        'temperature': temperature
+                    })
+            
+            logger.info(f"파노라마 온도 데이터 생성 완료: {len(temperature_data)}개 픽셀 (샘플링 간격: {sample_interval})")
+            return temperature_data
+            
+        except Exception as e:
+            logger.error(f"파노라마 온도 데이터 추출 오류: {str(e)}")
+            return None
+
     def decompress_temperature_data(self, compressed_data):
         """
         ZIP으로 압축된 온도 데이터를 압축 해제하여 파싱하고 CSV 파일로 저장
+        (기존 방식 유지 - 호환성을 위해)
         """
         try:
             if not compressed_data:
@@ -453,15 +521,16 @@ class VideoAlertChecker:
             logger.error(f"온도 데이터 CSV 파일 저장 오류: {str(e)}")
             print(f"온도 데이터 CSV 파일 저장 오류: {str(e)}")
 
-    def create_temperature_matrix(self, temperature_data, width=640, height=480):
+    def create_temperature_matrix(self, temperature_data, width=1920, height=480):
         """
         온도 데이터를 2D 매트릭스로 변환하고 CSV 파일로 저장
+        파노라마 이미지 크기에 맞게 1920x480으로 변경
         """
         try:
             if not temperature_data:
                 return None
             
-            # 2D 매트릭스 초기화 (640x480)
+            # 2D 매트릭스 초기화 (1920x480 - 파노라마 크기)
             temp_matrix = np.full((height, width), np.nan, dtype=np.float64)
             
             # 온도 데이터를 매트릭스에 배치
@@ -473,7 +542,7 @@ class VideoAlertChecker:
                 if 0 <= x < width and 0 <= y < height:
                     temp_matrix[y, x] = temperature
             
-            logger.info(f"온도 매트릭스 생성 완료: {width}x{height}")
+            logger.info(f"온도 매트릭스 생성 완료: {width}x{height} (파노라마 크기)")
             
             # 온도 매트릭스를 CSV 파일로 저장
             #self.save_temperature_matrix_to_csv(temp_matrix, width, height)
@@ -524,47 +593,6 @@ class VideoAlertChecker:
         except Exception as e:
             logger.error(f"온도 매트릭스 CSV 파일 저장 오류: {str(e)}")
             print(f"온도 매트릭스 CSV 파일 저장 오류: {str(e)}")
-
-    def save_snapshot_to_file(self, image_data, camera_name, video_type):
-        """
-        스냅샷 이미지를 파일로 저장
-        """
-        try:
-            if not image_data:
-                logger.warning("저장할 이미지 데이터가 없습니다")
-                return
-            
-            # 현재 시간을 파일명에 포함
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # 카메라 이름과 비디오 타입을 파일명에 포함
-            safe_camera_name = "".join(c for c in camera_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            safe_camera_name = safe_camera_name.replace(' ', '_')
-            
-            # 파일명 생성: 카메라명_비디오타입_날짜시간.jpg
-            filename = f"{safe_camera_name}_{video_type}_{timestamp}.jpg"
-            
-            # 이미지 파일 경로 설정 (bin 디렉토리 내 snapshots 폴더)
-            snapshots_dir = os.path.join(os.path.dirname(__file__), 'snapshots')
-            os.makedirs(snapshots_dir, exist_ok=True)
-            
-            image_path = os.path.join(snapshots_dir, filename)
-            
-            # 이미지 파일 저장
-            with open(image_path, 'wb') as f:
-                f.write(image_data)
-            
-            logger.info(f"스냅샷 이미지 저장 완료: {image_path}")
-            print(f"스냅샷 이미지 저장 완료: {image_path}")
-            
-            return filename, image_path
-            
-        except Exception as e:
-            logger.error(f"스냅샷 이미지 저장 오류: {str(e)}")
-            print(f"스냅샷 이미지 저장 오류: {str(e)}")
-            return None, None
-
-
 
     def extract_roi_temperature_data(self, temp_matrix, zone_info):
         """
@@ -786,6 +814,64 @@ class VideoAlertChecker:
         except Exception as e:
             logger.error(f"ROI_POLYGON 구조 분석 오류: {str(e)}")
 
+    def extract_panorama_image(self, panorama_data_json):
+        """
+        파노라마 데이터에서 이미지를 추출하여 스냅샷 데이터 형태로 반환
+        """
+        try:
+            if not panorama_data_json:
+                logger.warning("파노라마 데이터가 없어 이미지를 추출할 수 없습니다")
+                return None
+            
+            logger.info(f"파노라마 데이터 JSON 길이: {len(panorama_data_json)} 문자")
+            
+            # panoramaData JSON 파싱
+            panorama_data = json.loads(panorama_data_json)
+            logger.info(f"파노라마 데이터 JSON 파싱 성공, 키: {list(panorama_data.keys())}")
+            
+            # image base64 데이터 추출
+            image_base64 = panorama_data.get('image')
+            if not image_base64:
+                logger.error("파노라마 데이터에 image 필드가 없습니다")
+                return None
+            
+            logger.info(f"파노라마 이미지 base64 데이터 길이: {len(image_base64)} 문자")
+            
+            # 파노라마 이미지를 파일로 저장
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"panorama_{timestamp}.jpg"
+            
+            # 이미지 파일 경로 설정
+            snapshots_dir = os.path.join(os.path.dirname(__file__), 'snapshots')
+            os.makedirs(snapshots_dir, exist_ok=True)
+            
+            image_path = os.path.join(snapshots_dir, filename)
+            
+            # base64 디코딩하여 파일로 저장
+            image_data = base64.b64decode(image_base64)
+            with open(image_path, 'wb') as f:
+                f.write(image_data)
+            
+            logger.info(f"파노라마 이미지 저장 완료: {image_path} (크기: {len(image_data)} bytes)")
+            
+            # 스냅샷 데이터 형태로 반환
+            snapshot_data = {
+                'panorama_image': True,
+                'image_type': 'panorama',
+                'timestamp': datetime.now().isoformat(),
+                'image_data': image_base64,
+                'file_path': image_path,
+                'filename': filename
+            }
+            
+            logger.info(f"파노라마 스냅샷 데이터 생성 완료: {filename}")
+            return snapshot_data
+            
+        except Exception as e:
+            logger.error(f"파노라마 이미지 추출 오류: {str(e)}")
+            logger.error(f"예외 상세: {traceback.format_exc()}")
+            return None
+
     def capture_video_snapshots(self):
         """
         FFmpeg를 사용하여 RTSP 소스에서 비디오 이미지를 캡처하여 base64로 인코딩하고 파일로도 저장
@@ -887,46 +973,87 @@ class VideoAlertChecker:
         logger.info(f"총 {len(snapshot_images)}개의 스냅샷 캡처 완료")
         return snapshot_images
 
+    def save_snapshot_to_file(self, image_data, camera_name, video_type):
+        """
+        스냅샷 이미지를 파일로 저장
+        """
+        try:
+            if not image_data:
+                logger.warning("저장할 이미지 데이터가 없습니다")
+                return
+            
+            # 현재 시간을 파일명에 포함
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 카메라 이름과 비디오 타입을 파일명에 포함
+            safe_camera_name = "".join(c for c in camera_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_camera_name = safe_camera_name.replace(' ', '_')
+            
+            # 파일명 생성: 카메라명_비디오타입_날짜시간.jpg
+            filename = f"{safe_camera_name}_{video_type}_{timestamp}.jpg"
+            
+            # 이미지 파일 경로 설정 (bin 디렉토리 내 snapshots 폴더)
+            snapshots_dir = os.path.join(os.path.dirname(__file__), 'snapshots')
+            os.makedirs(snapshots_dir, exist_ok=True)
+            
+            image_path = os.path.join(snapshots_dir, filename)
+            
+            # 이미지 파일 저장
+            with open(image_path, 'wb') as f:
+                f.write(image_data)
+            
+            logger.info(f"스냅샷 이미지 저장 완료: {image_path}")
+            print(f"스냅샷 이미지 저장 완료: {image_path}")
+            
+            return filename, image_path
+            
+        except Exception as e:
+            logger.error(f"스냅샷 이미지 저장 오류: {str(e)}")
+            print(f"스냅샷 이미지 저장 오류: {str(e)}")
+            return None, None
+
     def scenario1_judge(self):
         """
-        시나리오1: tb_video_snapshot_data의 최신 데이터에서 temperature_matrix를 통해
+        시나리오1: tb_video_panorama_data의 최신 파노라마 데이터에서 temperature_matrix를 통해
         각 ROI 구간별 온도차를 계산하고, 차이가 발생하는 폴리곤 영역을 roi_polygon에 저장
         """
         try:
-            logger.info("시나리오1 판단 시작")
+            logger.info("시나리오1 판단 시작 (파노라마 데이터 사용)")
             
             # 강제 종료 체크
             if self.force_exit:
                 logger.info("강제 종료 요청됨, 시나리오1 중단")
                 return False
             
-            # 최신 온도 데이터 조회 (tb_video_snapshot_data 사용)
-            temp_data_record = self.get_latest_temperature_data()
-            if not temp_data_record:
-                logger.info("시나리오1: 온도 데이터가 없습니다")
+            # 최신 파노라마 데이터 조회
+            panorama_data_record = self.get_latest_temperature_data()
+            if not panorama_data_record:
+                logger.info("시나리오1: 파노라마 데이터가 없습니다")
                 return False
             
-            # 온도 데이터 압축 해제
-            temperature_data = self.decompress_temperature_data(temp_data_record['temperatureData'])
+            # 파노라마 데이터에서 온도 데이터 추출
+            temperature_data = self.extract_panorama_temperature_data(panorama_data_record['panoramaData'])
             if not temperature_data:
-                logger.error("시나리오1: 온도 데이터 압축 해제 실패")
+                logger.error("시나리오1: 파노라마 온도 데이터 추출 실패")
                 return False
             
-            # 온도 매트릭스 생성
+            # 온도 매트릭스 생성 (1920x480 파노라마 크기)
             temp_matrix = self.create_temperature_matrix(temperature_data)
             if temp_matrix is None:
                 logger.error("시나리오1: 온도 매트릭스 생성 실패")
                 return False
 
-            # 2. zone_type 리스트 가져오기
+            # zone_type 리스트 가져오기
             if not self.zone_list:
                 logger.warning("시나리오1: zone_list가 없어 기본 ROI 영역을 사용합니다")
-                # 기본 ROI 영역 설정 (640x480 전체 영역을 4개 구역으로 분할)
+                # 기본 ROI 영역 설정 (1920x480 파노라마 전체 영역을 6개 구역으로 분할)
                 default_zones = [
-                    {'zone_type': '1', 'rect': [0, 0, 320, 240]},      # 좌상단 (0,0 ~ 319,239)
-                    {'zone_type': '2', 'rect': [320, 0, 320, 240]},    # 우상단 (320,0 ~ 639,239)
-                    {'zone_type': '3', 'rect': [0, 240, 320, 240]},    # 좌하단 (0,240 ~ 319,479)
-                    {'zone_type': '4', 'rect': [320, 240, 320, 240]}   # 우하단 (320,240 ~ 639,479)
+                    {'zone_type': '1', 'rect': [0, 0, 640, 240]},        # 좌상단 (0,0 ~ 639,239)
+                    {'zone_type': '2', 'rect': [640, 0, 640, 240]},     # 중상단 (640,0 ~ 1279,239)
+                    {'zone_type': '3', 'rect': [1280, 0, 640, 240]},    # 우상단 (1280,0 ~ 1919,239)
+                    {'zone_type': '4', 'rect': [0, 240, 640, 240]},      # 좌하단 (0,240 ~ 639,479)
+                    {'zone_type': '5', 'rect': [640, 240, 640, 240]},   # 중하단 (640,240 ~ 1279,479)
+                    {'zone_type': '6', 'rect': [1280, 240, 640, 240]}   # 우하단 (1280,240 ~ 1919,479)
                 ]
                 zones_to_check = default_zones
             else:
@@ -991,7 +1118,7 @@ class VideoAlertChecker:
                         }
                     
                     self.create_scenario1_alert(
-                        temp_data_record['id'],
+                        panorama_data_record['id'],
                         zone_info,
                         'S001',
                         len(alert_boxes),  # 경보 조건을 만족하는 박스 개수
@@ -1027,15 +1154,15 @@ class VideoAlertChecker:
                         if temp_change_percent >= 25.0:
                             logger.info(f"시나리오1 경보 감지: 전체 영역 온도차 변화율 {temp_change_percent:.1f}% >= 25%")
                             
-                            # 전체 영역 ROI 데이터 생성
+                            # 전체 영역 ROI 데이터 생성 (파노라마 크기)
                             overall_zone_info = {
                                 'zone_type': 'overall',
-                                'rect': [0, 0, 640, 480]  # 640x480 전체 영역
+                                'rect': [0, 0, 1920, 480]  # 1920x480 파노라마 전체 영역
                             }
                             
                             # 경보 생성 (25% 기준은 별도 alert_type으로 처리)
                             self.create_scenario1_alert(
-                                temp_data_record['id'],
+                                panorama_data_record['id'],
                                 overall_zone_info,
                                 'S002',
                                 temp_change_percent,
@@ -1063,8 +1190,45 @@ class VideoAlertChecker:
             if not cursor:
                 return False
             
-            # 스냅샷 이미지 캡처
-            snapshot_images = self.capture_video_snapshots()
+            # 파노라마 데이터 조회 및 이미지 추출
+            panorama_data_record = self.get_latest_temperature_data()
+            panorama_snapshot = None
+            if panorama_data_record:
+                logger.info(f"파노라마 데이터 조회 성공: ID={panorama_data_record.get('id')}, 생성일={panorama_data_record.get('create_date')}")
+                panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
+                if panorama_snapshot:
+                    logger.info("파노라마 이미지 추출 성공")
+                else:
+                    logger.warning("파노라마 이미지 추출 실패")
+            else:
+                logger.warning("파노라마 데이터 조회 실패 - 데이터가 없습니다")
+            
+            # 스트림 스냅샷 이미지 캡처
+            stream_snapshots = self.capture_video_snapshots()
+            
+            # 모든 스냅샷 이미지 통합
+            snapshot_images = []
+            
+            # 파노라마 이미지 추가
+            if panorama_snapshot:
+                snapshot_images.append(panorama_snapshot)
+                logger.info("파노라마 이미지가 snapshot_images에 추가됨")
+            else:
+                logger.warning("파노라마 이미지가 없어 snapshot_images에 추가되지 않음")
+            
+            # 스트림 캡처 이미지들 추가
+            if stream_snapshots:
+                snapshot_images.extend(stream_snapshots)
+                logger.info(f"{len(stream_snapshots)}개의 스트림 이미지가 snapshot_images에 추가됨")
+            else:
+                logger.warning("스트림 이미지가 없음")
+            
+            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 스트림: {len(stream_snapshots)}개)")
+            
+            # 디버깅: snapshot_images 내용 확인
+            for i, img in enumerate(snapshot_images):
+                img_type = img.get('image_type', 'stream')
+                logger.info(f"스냅샷 {i+1}: 타입={img_type}, 파일명={img.get('filename', 'N/A')}")
             
             # roi_polygon 구성 (20x20 박스 분석 결과가 있는 경우)
             if alert_boxes and len(alert_boxes) > 0:
@@ -1091,7 +1255,7 @@ class VideoAlertChecker:
                     main_polygon = self.create_roi_polygon(main_rect)
                     logger.info(f"zone_segment_json 실제 좌표로 main_roi 생성: {main_rect}")
                 else:
-                    main_rect = zone_info.get('rect', [0, 0, 320, 240])
+                    main_rect = zone_info.get('rect', [0, 0, 640, 240])  # 파노라마 기본 크기로 변경
                     main_polygon = self.create_roi_polygon(main_rect)
                     logger.info(f"기존 rect 좌표로 main_roi 생성: {main_rect}")
                 
@@ -1106,14 +1270,14 @@ class VideoAlertChecker:
                 }
             else:
                 # 기존 방식 (단일 ROI)
-                roi_polygon_data = self.create_roi_polygon(zone_info.get('rect', [0, 0, 320, 240]))
+                roi_polygon_data = self.create_roi_polygon(zone_info.get('rect', [0, 0, 640, 240]))  # 파노라마 기본 크기로 변경
             
             # 경보 정보 구성 (zone_segment_json의 실제 좌표 사용)
             if 'actual_rect' in zone_info:
                 alert_rect = zone_info['actual_rect']
                 logger.info(f"alert_info에 zone_segment_json 실제 좌표 사용: {alert_rect}")
             else:
-                alert_rect = zone_info.get('rect', [0, 0, 320, 240])
+                alert_rect = zone_info.get('rect', [0, 0, 640, 240])  # 파노라마 기본 크기로 변경
                 logger.info(f"alert_info에 기존 rect 좌표 사용: {alert_rect}")
             
             alert_info = {
@@ -1209,337 +1373,318 @@ class VideoAlertChecker:
             if cursor:
                 cursor.close()
 
-    def scenario2_judge(self):
+    def collect_hourly_average_temperatures(self, hours=24):
         """
-        시나리오2: ROI 영역 내에서 수직 막대 형태의 영역으로 처리
+        시나리오3: 1시간 평균온도 데이터 수집
         """
         try:
-            logger.info("시나리오2 판단 시작")
+            cursor = self.get_db_cursor()
+            if not cursor:
+                return None
+            
+            # 최근 24시간의 파노라마 데이터 조회
+            query = """
+                SELECT panoramaData, create_date 
+                FROM tb_video_panorama_data 
+                WHERE create_date >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                ORDER BY create_date ASC
+            """
+            cursor.execute(query, (hours,))
+            results = cursor.fetchall()
+            
+            if not results:
+                logger.warning(f"시나리오3: 최근 {hours}시간 파노라마 데이터가 없습니다")
+                return None
+            
+            hourly_temps = []
+            for row in results:
+                try:
+                    # 파노라마 데이터에서 온도 데이터 추출
+                    temperature_data = self.extract_panorama_temperature_data(row['panoramaData'])
+                    if temperature_data:
+                        # 픽셀별 온도 데이터를 평균온도로 변환
+                        pixel_temps = [pixel['temperature'] for pixel in temperature_data]
+                        avg_temp = np.mean(pixel_temps)
+                        hourly_temps.append({
+                            'timestamp': row['create_date'],
+                            'average_temperature': avg_temp,
+                            'pixel_count': len(pixel_temps)
+                        })
+                except Exception as e:
+                    logger.error(f"시나리오3: 온도 데이터 추출 오류: {str(e)}")
+                    continue
+            
+            logger.info(f"시나리오3: {len(hourly_temps)}시간의 평균온도 데이터 수집 완료")
+            return hourly_temps
+            
+        except Exception as e:
+            logger.error(f"시나리오3: 1시간 평균온도 데이터 수집 오류: {str(e)}")
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+
+    def analyze_normal_distribution(self, hourly_temps):
+        """
+        시나리오3: 정규분포 분석 및 기준라인 설정
+        """
+        try:
+            if not hourly_temps or len(hourly_temps) < 10:
+                logger.warning("시나리오3: 충분한 데이터가 없어 정규분포 분석을 수행할 수 없습니다")
+                return None
+            
+            # 온도 데이터 추출
+            temperatures = [temp['average_temperature'] for temp in hourly_temps]
+            temps_array = np.array(temperatures)
+            
+            # 정규분포 파라미터 계산
+            mean_temp = np.mean(temps_array)
+            std_temp = np.std(temps_array)
+            
+            # 95% 신뢰구간 계산
+            from scipy import stats
+            confidence_interval = stats.norm.interval(0.95, loc=mean_temp, scale=std_temp)
+            
+            # 기준라인 = 정규분포의 평균값
+            baseline_line = mean_temp
+            
+            distribution_info = {
+                'mean': mean_temp,
+                'std': std_temp,
+                'baseline_line': baseline_line,
+                'confidence_interval': confidence_interval,
+                'data_count': len(temperatures),
+                'min_temp': np.min(temps_array),
+                'max_temp': np.max(temps_array)
+            }
+            
+            logger.info(f"시나리오3: 정규분포 분석 완료")
+            logger.info(f"  평균온도: {mean_temp:.2f}°C")
+            logger.info(f"  표준편차: {std_temp:.2f}°C")
+            logger.info(f"  기준라인: {baseline_line:.2f}°C")
+            logger.info(f"  95% 신뢰구간: {confidence_interval[0]:.2f}°C ~ {confidence_interval[1]:.2f}°C")
+            
+            return distribution_info
+            
+        except Exception as e:
+            logger.error(f"시나리오3: 정규분포 분석 오류: {str(e)}")
+            return None
+
+    def calculate_c2m_distance(self, current_temp, baseline_line):
+        """
+        시나리오3: C2M Distance 계산 (Center to Margin)
+        """
+        try:
+            # C2M distance = |현재온도 - 기준라인|
+            c2m_distance = abs(current_temp - baseline_line)
+            return c2m_distance
+            
+        except Exception as e:
+            logger.error(f"시나리오3: C2M distance 계산 오류: {str(e)}")
+            return None
+
+    def detect_leakage_concern_areas(self, temp_matrix, distribution_info, threshold_diff=5.0):
+        """
+        시나리오3: 누수발생 우려지역 감지
+        """
+        try:
+            if not distribution_info:
+                logger.error("시나리오3: 분포 정보가 없어 누수 감지를 수행할 수 없습니다")
+                return []
+            
+            baseline_line = distribution_info['baseline_line']
+            concern_areas = []
+            
+            height, width = temp_matrix.shape
+            
+            # 각 픽셀별로 C2M distance 계산
+            for y in range(height):
+                for x in range(width):
+                    current_temp = temp_matrix[y, x]
+                    
+                    # NaN 값 제외
+                    if np.isnan(current_temp):
+                        continue
+                    
+                    # C2M distance 계산
+                    c2m_distance = self.calculate_c2m_distance(current_temp, baseline_line)
+                    
+                    # 기준라인과의 차이가 임계값 이상이면 누수발생 우려지역
+                    if c2m_distance >= threshold_diff:
+                        concern_area = {
+                            'x': x,
+                            'y': y,
+                            'temperature': current_temp,
+                            'c2m_distance': c2m_distance,
+                            'baseline_line': baseline_line,
+                            'temperature_diff': current_temp - baseline_line
+                        }
+                        concern_areas.append(concern_area)
+            
+            logger.info(f"시나리오3: 누수발생 우려지역 {len(concern_areas)}개 감지 (임계값: {threshold_diff}°C)")
+            return concern_areas
+            
+        except Exception as e:
+            logger.error(f"시나리오3: 누수발생 우려지역 감지 오류: {str(e)}")
+            return []
+
+    def scenario2_judge(self):
+        """
+        시나리오3: 1시간 평균온도 기반 정규분포 분석으로 누수발생 우려지역 감지
+        - 1시간 평균온도 데이터 수집 (최근 24시간)
+        - 정규분포 분석 및 기준라인 설정
+        - C2M distance 계산 (Center to Margin)
+        - 누수발생 우려지역 감지 (5℃ 이상 차이)
+        """
+        try:
+            logger.info("시나리오3 판단 시작 (1시간 평균온도 기반 정규분포 분석)")
             
             # 강제 종료 체크
             if self.force_exit:
-                logger.info("강제 종료 요청됨, 시나리오2 중단")
+                logger.info("강제 종료 요청됨, 시나리오3 중단")
                 return False
             
-            # 최신 온도 데이터 조회
-            temp_data_record = self.get_latest_temperature_data()
-            if not temp_data_record:
-                logger.info("시나리오2: 온도 데이터가 없습니다")
+            # 1단계: 1시간 평균온도 데이터 수집 (최근 24시간)
+            hourly_temps = self.collect_hourly_average_temperatures(hours=24)
+            if not hourly_temps:
+                logger.warning("시나리오3: 1시간 평균온도 데이터가 없습니다")
+                return False
+            
+            # 2단계: 정규분포 분석 및 기준라인 설정
+            distribution_info = self.analyze_normal_distribution(hourly_temps)
+            if not distribution_info:
+                logger.error("시나리오3: 정규분포 분석 실패")
+                return False
+            
+            # 3단계: 현재 파노라마 데이터에서 온도 매트릭스 생성
+            panorama_data_record = self.get_latest_temperature_data()
+            if not panorama_data_record:
+                logger.warning("시나리오3: 현재 파노라마 데이터가 없습니다")
                 return False
             
             # 현재 스냅샷 데이터 ID를 인스턴스 변수로 저장
-            self.current_snapshot_data_id = temp_data_record['id']
+            self.current_snapshot_data_id = panorama_data_record['id']
             
-            # 온도 데이터 압축 해제
-            temperature_data = self.decompress_temperature_data(temp_data_record['temperatureData'])
+            # 파노라마 데이터에서 온도 데이터 추출
+            temperature_data = self.extract_panorama_temperature_data(panorama_data_record['panoramaData'])
             if not temperature_data:
-                logger.error("시나리오2: 온도 데이터 압축 해제 실패")
+                logger.error("시나리오3: 파노라마 온도 데이터 추출 실패")
                 return False
             
-            # 온도 매트릭스 생성
+            # 온도 매트릭스 생성 (1920x480 파노라마 크기)
             temp_matrix = self.create_temperature_matrix(temperature_data)
             if temp_matrix is None:
-                logger.error("시나리오2: 온도 매트릭스 생성 실패")
+                logger.error("시나리오3: 온도 매트릭스 생성 실패")
                 return False
             
-            # ROI 영역 리스트 가져오기
-            if not self.zone_list:
-                logger.warning("시나리오2: zone_list가 없어 기본 ROI 영역을 사용합니다")
-                # 기본 ROI 영역 설정 (640x480 전체 영역을 4개 구역으로 분할)
-                default_zones = [
-                    {'zone_type': '1', 'rect': [0, 0, 320, 240]},      # 좌상단 (0,0 ~ 319,239)
-                    {'zone_type': '2', 'rect': [320, 0, 320, 240]},    # 우상단 (320,0 ~ 639,239)
-                    {'zone_type': '3', 'rect': [0, 240, 320, 240]},    # 좌하단 (0,240 ~ 319,479)
-                    {'zone_type': '4', 'rect': [320, 240, 320, 240]}   # 우하단 (320,240 ~ 639,479)
-                ]
-                zones_to_check = default_zones
-            else:
-                zones_to_check = self.zone_list
+            # 4단계: 누수발생 우려지역 감지 (C2M distance 기반)
+            concern_areas = self.detect_leakage_concern_areas(temp_matrix, distribution_info, threshold_diff=5.0)
             
-            # 각 ROI 영역 내에서 수직 막대 분석
+            # 5단계: 경보 생성
             alert_detected = False
-            for zone_info in zones_to_check:
-                # 강제 종료 체크
-                if self.force_exit:
-                    logger.info("강제 종료 요청됨, 시나리오2 중단")
-                    return False
+            if concern_areas:
+                logger.info(f"시나리오3: 누수발생 우려지역 {len(concern_areas)}개 감지")
                 
-                # zone_segment_json에서 실제 ROI 좌표 추출
-                if 'left' in zone_info and 'top' in zone_info and 'right' in zone_info and 'bottom' in zone_info:
-                    # zone_segment_json의 실제 좌표 사용
-                    actual_rect = [
-                        zone_info['left'],      # x
-                        zone_info['top'],       # y
-                        zone_info['right'] - zone_info['left'],  # width
-                        zone_info['bottom'] - zone_info['top']   # height
-                    ]
-                    logger.info(f"시나리오2 Zone {zone_info.get('zone_type', 'unknown')}: zone_segment_json 좌표 사용 - {actual_rect}")
-                    logger.info(f"  ROI 영역: left={zone_info['left']}, top={zone_info['top']}, right={zone_info['right']}, bottom={zone_info['bottom']}")
-                else:
-                    # 기존 rect 정보 사용 (fallback)
-                    actual_rect = zone_info.get('rect', [0, 0, 320, 240])
-                    logger.info(f"시나리오2 Zone {zone_info.get('zone_type', 'unknown')}: 기존 rect 좌표 사용 - {actual_rect}")
-                
-                logger.info(f"시나리오2 Zone {zone_info.get('zone_type', 'unknown')}: ROI 영역 내에서 수직 막대 생성 시작 (ROI: {actual_rect})")
-                
-                # ROI 영역 내에서 수직 막대 생성 (고정 너비 5px)
-                vertical_bars = self.create_vertical_bars_in_roi(temp_matrix, actual_rect, zone_info.get('zone_type', 'unknown'))
-                
-                if not vertical_bars:
-                    logger.warning(f"시나리오2 Zone {zone_info.get('zone_type', 'unknown')}: 수직 막대 생성 실패")
-                    continue
-                
-                # 각 수직 막대 영역에 대해 이상 감지
-                for bar_idx, bar_data in enumerate(vertical_bars):
-                    if self.analyze_vertical_bar(bar_data, bar_idx, zone_info):
-                        alert_detected = True
-            
-            if not alert_detected:
-                logger.info("시나리오2: 경보 조건을 만족하지 않습니다")
+                # 누수발생 우려지역별로 경보 생성
+                for i, concern_area in enumerate(concern_areas):
+                    # 경보 레벨 결정 (온도차에 따라)
+                    temp_diff = abs(concern_area['temperature_diff'])
+                    if temp_diff >= 10.0:
+                        alert_level = 3  # 최고 레벨
+                    elif temp_diff >= 7.5:
+                        alert_level = 2  # 높은 레벨
+                    elif temp_diff >= 5.0:
+                        alert_level = 1  # 기본 레벨
+                    else:
+                        alert_level = 0  # 낮은 레벨
+                    
+                    # 경보 생성
+                    self.create_scenario3_alert(concern_area, 'S003', temp_diff, alert_level, distribution_info)
+                    alert_detected = True
+                    
+                    # 로그 출력 (처음 5개만)
+                    if i < 5:
+                        logger.info(f"누수발생 우려지역 {i+1}: 좌표=({concern_area['x']},{concern_area['y']}), "
+                                  f"온도={concern_area['temperature']:.1f}°C, "
+                                  f"C2M거리={concern_area['c2m_distance']:.1f}°C, "
+                                  f"레벨={alert_level}")
+            else:
+                logger.info("시나리오3: 누수발생 우려지역이 감지되지 않았습니다")
             
             return alert_detected
             
         except Exception as e:
-            logger.error(f"시나리오2 판단 오류: {str(e)}")
+            logger.error(f"시나리오3 판단 오류: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
-    def create_vertical_bars(self, temp_matrix, num_bars=8):
+    def create_scenario3_alert(self, concern_area, alert_type, threshold_value, alert_level=1, distribution_info=None):
         """
-        온도 매트릭스를 수직 막대 영역으로 분할 (전체 이미지 기준)
-        """
-        try:
-            height, width = temp_matrix.shape
-            bar_width = width // num_bars
-            
-            vertical_bars = []
-            for i in range(num_bars):
-                start_x = i * bar_width
-                end_x = start_x + bar_width if i < num_bars - 1 else width
-                
-                # 수직 막대 영역 추출
-                bar_temp = temp_matrix[:, start_x:end_x]
-                
-                # NaN 값 제거하고 유효한 온도 데이터만 추출
-                valid_temps = bar_temp[~np.isnan(bar_temp)]
-                
-                if len(valid_temps) > 0:
-                    bar_data = {
-                        'bar_index': i,
-                        'start_x': start_x,
-                        'end_x': end_x,
-                        'temperatures': valid_temps.tolist(),
-                        'min_temp': float(np.min(valid_temps)),
-                        'max_temp': float(np.max(valid_temps)),
-                        'avg_temp': float(np.mean(valid_temps)),
-                        'temp_diff': float(np.max(valid_temps) - np.min(valid_temps))
-                    }
-                    vertical_bars.append(bar_data)
-            
-            logger.info(f"수직 막대 영역 생성 완료: {len(vertical_bars)}개")
-            return vertical_bars
-            
-        except Exception as e:
-            logger.error(f"수직 막대 영역 생성 오류: {str(e)}")
-            return []
-
-    def create_vertical_bars_in_roi(self, temp_matrix, roi_rect, zone_type):
-        """
-        ROI 영역 내에서 수직 막대 영역을 생성 (고정 너비 5px)
-        """
-        try:
-            x, y, w, h = roi_rect
-            height, width = temp_matrix.shape
-            
-            # ROI 영역이 이미지 범위를 벗어나는지 확인
-            if x < 0 or y < 0 or x + w > width or y + h > height:
-                logger.warning(f"Zone {zone_type}: ROI 영역이 이미지 범위를 벗어남 - {roi_rect}")
-                return []
-            
-            # ROI 영역 내에서 수직 막대 생성 (고정 너비 5px)
-            fixed_bar_width = 5  # 고정 너비 5px
-            num_bars = max(1, w // fixed_bar_width)  # ROI 너비에 맞춰 막대 개수 조정
-            
-            if w < fixed_bar_width:
-                logger.warning(f"Zone {zone_type}: ROI 너비가 너무 작아 수직 막대를 생성할 수 없음 - {w} < {fixed_bar_width}")
-                return []
-            
-            vertical_bars = []
-            for i in range(num_bars):
-                start_x = x + (i * fixed_bar_width)
-                end_x = min(start_x + fixed_bar_width, x + w)  # ROI 경계를 넘지 않도록
-                
-                # ROI 영역 내의 수직 막대 온도 데이터 추출
-                roi_bar_temp = temp_matrix[y:y+h, start_x:end_x]
-                
-                # NaN 값 제거하고 유효한 온도 데이터만 추출
-                valid_temps = roi_bar_temp[~np.isnan(roi_bar_temp)]
-                
-                if len(valid_temps) > 0:
-                    bar_data = {
-                        'bar_index': i,
-                        'zone_type': zone_type,
-                        'start_x': start_x,
-                        'end_x': end_x,
-                        'start_y': y,        # 수직 막대의 시작 Y 좌표 (zone의 top)
-                        'end_y': y + h,      # 수직 막대의 끝 Y 좌표 (zone의 bottom)
-                        'roi_x': x,
-                        'roi_y': y,
-                        'roi_width': w,
-                        'roi_height': h,
-                        'temperatures': valid_temps.tolist(),
-                        'min_temp': float(np.min(valid_temps)),
-                        'max_temp': float(np.max(valid_temps)),
-                        'avg_temp': float(np.mean(valid_temps)),
-                        'temp_diff': float(np.max(valid_temps) - np.min(valid_temps))
-                    }
-                    vertical_bars.append(bar_data)
-            
-            logger.info(f"Zone {zone_type}: ROI 내 수직 막대 영역 생성 완료 - {len(vertical_bars)}개 (고정 너비 5px, ROI: {roi_rect})")
-            
-            # 생성된 수직 막대들의 상세 정보 로깅
-            for i, bar in enumerate(vertical_bars):
-                logger.info(f"  Bar {i}: x={bar['start_x']}-{bar['end_x']}, y={bar['start_y']}-{bar['end_y']}, "
-                          f"width={bar['end_x']-bar['start_x']}px, height={bar['end_y']-bar['start_y']}px")
-            
-            return vertical_bars
-            
-        except Exception as e:
-            logger.error(f"Zone {zone_type}: ROI 내 수직 막대 영역 생성 오류: {str(e)}")
-            return []
-
-    def analyze_vertical_bar(self, bar_data, bar_idx, zone_info=None):
-        """
-        수직 막대 영역 분석 및 이상 감지
-        """
-        try:
-            # 시나리오2.txt의 알고리즘을 기반으로 한 간단한 이상 감지
-            # 기준값: 온도차가 8도 이상이거나 평균 온도가 40도 이상인 경우
-            
-            alert_detected = False
-            zone_type = zone_info.get('zone_type', 'unknown') if zone_info else 'unknown'
-            
-            # 온도차 검사 (8도 이상)
-            # if bar_data['temp_diff'] >= 8.0:
-            #     logger.info(f"시나리오2 경보 감지: Zone {zone_type} Bar {bar_idx} 온도차 {bar_data['temp_diff']:.1f}°C >= 8°C")
-                
-            #     # 경보 생성 (스냅샷 데이터 ID 전달)
-            #     self.create_scenario2_alert(bar_data, 'temperature_diff', bar_data['temp_diff'], self.current_snapshot_data_id)
-            #     alert_detected = True
-            
-            # 평균 온도 검사 (DB에서 조회한 시나리오2 단계값 사용)
-            if self.alert_settings and 'alarmLevels' in self.alert_settings and 'scenario2' in self.alert_settings['alarmLevels']:
-                scenario2_levels = self.alert_settings['alarmLevels']['scenario2']
-                logger.info(f"시나리오2 단계값 조회: {scenario2_levels}")
-                
-                # 각 단계별로 평균 온도 검사
-                for level, threshold in enumerate(scenario2_levels):
-                    if bar_data['avg_temp'] >= threshold:
-                        logger.info(f"시나리오2 경보 감지: Zone {zone_type} Bar {bar_idx} 평균온도 {bar_data['avg_temp']:.1f}°C >= {threshold}°C (Level {level})")
-                        
-                        # 경보 생성 (스냅샷 데이터 ID 전달)
-                        self.create_scenario2_alert(bar_data, 'S003', bar_data['avg_temp'], self.current_snapshot_data_id, level, zone_info)
-                        alert_detected = True
-                        break  # 첫 번째 만족하는 단계에서 중단
-            else:
-                logger.warning("시나리오2 단계값을 찾을 수 없어 기본값 40도 사용")
-                # 기본값으로 40도 사용 (fallback)
-                if bar_data['avg_temp'] >= 40.0:
-                    logger.info(f"시나리오2 경보 감지: Zone {zone_type} Bar {bar_idx} 평균온도 {bar_data['avg_temp']:.1f}°C >= 40°C (기본값)")
-                    
-                    # 경보 생성 (스냅샷 데이터 ID 전달)
-                    self.create_scenario2_alert(bar_data, 'S003', bar_data['avg_temp'], self.current_snapshot_data_id, 0, zone_info)
-                    alert_detected = True
-            
-            return alert_detected
-            
-        except Exception as e:
-            logger.error(f"수직 막대 영역 분석 오류: {str(e)}")
-            return False
-
-    def create_scenario2_alert(self, bar_data, alert_type, threshold_value, snapshot_data_id=None, alert_level=1, zone_info=None):
-        """
-        시나리오2 경보 생성 및 DB 저장
+        시나리오3 경보 생성 및 DB 저장 (누수발생 우려지역)
         """
         try:
             cursor = self.get_db_cursor()
             if not cursor:
                 return False
             
-            # 스냅샷 이미지 캡처
-            snapshot_images = self.capture_video_snapshots()
-            
-            # bar_data 디버깅 로그 추가
-            logger.info(f"시나리오2 경보 생성 - bar_data 상세 정보:")
-            logger.info(f"  start_x: {bar_data.get('start_x', 'N/A')}")
-            logger.info(f"  end_x: {bar_data.get('end_x', 'N/A')}")
-            logger.info(f"  start_y: {bar_data.get('start_y', 'N/A')}")
-            logger.info(f"  end_y: {bar_data.get('end_y', 'N/A')}")
-            logger.info(f"  roi_x: {bar_data.get('roi_x', 'N/A')}")
-            logger.info(f"  roi_y: {bar_data.get('roi_y', 'N/A')}")
-            logger.info(f"  roi_width: {bar_data.get('roi_width', 'N/A')}")
-            logger.info(f"  roi_height: {bar_data.get('roi_height', 'N/A')}")
-            
-            # ROI 정보 추가
-            roi_info = {}
-            if zone_info:
-                if 'left' in zone_info and 'top' in zone_info and 'right' in zone_info and 'bottom' in zone_info:
-                    roi_info = {
-                        'zone_type': zone_info.get('zone_type', 'unknown'),
-                        'rect': [
-                            zone_info['left'],
-                            zone_info['top'],
-                            zone_info['right'] - zone_info['left'],
-                            zone_info['bottom'] - zone_info['top']
-                        ],
-                        'zone_segment_coords': {
-                            'left': zone_info['left'],
-                            'top': zone_info['top'],
-                            'right': zone_info['right'],
-                            'bottom': zone_info['bottom']
-                        }
-                    }
+            # 파노라마 데이터 조회 및 이미지 추출
+            panorama_data_record = self.get_latest_temperature_data()
+            panorama_snapshot = None
+            if panorama_data_record:
+                logger.info(f"파노라마 데이터 조회 성공: ID={panorama_data_record.get('id')}, 생성일={panorama_data_record.get('create_date')}")
+                panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
+                if panorama_snapshot:
+                    logger.info("파노라마 이미지 추출 성공")
                 else:
-                    roi_info = {
-                        'zone_type': zone_info.get('zone_type', 'unknown'),
-                        'rect': zone_info.get('rect', [0, 0, 320, 240])
-                    }
+                    logger.warning("파노라마 이미지 추출 실패")
+            else:
+                logger.warning("파노라마 데이터 조회 실패 - 데이터가 없습니다")
             
-            # 경보 정보 구성
-            alert_info = {
-                'scenario': 'scenario2',
+            # 스트림 스냅샷 이미지 캡처
+            stream_snapshots = self.capture_video_snapshots()
+            
+            # 모든 스냅샷 이미지 통합
+            snapshot_images = []
+            
+            # 파노라마 이미지 추가
+            if panorama_snapshot:
+                snapshot_images.append(panorama_snapshot)
+                logger.info("파노라마 이미지가 snapshot_images에 추가됨")
+            else:
+                logger.warning("파노라마 이미지가 없어 snapshot_images에 추가되지 않음")
+            
+            # 스트림 캡처 이미지들 추가
+            if stream_snapshots:
+                snapshot_images.extend(stream_snapshots)
+                logger.info(f"{len(stream_snapshots)}개의 스트림 이미지가 snapshot_images에 추가됨")
+            else:
+                logger.warning("스트림 이미지가 없음")
+            
+            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 스트림: {len(stream_snapshots)}개)")
+            
+            # 디버깅: snapshot_images 내용 확인
+            for i, img in enumerate(snapshot_images):
+                img_type = img.get('image_type', 'stream')
+                logger.info(f"스냅샷 {i+1}: 타입={img_type}, 파일명={img.get('filename', 'N/A')}")
+            
+            # 누수발생 우려지역 정보 구성
+            concern_info = {
+                'scenario': 'scenario3',
                 'alert_type': alert_type,
                 'threshold_value': threshold_value,
-                'alert_level': alert_level,  # 경보 레벨 추가
-                'zone_type': zone_info.get('zone_type', 'unknown') if zone_info else 'unknown',
-                'bar_index': bar_data['bar_index'],
-                'bar_region': {
-                    'start_x': bar_data['start_x'],
-                    'end_x': bar_data['end_x'],
-                    'start_y': bar_data['start_y'],
-                    'end_y': bar_data['end_y'],
-                    'width': bar_data['end_x'] - bar_data['start_x'],
-                    'height': bar_data['end_y'] - bar_data['start_y']
+                'alert_level': alert_level,
+                'concern_area': {
+                    'x': concern_area['x'],
+                    'y': concern_area['y'],
+                    'temperature': concern_area['temperature'],
+                    'c2m_distance': concern_area['c2m_distance'],
+                    'baseline_line': concern_area['baseline_line'],
+                    'temperature_diff': concern_area['temperature_diff']
                 },
-                'roi_info': roi_info,
-                'temperature_stats': {
-                    'min': bar_data['min_temp'],
-                    'max': bar_data['max_temp'],
-                    'average': bar_data['avg_temp'],
-                    'difference': bar_data['temp_diff']
-                },
+                'distribution_info': distribution_info,
                 'detection_time': datetime.now().isoformat(),
-                'vertical_bar': True
+                'leakage_detection': True
             }
-            
-            # 생성된 alert_info의 bar_region 로깅
-            logger.info(f"생성된 alert_info.bar_region:")
-            logger.info(f"  start_x: {alert_info['bar_region']['start_x']}")
-            logger.info(f"  end_x: {alert_info['bar_region']['end_x']}")
-            logger.info(f"  start_y: {alert_info['bar_region']['start_y']}")
-            logger.info(f"  end_y: {alert_info['bar_region']['end_y']}")
-            logger.info(f"  width: {alert_info['bar_region']['width']}")
-            logger.info(f"  height: {alert_info['bar_region']['height']}")
             
             # DB에 경보 저장
             query = """
@@ -1550,39 +1695,36 @@ class VideoAlertChecker:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             
-            # fk_detect_zone_id 설정 (zone_info에서 zone_id 추출)
-            fk_detect_zone_id = 1  # 기본값
-            if zone_info and 'zone_id' in zone_info:
-                fk_detect_zone_id = zone_info['zone_id']
-            elif zone_info and 'id' in zone_info:
-                fk_detect_zone_id = zone_info['id']
-            
             now = datetime.now()
             values = (
                 1,  # fk_camera_id
                 now,  # alert_accur_time
                 alert_type,  # alert_type
-                alert_level,  # alert_level (파라미터로 전달받은 값 사용)
+                alert_level,  # alert_level (0~3)
                 'P001',  # alert_status
-                json.dumps(alert_info, ensure_ascii=False),  # alert_info_json
-                fk_detect_zone_id,  # fk_detect_zone_id (zone_info에서 추출)
+                json.dumps(concern_info, ensure_ascii=False),  # alert_info_json
+                0,  # fk_detect_zone_id (시나리오3는 전체 영역 분석)
                 0,  # fk_process_user_id
                 now,  # create_date
                 now,  # update_date
-                snapshot_data_id,  # fk_video_receive_data_id
+                self.current_snapshot_data_id,  # fk_video_receive_data_id
                 json.dumps(snapshot_images, ensure_ascii=False) if snapshot_images else None  # snapshotImages
             )
             
             cursor.execute(query, values)
-            logger.info(f"시나리오2 경보 생성 완료: Bar {bar_data['bar_index']}, {alert_type}: {threshold_value}")
+            logger.info(f"시나리오3 경보 생성 완료: 좌표=({concern_area['x']},{concern_area['y']}), "
+                       f"온도={concern_area['temperature']:.1f}°C, C2M거리={concern_area['c2m_distance']:.1f}°C, "
+                       f"레벨={alert_level}")
+            
             return True
             
         except Exception as e:
-            logger.error(f"시나리오2 경보 생성 오류: {str(e)}")
+            logger.error(f"시나리오3 경보 생성 오류: {str(e)}")
             return False
         finally:
             if cursor:
                 cursor.close()
+
 
     def run(self):
         logger.info("VideoAlertChecker 시작...")

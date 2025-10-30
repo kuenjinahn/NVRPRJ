@@ -430,15 +430,15 @@ export const addDetectionZone = async (req, res) => {
     console.log('[addDetectionZone] zoneData:', zoneData);
     const result = await EventsModel.addDetectionZone(zoneData);
 
-    if (result) {
-      try {
-        const cameraConfig = getCameraConfig();
-        await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
-      } catch (roiError) {
-        console.error('[addDetectionZone] ROI setting error:', roiError);
-        // Continue even if ROI setting fails
-      }
-    }
+    // if (result) {
+    //   try {
+    //     const cameraConfig = getCameraConfig();
+    //     await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
+    //   } catch (roiError) {
+    //     console.error('[addDetectionZone] ROI setting error:', roiError);
+    //     // Continue even if ROI setting fails
+    //   }
+    // }
 
     res.status(201).json(result);
   } catch (err) {
@@ -477,13 +477,13 @@ export const updateDetectionZone = async (req, res) => {
     const result = await EventsModel.updateDetectionZone(req.params.id, zoneData);
     if (!result) return res.status(404).json({ error: 'Not found' });
 
-    try {
-      const cameraConfig = getCameraConfig();
-      await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
-    } catch (roiError) {
-      console.error('[updateDetectionZone] ROI setting error:', roiError);
-      // Continue even if ROI setting fails
-    }
+    // try {
+    //   const cameraConfig = getCameraConfig();
+    //   await sendRoiSetting(req.body.roiIndex, startX, startY, endX, endY, cameraConfig.ip, cameraConfig.port, req.body.roiEnable);
+    // } catch (roiError) {
+    //   console.error('[updateDetectionZone] ROI setting error:', roiError);
+    //   // Continue even if ROI setting fails
+    // }
 
     res.json(result);
   } catch (err) {
@@ -499,15 +499,15 @@ export const deleteDetectionZone = async (req, res) => {
 
     const roiEnable = req.query.roiEnable;
     const roiIndex = req.query.roiIndex;
-    if (roiEnable !== undefined && roiIndex !== undefined) {
-      try {
-        const cameraConfig = getCameraConfig();
-        await sendRoiSetting(roiIndex, 0, 0, 0, 0, cameraConfig.ip, cameraConfig.port, roiEnable);
-      } catch (roiError) {
-        console.error('[deleteDetectionZone] ROI setting error:', roiError);
-        // Continue even if ROI setting fails
-      }
-    }
+    // if (roiEnable !== undefined && roiIndex !== undefined) {
+    //   try {
+    //     const cameraConfig = getCameraConfig();
+    //     await sendRoiSetting(roiIndex, 0, 0, 0, 0, cameraConfig.ip, cameraConfig.port, roiEnable);
+    //   } catch (roiError) {
+    //     console.error('[deleteDetectionZone] ROI setting error:', roiError);
+    //     // Continue even if ROI setting fails
+    //   }
+    // }
 
     res.json({ success: true });
   } catch (err) {
