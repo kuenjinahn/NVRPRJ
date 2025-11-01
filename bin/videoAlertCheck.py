@@ -95,7 +95,7 @@ class VideoAlertChecker:
         self.last_settings_check = 0
         self.last_data_check = 0
         self.settings_check_interval = 30  # 30 seconds
-        self.data_check_interval = 60  # 60 seconds
+        self.data_check_interval = 600  # 1 hour (3600 seconds)
         self.running = True
         self.force_exit = False  # 강제 종료 플래그
         
@@ -854,6 +854,14 @@ class VideoAlertChecker:
             
             logger.info(f"파노라마 이미지 저장 완료: {image_path} (크기: {len(image_data)} bytes)")
             
+            # RAW 이미지 파일도 저장 (원본 base64 디코딩 데이터를 .raw 파일로)
+            raw_filename = f"panorama_{timestamp}.raw"
+            raw_image_path = os.path.join(snapshots_dir, raw_filename)
+            with open(raw_image_path, 'wb') as f:
+                f.write(image_data)
+            
+            logger.info(f"파노라마 RAW 이미지 저장 완료: {raw_image_path} (크기: {len(image_data)} bytes)")
+            
             # 스냅샷 데이터 형태로 반환
             snapshot_data = {
                 'panorama_image': True,
@@ -871,6 +879,119 @@ class VideoAlertChecker:
             logger.error(f"파노라마 이미지 추출 오류: {str(e)}")
             logger.error(f"예외 상세: {traceback.format_exc()}")
             return None
+
+    def capture_visible_camera_snapshot(self):
+        """
+        실화상 카메라(videoType=2)의 스트림 이미지만 캡처
+        """
+        snapshot_image = None
+        
+        if not hasattr(self, 'camera_info_list') or not self.camera_info_list:
+            logger.warning("카메라 정보가 없어 실화상 카메라 스냅샷을 캡처할 수 없습니다")
+            return None
+        
+        # 실화상 카메라(videoType=2) 찾기
+        visible_camera = None
+        for camera_info in self.camera_info_list:
+            video_type = camera_info.get('video_type')
+            # videoType이 2이거나, 문자열인 경우 '2' 또는 'visible' 체크
+            if video_type == 2 or str(video_type) == '2' or str(video_type).lower() == 'visible':
+                visible_camera = camera_info
+                break
+        
+        if not visible_camera:
+            logger.warning("실화상 카메라(videoType=2)를 찾을 수 없습니다")
+            return None
+        
+        try:
+            rtsp_url = visible_camera['rtsp_url']
+            video_type = visible_camera['video_type']
+            camera_name = visible_camera.get('camera_name', 'unknown')
+            
+            # RTSP URL 유효성 검사
+            if not rtsp_url or not isinstance(rtsp_url, str) or rtsp_url.strip() == '':
+                logger.warning(f"유효하지 않은 RTSP URL: {rtsp_url}")
+                return None
+            
+            rtsp_url = rtsp_url.strip()
+            
+            # RTSP 프로토콜 확인
+            if not rtsp_url.startswith(('rtsp://', 'http://', 'https://')):
+                logger.warning(f"RTSP URL에 유효하지 않은 프로토콜: {rtsp_url}")
+                return None
+            
+            logger.info(f"실화상 카메라 스냅샷 캡처 중: {rtsp_url}")
+            
+            try:
+                # FFmpeg 명령어 구성 (메모리로 직접 출력)
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-hide_banner',
+                    '-loglevel', 'error',
+                    '-rtsp_transport', 'tcp',  # TCP 전송 사용
+                    '-i', rtsp_url,  # 입력 소스
+                    '-vframes', '1',  # 1프레임만 캡처
+                    '-q:v', '2',  # 품질 설정
+                    '-f', 'image2',  # 이미지 포맷
+                    '-'  # stdout으로 출력
+                ]
+                
+                # FFmpeg 프로세스 실행
+                process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                # 출력 데이터 수집 (타임아웃 설정)
+                stdout_data, stderr_data = process.communicate(timeout=30)
+                
+                # 디버깅을 위한 로그
+                if stderr_data:
+                    stderr_text = stderr_data.decode('utf-8', errors='ignore')
+                    logger.debug(f"FFmpeg stderr for {rtsp_url}: {stderr_text}")
+                
+                if process.returncode == 0 and stdout_data:
+                    # base64로 인코딩
+                    img_base64 = base64.b64encode(stdout_data).decode('utf-8')
+                    
+                    # 타임스탬프 생성 (JPG와 RAW에 동일한 타임스탬프 사용)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    # 스냅샷 이미지를 파일로 저장 (JPG와 RAW 모두)
+                    filename, file_path = self.save_snapshot_to_file(stdout_data, camera_name, video_type, timestamp)
+                    
+                    # RAW 이미지도 저장
+                    if file_path:
+                        self.save_raw_image(stdout_data, camera_name, video_type, timestamp)
+                    
+                    snapshot_image = {
+                        'rtsp_url': rtsp_url,
+                        'video_type': video_type,
+                        'camera_name': camera_name,
+                        'timestamp': datetime.now().isoformat(),
+                        'image_data': img_base64,
+                        'file_path': file_path if file_path else '',
+                        'image_type': 'visible_stream'
+                    }
+                    logger.info(f"실화상 카메라 스냅샷 캡처 성공: {rtsp_url} (Type: {video_type}, Camera: {camera_name})")
+                else:
+                    error_msg = stderr_data.decode('utf-8') if stderr_data else "알 수 없는 오류"
+                    logger.error(f"FFmpeg 실패 {rtsp_url}: {error_msg}")
+                    
+            except subprocess.TimeoutExpired:
+                logger.error(f"FFmpeg 타임아웃 {rtsp_url}")
+                if process:
+                    process.kill()
+                    process.wait()
+            except Exception as e:
+                logger.error(f"FFmpeg 오류 {rtsp_url}: {str(e)}")
+            
+        except Exception as e:
+            logger.error(f"실화상 카메라 스냅샷 캡처 오류: {str(e)}")
+            logger.error(f"예외 상세: {traceback.format_exc()}")
+        
+        return snapshot_image
 
     def capture_video_snapshots(self):
         """
@@ -940,8 +1061,15 @@ class VideoAlertChecker:
                         # base64로 인코딩
                         img_base64 = base64.b64encode(stdout_data).decode('utf-8')
                         
-                        # 스냅샷 이미지를 파일로 저장
-                        filename, file_path = self.save_snapshot_to_file(stdout_data, camera_name, video_type)
+                        # 타임스탬프 생성 (JPG와 RAW에 동일한 타임스탬프 사용)
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        
+                        # 스냅샷 이미지를 파일로 저장 (JPG와 RAW 모두)
+                        filename, file_path = self.save_snapshot_to_file(stdout_data, camera_name, video_type, timestamp)
+                        
+                        # RAW 이미지도 저장
+                        if file_path:
+                            self.save_raw_image(stdout_data, camera_name, video_type, timestamp)
                         
                         snapshot_data = {
                             'rtsp_url': rtsp_url,
@@ -973,7 +1101,7 @@ class VideoAlertChecker:
         logger.info(f"총 {len(snapshot_images)}개의 스냅샷 캡처 완료")
         return snapshot_images
 
-    def save_snapshot_to_file(self, image_data, camera_name, video_type):
+    def save_snapshot_to_file(self, image_data, camera_name, video_type, timestamp=None):
         """
         스냅샷 이미지를 파일로 저장
         """
@@ -982,8 +1110,9 @@ class VideoAlertChecker:
                 logger.warning("저장할 이미지 데이터가 없습니다")
                 return
             
-            # 현재 시간을 파일명에 포함
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 타임스탬프 생성
+            if not timestamp:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # 카메라 이름과 비디오 타입을 파일명에 포함
             safe_camera_name = "".join(c for c in camera_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -1010,6 +1139,46 @@ class VideoAlertChecker:
         except Exception as e:
             logger.error(f"스냅샷 이미지 저장 오류: {str(e)}")
             print(f"스냅샷 이미지 저장 오류: {str(e)}")
+            return None, None
+
+    def save_raw_image(self, image_data, camera_name, video_type, timestamp=None):
+        """
+        RAW 이미지 파일 저장 (원본 바이너리 데이터)
+        """
+        try:
+            if not image_data:
+                logger.warning("저장할 RAW 이미지 데이터가 없습니다")
+                return None, None
+            
+            # 타임스탬프 생성
+            if not timestamp:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 카메라 이름과 비디오 타입을 파일명에 포함
+            safe_camera_name = "".join(c for c in camera_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_camera_name = safe_camera_name.replace(' ', '_')
+            
+            # RAW 파일명 생성: 카메라명_비디오타입_날짜시간.raw
+            raw_filename = f"{safe_camera_name}_{video_type}_{timestamp}.raw"
+            
+            # 이미지 파일 경로 설정 (bin 디렉토리 내 snapshots 폴더)
+            snapshots_dir = os.path.join(os.path.dirname(__file__), 'snapshots')
+            os.makedirs(snapshots_dir, exist_ok=True)
+            
+            raw_image_path = os.path.join(snapshots_dir, raw_filename)
+            
+            # RAW 이미지 파일 저장 (원본 바이너리 데이터)
+            with open(raw_image_path, 'wb') as f:
+                f.write(image_data)
+            
+            logger.info(f"RAW 이미지 저장 완료: {raw_image_path} (크기: {len(image_data)} bytes)")
+            print(f"RAW 이미지 저장 완료: {raw_image_path}")
+            
+            return raw_filename, raw_image_path
+            
+        except Exception as e:
+            logger.error(f"RAW 이미지 저장 오류: {str(e)}")
+            print(f"RAW 이미지 저장 오류: {str(e)}")
             return None, None
 
     def scenario1_judge(self):
@@ -1070,6 +1239,24 @@ class VideoAlertChecker:
             logger.info(f"시나리오1 기준값: {levels}")
             # 4단계 기준값: [2, 5, 8, 10]
 
+            # 스냅샷을 한 번만 캡처 (모든 경보에서 재사용)
+            panorama_snapshot = None
+            visible_stream_snapshot = None
+            
+            # 파노라마 이미지 추출
+            panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
+            if panorama_snapshot:
+                logger.info("시나리오1: 파노라마 이미지 추출 성공")
+            else:
+                logger.warning("시나리오1: 파노라마 이미지 추출 실패")
+            
+            # 실화상 카메라 스트림 스냅샷 이미지 캡처 (videoType=2) - 한 번만
+            visible_stream_snapshot = self.capture_visible_camera_snapshot()
+            if visible_stream_snapshot:
+                logger.info("시나리오1: 실화상 카메라 스냅샷 캡처 완료")
+            else:
+                logger.warning("시나리오1: 실화상 카메라 스냅샷 캡처 실패")
+            
             # 각 ROI 영역을 20x20 박스로 분할하여 검사
             alert_detected = False
             for zone_info in zones_to_check:
@@ -1123,7 +1310,9 @@ class VideoAlertChecker:
                         'S001',
                         len(alert_boxes),  # 경보 조건을 만족하는 박스 개수
                         1,  # 기본 alert_level
-                        alert_boxes  # 20x20 박스 분석 결과
+                        alert_boxes,  # 20x20 박스 분석 결과
+                        panorama_snapshot,  # 재사용할 파노라마 스냅샷
+                        visible_stream_snapshot  # 재사용할 실화상 스트림 스냅샷
                     )
                     alert_detected = True
 
@@ -1167,7 +1356,9 @@ class VideoAlertChecker:
                                 'S002',
                                 temp_change_percent,
                                 3,  # 최고 레벨로 설정
-                                None  # alert_boxes는 없음
+                                None,  # alert_boxes는 없음
+                                panorama_snapshot,  # 재사용할 파노라마 스냅샷
+                                visible_stream_snapshot  # 재사용할 실화상 스트림 스냅샷
                             )
                             alert_detected = True
 
@@ -1181,32 +1372,34 @@ class VideoAlertChecker:
             logger.error(traceback.format_exc())
             return False
 
-    def create_scenario1_alert(self, video_data_id, zone_info, alert_type, threshold_value, alert_level=1, alert_boxes=None):
+    def create_scenario1_alert(self, video_data_id, zone_info, alert_type, threshold_value, alert_level=1, alert_boxes=None, panorama_snapshot=None, visible_stream_snapshot=None):
         """
         시나리오1 경보 생성 및 DB 저장 (20x20 박스 분석 결과 포함)
+        panorama_snapshot과 visible_stream_snapshot이 제공되면 재사용, 없으면 새로 캡처
         """
         try:
             cursor = self.get_db_cursor()
             if not cursor:
                 return False
             
-            # 파노라마 데이터 조회 및 이미지 추출
-            panorama_data_record = self.get_latest_temperature_data()
-            panorama_snapshot = None
-            if panorama_data_record:
-                logger.info(f"파노라마 데이터 조회 성공: ID={panorama_data_record.get('id')}, 생성일={panorama_data_record.get('create_date')}")
-                panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
-                if panorama_snapshot:
-                    logger.info("파노라마 이미지 추출 성공")
+            # 스냅샷이 제공되지 않은 경우에만 캡처 (재사용 우선)
+            if panorama_snapshot is None:
+                panorama_data_record = self.get_latest_temperature_data()
+                if panorama_data_record:
+                    logger.info(f"시나리오1: 파노라마 데이터 조회 및 이미지 추출 (새로 캡처)")
+                    panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
                 else:
-                    logger.warning("파노라마 이미지 추출 실패")
+                    logger.warning("시나리오1: 파노라마 데이터 조회 실패 - 데이터가 없습니다")
             else:
-                logger.warning("파노라마 데이터 조회 실패 - 데이터가 없습니다")
+                logger.info("시나리오1: 파노라마 스냅샷 재사용")
             
-            # 스트림 스냅샷 이미지 캡처
-            stream_snapshots = self.capture_video_snapshots()
+            if visible_stream_snapshot is None:
+                logger.info("시나리오1: 실화상 카메라 스트림 스냅샷 캡처 (새로 캡처)")
+                visible_stream_snapshot = self.capture_visible_camera_snapshot()
+            else:
+                logger.info("시나리오1: 실화상 스트림 스냅샷 재사용")
             
-            # 모든 스냅샷 이미지 통합
+            # 스냅샷 이미지 구성 (파노라마 1개 + 실화상 스트림 1개)
             snapshot_images = []
             
             # 파노라마 이미지 추가
@@ -1216,14 +1409,14 @@ class VideoAlertChecker:
             else:
                 logger.warning("파노라마 이미지가 없어 snapshot_images에 추가되지 않음")
             
-            # 스트림 캡처 이미지들 추가
-            if stream_snapshots:
-                snapshot_images.extend(stream_snapshots)
-                logger.info(f"{len(stream_snapshots)}개의 스트림 이미지가 snapshot_images에 추가됨")
+            # 실화상 스트림 이미지 추가 (1개만)
+            if visible_stream_snapshot:
+                snapshot_images.append(visible_stream_snapshot)
+                logger.info("실화상 스트림 이미지가 snapshot_images에 추가됨")
             else:
-                logger.warning("스트림 이미지가 없음")
+                logger.warning("실화상 스트림 이미지가 없음")
             
-            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 스트림: {len(stream_snapshots)}개)")
+            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 실화상 스트림: {1 if visible_stream_snapshot else 0}개)")
             
             # 디버깅: snapshot_images 내용 확인
             for i, img in enumerate(snapshot_images):
@@ -1373,6 +1566,97 @@ class VideoAlertChecker:
             if cursor:
                 cursor.close()
 
+    def collect_roi_hourly_average_temperatures(self, zone_info, hours=1):
+        """
+        시나리오2: ROI 영역별로 1시간(1장) 평균 온도 데이터 수집
+        """
+        try:
+            cursor = self.get_db_cursor()
+            if not cursor:
+                return None
+            
+            # zone_info에서 rect 정보 추출
+            rect = None
+            if isinstance(zone_info, dict):
+                if 'rect' in zone_info:
+                    rect = zone_info['rect']
+                elif all(key in zone_info for key in ['left', 'right', 'top', 'bottom']):
+                    left = zone_info['left']
+                    right = zone_info['right']
+                    top = zone_info['top']
+                    bottom = zone_info['bottom']
+                    width = right - left
+                    height = bottom - top
+                    rect = [left, top, width, height]
+                else:
+                    logger.warning(f"시나리오2: 유효하지 않은 zone_info 형식: {zone_info}")
+                    return None
+            
+            if rect is None:
+                logger.warning(f"시나리오2: rect 정보를 추출할 수 없습니다: {zone_info}")
+                return None
+            
+            # 최근 hours 시간(기본 1시간, 즉 1장)의 파노라마 데이터 조회
+            query = """
+                SELECT panoramaData, create_date 
+                FROM tb_video_panorama_data 
+                WHERE create_date >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                ORDER BY create_date DESC
+                LIMIT 1
+            """
+            cursor.execute(query, (hours,))
+            results = cursor.fetchall()
+            
+            if not results:
+                logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} - 최근 {hours}시간 파노라마 데이터가 없습니다")
+                return None
+            
+            roi_temps = []
+            x, y, w, h = rect
+            
+            for row in results:
+                try:
+                    # 파노라마 데이터에서 온도 매트릭스 생성
+                    temperature_data = self.extract_panorama_temperature_data(row['panoramaData'])
+                    if not temperature_data:
+                        continue
+                    
+                    temp_matrix = self.create_temperature_matrix(temperature_data)
+                    if temp_matrix is None:
+                        continue
+                    
+                    # ROI 영역 추출
+                    roi_temp = temp_matrix[y:y+h, x:x+w]
+                    valid_temps = roi_temp[~np.isnan(roi_temp)]
+                    
+                    if len(valid_temps) > 0:
+                        avg_temp = float(np.mean(valid_temps))
+                        roi_temps.append({
+                            'timestamp': row['create_date'],
+                            'average_temperature': avg_temp,
+                            'pixel_count': len(valid_temps),
+                            'zone_type': zone_info.get('zone_type', 'unknown'),
+                            'rect': rect
+                        })
+                        
+                except Exception as e:
+                    logger.error(f"시나리오2: ROI 온도 데이터 추출 오류: {str(e)}")
+                    continue
+            
+            if roi_temps:
+                logger.info(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} - {len(roi_temps)}개의 평균온도 데이터 수집 완료")
+                return roi_temps
+            else:
+                logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} - 유효한 온도 데이터가 없습니다")
+                return None
+                
+        except Exception as e:
+            logger.error(f"시나리오2: ROI 평균온도 데이터 수집 오류: {str(e)}")
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+
     def collect_hourly_average_temperatures(self, hours=24):
         """
         시나리오3: 1시간 평균온도 데이터 수집
@@ -1423,6 +1707,63 @@ class VideoAlertChecker:
         finally:
             if cursor:
                 cursor.close()
+
+    def analyze_roi_normal_distribution(self, roi_hourly_temps):
+        """
+        시나리오2: ROI 영역별 정규분포 분석 및 신뢰 구간 계산
+        """
+        try:
+            if not roi_hourly_temps or len(roi_hourly_temps) < 1:
+                logger.warning("시나리오2: ROI 영역에 충분한 데이터가 없어 정규분포 분석을 수행할 수 없습니다")
+                return None
+            
+            # 온도 데이터 추출
+            temperatures = [temp['average_temperature'] for temp in roi_hourly_temps]
+            temps_array = np.array(temperatures)
+            
+            # 데이터가 1개인 경우, 해당 값 기준으로 신뢰 구간 설정
+            if len(temperatures) == 1:
+                mean_temp = temperatures[0]
+                # 1장의 경우 표준편차를 평균의 5%로 설정 (임시)
+                std_temp = mean_temp * 0.05
+                if std_temp < 0.5:
+                    std_temp = 0.5  # 최소 0.5도
+                logger.info(f"시나리오2: 데이터가 1개이므로 표준편차를 평균의 5%({std_temp:.2f}°C)로 설정")
+            else:
+                # 정규분포 파라미터 계산
+                mean_temp = np.mean(temps_array)
+                std_temp = np.std(temps_array)
+            
+            # 95% 신뢰구간 계산
+            from scipy import stats
+            confidence_interval = stats.norm.interval(0.95, loc=mean_temp, scale=std_temp)
+            
+            # 기준라인 = 정규분포의 평균값
+            baseline_line = mean_temp
+            
+            distribution_info = {
+                'mean': mean_temp,
+                'std': std_temp,
+                'baseline_line': baseline_line,
+                'confidence_interval': confidence_interval,
+                'data_count': len(temperatures),
+                'min_temp': np.min(temps_array),
+                'max_temp': np.max(temps_array),
+                'zone_type': roi_hourly_temps[0].get('zone_type', 'unknown'),
+                'rect': roi_hourly_temps[0].get('rect', [0, 0, 0, 0])
+            }
+            
+            logger.info(f"시나리오2: ROI 영역 {distribution_info['zone_type']} 정규분포 분석 완료")
+            logger.info(f"  평균온도: {mean_temp:.2f}°C")
+            logger.info(f"  표준편차: {std_temp:.2f}°C")
+            logger.info(f"  기준라인: {baseline_line:.2f}°C")
+            logger.info(f"  95% 신뢰구간: {confidence_interval[0]:.2f}°C ~ {confidence_interval[1]:.2f}°C")
+            
+            return distribution_info
+            
+        except Exception as e:
+            logger.error(f"시나리오2: ROI 정규분포 분석 오류: {str(e)}")
+            return None
 
     def analyze_normal_distribution(self, hourly_temps):
         """
@@ -1483,6 +1824,83 @@ class VideoAlertChecker:
             logger.error(f"시나리오3: C2M distance 계산 오류: {str(e)}")
             return None
 
+    def detect_roi_alert_pixels(self, temp_matrix, zone_info, roi_distribution):
+        """
+        시나리오2: ROI 영역 내 픽셀별로 신뢰 구간과 대조하여 벗어난 픽셀 감지
+        """
+        try:
+            if not roi_distribution:
+                logger.error("시나리오2: ROI 분포 정보가 없어 픽셀 검사를 수행할 수 없습니다")
+                return []
+            
+            # zone_info에서 rect 정보 추출
+            rect = None
+            if isinstance(zone_info, dict):
+                if 'rect' in zone_info:
+                    rect = zone_info['rect']
+                elif all(key in zone_info for key in ['left', 'right', 'top', 'bottom']):
+                    left = zone_info['left']
+                    right = zone_info['right']
+                    top = zone_info['top']
+                    bottom = zone_info['bottom']
+                    width = right - left
+                    height = bottom - top
+                    rect = [left, top, width, height]
+                else:
+                    logger.warning(f"시나리오2: 유효하지 않은 zone_info 형식: {zone_info}")
+                    return []
+            
+            if rect is None:
+                logger.warning(f"시나리오2: rect 정보를 추출할 수 없습니다: {zone_info}")
+                return []
+            
+            x, y, w, h = rect
+            
+            # ROI 영역 추출
+            roi_temp = temp_matrix[y:y+h, x:x+w]
+            
+            # 신뢰 구간 가져오기
+            confidence_lower, confidence_upper = roi_distribution['confidence_interval']
+            baseline_line = roi_distribution['baseline_line']
+            
+            alert_pixels = []
+            
+            # ROI 영역 내 픽셀별로 신뢰 구간과 대조
+            for py in range(h):
+                for px in range(w):
+                    current_temp = roi_temp[py, px]
+                    
+                    # NaN 값 제외
+                    if np.isnan(current_temp):
+                        continue
+                    
+                    # 신뢰 구간 밖이면 경보 픽셀
+                    if current_temp < confidence_lower or current_temp > confidence_upper:
+                        alert_pixel = {
+                            'x': x + px,  # 전체 이미지 내 절대 좌표
+                            'y': y + py,  # 전체 이미지 내 절대 좌표
+                            'relative_x': px,  # ROI 내 상대 좌표
+                            'relative_y': py,  # ROI 내 상대 좌표
+                            'temperature': float(current_temp),
+                            'baseline_line': baseline_line,
+                            'confidence_lower': confidence_lower,
+                            'confidence_upper': confidence_upper,
+                            'temperature_diff_lower': current_temp - confidence_lower,
+                            'temperature_diff_upper': current_temp - confidence_upper
+                        }
+                        alert_pixels.append(alert_pixel)
+            
+            logger.info(f"시나리오2: ROI 영역 {zone_info.get('zone_type', 'unknown')}에서 "
+                       f"신뢰 구간을 벗어난 픽셀 {len(alert_pixels)}개 감지 "
+                       f"(신뢰구간: {confidence_lower:.2f}°C ~ {confidence_upper:.2f}°C)")
+            
+            return alert_pixels
+            
+        except Exception as e:
+            logger.error(f"시나리오2: ROI 픽셀 검사 오류: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
+
     def detect_leakage_concern_areas(self, temp_matrix, distribution_info, threshold_diff=5.0):
         """
         시나리오3: 누수발생 우려지역 감지
@@ -1530,36 +1948,29 @@ class VideoAlertChecker:
 
     def scenario2_judge(self):
         """
-        시나리오3: 1시간 평균온도 기반 정규분포 분석으로 누수발생 우려지역 감지
-        - 1시간 평균온도 데이터 수집 (최근 24시간)
-        - 정규분포 분석 및 기준라인 설정
-        - C2M distance 계산 (Center to Margin)
-        - 누수발생 우려지역 감지 (5℃ 이상 차이)
+        시나리오2: ROI 영역별 신뢰 구간 기반 픽셀별 경보
+        - 관리자가 설정한 ROI 영역별로 기준선 설정
+        - ROI 영역의 1시간(1장) 평균 온도값으로 신뢰 구간 계산
+        - ROI 영역 내 픽셀별로 신뢰 구간과 대조
+        - 기준을 벗어난 픽셀에 경보 표시
         """
         try:
-            logger.info("시나리오3 판단 시작 (1시간 평균온도 기반 정규분포 분석)")
+            logger.info("시나리오2 판단 시작 (ROI 영역별 신뢰 구간 기반 픽셀별 경보)")
             
             # 강제 종료 체크
             if self.force_exit:
-                logger.info("강제 종료 요청됨, 시나리오3 중단")
+                logger.info("강제 종료 요청됨, 시나리오2 중단")
                 return False
             
-            # 1단계: 1시간 평균온도 데이터 수집 (최근 24시간)
-            hourly_temps = self.collect_hourly_average_temperatures(hours=24)
-            if not hourly_temps:
-                logger.warning("시나리오3: 1시간 평균온도 데이터가 없습니다")
+            # zone_list가 없으면 종료
+            if not self.zone_list:
+                logger.warning("시나리오2: zone_list가 없어 처리를 수행할 수 없습니다")
                 return False
             
-            # 2단계: 정규분포 분석 및 기준라인 설정
-            distribution_info = self.analyze_normal_distribution(hourly_temps)
-            if not distribution_info:
-                logger.error("시나리오3: 정규분포 분석 실패")
-                return False
-            
-            # 3단계: 현재 파노라마 데이터에서 온도 매트릭스 생성
+            # 현재 파노라마 데이터에서 온도 매트릭스 생성 (모든 ROI에 공통 사용)
             panorama_data_record = self.get_latest_temperature_data()
             if not panorama_data_record:
-                logger.warning("시나리오3: 현재 파노라마 데이터가 없습니다")
+                logger.warning("시나리오2: 현재 파노라마 데이터가 없습니다")
                 return False
             
             # 현재 스냅샷 데이터 ID를 인스턴스 변수로 저장
@@ -1568,82 +1979,191 @@ class VideoAlertChecker:
             # 파노라마 데이터에서 온도 데이터 추출
             temperature_data = self.extract_panorama_temperature_data(panorama_data_record['panoramaData'])
             if not temperature_data:
-                logger.error("시나리오3: 파노라마 온도 데이터 추출 실패")
+                logger.error("시나리오2: 파노라마 온도 데이터 추출 실패")
                 return False
             
             # 온도 매트릭스 생성 (1920x480 파노라마 크기)
             temp_matrix = self.create_temperature_matrix(temperature_data)
             if temp_matrix is None:
-                logger.error("시나리오3: 온도 매트릭스 생성 실패")
+                logger.error("시나리오2: 온도 매트릭스 생성 실패")
                 return False
             
-            # 4단계: 누수발생 우려지역 감지 (C2M distance 기반)
-            concern_areas = self.detect_leakage_concern_areas(temp_matrix, distribution_info, threshold_diff=5.0)
+            # 스냅샷을 한 번만 캡처 (모든 경보에서 재사용)
+            panorama_snapshot = None
+            visible_stream_snapshot = None
             
-            # 5단계: 경보 생성
-            alert_detected = False
-            if concern_areas:
-                logger.info(f"시나리오3: 누수발생 우려지역 {len(concern_areas)}개 감지")
-                
-                # 누수발생 우려지역별로 경보 생성
-                for i, concern_area in enumerate(concern_areas):
-                    # 경보 레벨 결정 (온도차에 따라)
-                    temp_diff = abs(concern_area['temperature_diff'])
-                    if temp_diff >= 10.0:
-                        alert_level = 3  # 최고 레벨
-                    elif temp_diff >= 7.5:
-                        alert_level = 2  # 높은 레벨
-                    elif temp_diff >= 5.0:
-                        alert_level = 1  # 기본 레벨
-                    else:
-                        alert_level = 0  # 낮은 레벨
-                    
-                    # 경보 생성
-                    self.create_scenario3_alert(concern_area, 'S003', temp_diff, alert_level, distribution_info)
-                    alert_detected = True
-                    
-                    # 로그 출력 (처음 5개만)
-                    if i < 5:
-                        logger.info(f"누수발생 우려지역 {i+1}: 좌표=({concern_area['x']},{concern_area['y']}), "
-                                  f"온도={concern_area['temperature']:.1f}°C, "
-                                  f"C2M거리={concern_area['c2m_distance']:.1f}°C, "
-                                  f"레벨={alert_level}")
+            # 파노라마 이미지 추출
+            panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
+            if panorama_snapshot:
+                logger.info("시나리오2: 파노라마 이미지 추출 성공")
             else:
-                logger.info("시나리오3: 누수발생 우려지역이 감지되지 않았습니다")
+                logger.warning("시나리오2: 파노라마 이미지 추출 실패")
+            
+            # 실화상 카메라 스트림 스냅샷 이미지 캡처 (videoType=2) - 한 번만
+            visible_stream_snapshot = self.capture_visible_camera_snapshot()
+            if visible_stream_snapshot:
+                logger.info("시나리오2: 실화상 카메라 스냅샷 캡처 완료")
+            else:
+                logger.warning("시나리오2: 실화상 카메라 스냅샷 캡처 실패")
+            
+            # 각 ROI 영역별로 처리
+            alert_detected = False
+            for zone_info in self.zone_list:
+                # 강제 종료 체크
+                if self.force_exit:
+                    logger.info("강제 종료 요청됨, 시나리오2 중단")
+                    return False
+                
+                try:
+                    # zone_segment_json에서 실제 ROI 좌표 추출
+                    if 'left' in zone_info and 'top' in zone_info and 'right' in zone_info and 'bottom' in zone_info:
+                        actual_rect = [
+                            zone_info['left'],
+                            zone_info['top'],
+                            zone_info['right'] - zone_info['left'],
+                            zone_info['bottom'] - zone_info['top']
+                        ]
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - zone_segment_json 좌표 사용: {actual_rect}")
+                    else:
+                        actual_rect = zone_info.get('rect', [0, 0, 320, 240])
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - 기존 rect 좌표 사용: {actual_rect}")
+                    
+                    # zone_info에 actual_rect 추가
+                    zone_info_copy = zone_info.copy()
+                    zone_info_copy['actual_rect'] = actual_rect
+                    
+                    # 1단계: ROI 영역별로 1시간(1장) 평균 온도 데이터 수집
+                    roi_hourly_temps = self.collect_roi_hourly_average_temperatures(zone_info_copy, hours=1)
+                    if not roi_hourly_temps:
+                        logger.warning(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - ROI 평균 온도 데이터 수집 실패")
+                        continue
+                    
+                    # 2단계: ROI 영역별 신뢰 구간 계산
+                    roi_distribution = self.analyze_roi_normal_distribution(roi_hourly_temps)
+                    if not roi_distribution:
+                        logger.warning(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - ROI 신뢰 구간 계산 실패")
+                        continue
+                    
+                    # 3단계: ROI 영역 내 픽셀별로 신뢰 구간과 대조
+                    alert_pixels = self.detect_roi_alert_pixels(temp_matrix, zone_info_copy, roi_distribution)
+                    
+                    # 4단계: 벗어난 픽셀이 있으면 경보 생성
+                    if alert_pixels:
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')}에서 "
+                                   f"신뢰 구간을 벗어난 픽셀 {len(alert_pixels)}개 감지")
+                        
+                        # 경보 레벨 결정 (벗어난 픽셀 수와 온도 차이에 따라)
+                        max_diff = max(
+                            max(abs(p['temperature_diff_lower']), abs(p['temperature_diff_upper']))
+                            for p in alert_pixels
+                        )
+                        
+                        if max_diff >= 10.0:
+                            alert_level = 3  # 최고 레벨
+                        elif max_diff >= 7.5:
+                            alert_level = 2  # 높은 레벨
+                        elif max_diff >= 5.0:
+                            alert_level = 1  # 기본 레벨
+                        else:
+                            alert_level = 1  # 기본 레벨 (신뢰 구간을 벗어났으므로)
+                        
+                        # 전체 ROI 영역의 온도 통계 계산 (temperature_stats용)
+                        roi_temperature_stats = None
+                        try:
+                            # ROI 영역 추출
+                            if 'actual_rect' in zone_info_copy:
+                                x, y, w, h = zone_info_copy['actual_rect']
+                            else:
+                                x, y, w, h = zone_info_copy.get('rect', [0, 0, 640, 240])
+                            
+                            # 경계 체크
+                            if x + w <= temp_matrix.shape[1] and y + h <= temp_matrix.shape[0]:
+                                roi_temp = temp_matrix[y:y+h, x:x+w]
+                                # NaN 값 제거하고 유효한 온도 데이터만 추출
+                                valid_temps = roi_temp[~np.isnan(roi_temp)]
+                                
+                                if len(valid_temps) > 0:
+                                    roi_temperature_stats = {
+                                        'min': float(np.min(valid_temps)),
+                                        'max': float(np.max(valid_temps)),
+                                        'average': float(np.mean(valid_temps)),
+                                        'difference': float(np.max(valid_temps) - np.min(valid_temps)),
+                                        'total_pixels': len(valid_temps)
+                                    }
+                                    logger.info(f"시나리오2: ROI 전체 온도 통계 계산 완료 - "
+                                              f"min={roi_temperature_stats['min']:.1f}°C, "
+                                              f"max={roi_temperature_stats['max']:.1f}°C, "
+                                              f"avg={roi_temperature_stats['average']:.1f}°C")
+                        except Exception as e:
+                            logger.error(f"시나리오2: ROI 온도 통계 계산 오류: {str(e)}")
+                        
+                        # 경보 생성
+                        self.create_scenario2_alert(
+                            panorama_data_record['id'],
+                            zone_info_copy,
+                            'S002',
+                            len(alert_pixels),
+                            alert_level,
+                            alert_pixels,
+                            roi_distribution,
+                            panorama_snapshot,  # 재사용할 파노라마 스냅샷
+                            visible_stream_snapshot,  # 재사용할 실화상 스트림 스냅샷
+                            roi_temperature_stats  # 전체 ROI 온도 통계 추가
+                        )
+                        alert_detected = True
+                        
+                        # 로그 출력 (처음 5개 픽셀만)
+                        for i, pixel in enumerate(alert_pixels[:5]):
+                            logger.info(f"시나리오2 경보 픽셀 {i+1}: 좌표=({pixel['x']},{pixel['y']}), "
+                                      f"온도={pixel['temperature']:.1f}°C, "
+                                      f"신뢰구간=[{pixel['confidence_lower']:.1f}, {pixel['confidence_upper']:.1f}]°C")
+                    else:
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')}에서 "
+                                   f"신뢰 구간을 벗어난 픽셀이 없습니다")
+                        
+                except Exception as e:
+                    logger.error(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} 처리 오류: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
+            
+            if not alert_detected:
+                logger.info("시나리오2: 모든 ROI 영역에서 경보 조건을 만족하지 않습니다")
             
             return alert_detected
             
         except Exception as e:
-            logger.error(f"시나리오3 판단 오류: {str(e)}")
+            logger.error(f"시나리오2 판단 오류: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
-    def create_scenario3_alert(self, concern_area, alert_type, threshold_value, alert_level=1, distribution_info=None):
+    def create_scenario2_alert(self, video_data_id, zone_info, alert_type, alert_pixel_count, alert_level=1, alert_pixels=None, roi_distribution=None, panorama_snapshot=None, visible_stream_snapshot=None, roi_temperature_stats=None):
         """
-        시나리오3 경보 생성 및 DB 저장 (누수발생 우려지역)
+        시나리오2 경보 생성 및 DB 저장 (ROI 영역별 신뢰 구간 벗어난 픽셀)
+        panorama_snapshot과 visible_stream_snapshot이 제공되면 재사용, 없으면 새로 캡처
         """
         try:
             cursor = self.get_db_cursor()
             if not cursor:
                 return False
             
-            # 파노라마 데이터 조회 및 이미지 추출
-            panorama_data_record = self.get_latest_temperature_data()
-            panorama_snapshot = None
-            if panorama_data_record:
-                logger.info(f"파노라마 데이터 조회 성공: ID={panorama_data_record.get('id')}, 생성일={panorama_data_record.get('create_date')}")
-                panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
-                if panorama_snapshot:
-                    logger.info("파노라마 이미지 추출 성공")
+            # 스냅샷이 제공되지 않은 경우에만 캡처 (재사용 우선)
+            if panorama_snapshot is None:
+                panorama_data_record = self.get_latest_temperature_data()
+                if panorama_data_record:
+                    logger.info(f"시나리오2: 파노라마 데이터 조회 및 이미지 추출 (새로 캡처)")
+                    panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
                 else:
-                    logger.warning("파노라마 이미지 추출 실패")
+                    logger.warning("시나리오2: 파노라마 데이터 조회 실패 - 데이터가 없습니다")
             else:
-                logger.warning("파노라마 데이터 조회 실패 - 데이터가 없습니다")
+                logger.info("시나리오2: 파노라마 스냅샷 재사용")
             
-            # 스트림 스냅샷 이미지 캡처
-            stream_snapshots = self.capture_video_snapshots()
+            if visible_stream_snapshot is None:
+                logger.info("시나리오2: 실화상 카메라 스트림 스냅샷 캡처 (새로 캡처)")
+                visible_stream_snapshot = self.capture_visible_camera_snapshot()
+            else:
+                logger.info("시나리오2: 실화상 스트림 스냅샷 재사용")
             
-            # 모든 스냅샷 이미지 통합
+            # 스냅샷 이미지 구성 (파노라마 1개 + 실화상 스트림 1개)
             snapshot_images = []
             
             # 파노라마 이미지 추가
@@ -1653,38 +2173,122 @@ class VideoAlertChecker:
             else:
                 logger.warning("파노라마 이미지가 없어 snapshot_images에 추가되지 않음")
             
-            # 스트림 캡처 이미지들 추가
-            if stream_snapshots:
-                snapshot_images.extend(stream_snapshots)
-                logger.info(f"{len(stream_snapshots)}개의 스트림 이미지가 snapshot_images에 추가됨")
+            # 실화상 스트림 이미지 추가 (1개만)
+            if visible_stream_snapshot:
+                snapshot_images.append(visible_stream_snapshot)
+                logger.info("실화상 스트림 이미지가 snapshot_images에 추가됨")
             else:
-                logger.warning("스트림 이미지가 없음")
+                logger.warning("실화상 스트림 이미지가 없음")
             
-            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 스트림: {len(stream_snapshots)}개)")
+            logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 실화상 스트림: {1 if visible_stream_snapshot else 0}개)")
             
-            # 디버깅: snapshot_images 내용 확인
-            for i, img in enumerate(snapshot_images):
-                img_type = img.get('image_type', 'stream')
-                logger.info(f"스냅샷 {i+1}: 타입={img_type}, 파일명={img.get('filename', 'N/A')}")
+            # ROI 폴리곤 생성
+            if 'actual_rect' in zone_info:
+                main_rect = zone_info['actual_rect']
+                main_polygon = self.create_roi_polygon(main_rect)
+            else:
+                main_rect = zone_info.get('rect', [0, 0, 640, 240])
+                main_polygon = self.create_roi_polygon(main_rect)
             
-            # 누수발생 우려지역 정보 구성
-            concern_info = {
-                'scenario': 'scenario3',
+            # alert_pixels가 있는 경우 각 픽셀의 폴리곤 정보 추가 (픽셀 단위로는 너무 작으므로 제외)
+            # 대신 ROI 영역 전체와 벗어난 픽셀 목록만 저장
+            
+            # 경보 정보 구성
+            alert_info = {
+                'scenario': 'scenario2',
                 'alert_type': alert_type,
-                'threshold_value': threshold_value,
+                'alert_pixel_count': alert_pixel_count,
                 'alert_level': alert_level,
-                'concern_area': {
-                    'x': concern_area['x'],
-                    'y': concern_area['y'],
-                    'temperature': concern_area['temperature'],
-                    'c2m_distance': concern_area['c2m_distance'],
-                    'baseline_line': concern_area['baseline_line'],
-                    'temperature_diff': concern_area['temperature_diff']
-                },
-                'distribution_info': distribution_info,
+                'zone_type': zone_info.get('zone_type', 'unknown'),
+                'rect': main_rect,
                 'detection_time': datetime.now().isoformat(),
-                'leakage_detection': True
+                'roi_polygon': {
+                    'main_roi': {
+                        'zone_type': zone_info.get('zone_type', 'unknown'),
+                        'rect': main_rect,
+                        'polygon': main_polygon
+                    },
+                    'alert_pixels': alert_pixels if alert_pixels else [],
+                    'total_alert_pixels': len(alert_pixels) if alert_pixels else 0
+                },
+                'roi_distribution': roi_distribution if roi_distribution else None
             }
+            
+            # 벗어난 픽셀 통계 정보 추가
+            if alert_pixels and len(alert_pixels) > 0:
+                pixel_temps = [p['temperature'] for p in alert_pixels]
+                alert_info['alert_pixel_stats'] = {
+                    'min_temp': min(pixel_temps),
+                    'max_temp': max(pixel_temps),
+                    'avg_temp': np.mean(pixel_temps),
+                    'total_pixels': len(alert_pixels)
+                }
+                
+                # 신뢰 구간 밖 범위 확인
+                below_lower = [p for p in alert_pixels if p['temperature'] < p['confidence_lower']]
+                above_upper = [p for p in alert_pixels if p['temperature'] > p['confidence_upper']]
+                
+                alert_info['alert_pixel_stats']['below_lower_count'] = len(below_lower)
+                alert_info['alert_pixel_stats']['above_upper_count'] = len(above_upper)
+                
+                # alert_pixels를 기반으로 경계 박스(bounding box) 생성 (웹 화면 표시용)
+                try:
+                    pixel_x_coords = [p['x'] for p in alert_pixels]
+                    pixel_y_coords = [p['y'] for p in alert_pixels]
+                    
+                    min_x = min(pixel_x_coords)
+                    max_x = max(pixel_x_coords)
+                    min_y = min(pixel_y_coords)
+                    max_y = max(pixel_y_coords)
+                    
+                    # 경계 박스 정보 저장 (웹 화면 표시용)
+                    alert_info['alert_region'] = {
+                        'min_x': min_x,
+                        'max_x': max_x,
+                        'min_y': min_y,
+                        'max_y': max_y,
+                        'start_x': min_x,
+                        'end_x': max_x,
+                        'start_y': min_y,
+                        'end_y': max_y,
+                        'width': max_x - min_x,
+                        'height': max_y - min_y
+                    }
+                    
+                    logger.info(f"시나리오2: 경계 박스 생성 완료 - "
+                              f"({min_x}, {min_y}) ~ ({max_x}, {max_y}), "
+                              f"크기: {max_x - min_x}x{max_y - min_y}")
+                except Exception as e:
+                    logger.error(f"시나리오2: 경계 박스 생성 오류: {str(e)}")
+                    # fallback: ROI 전체 영역 사용
+                    alert_info['alert_region'] = {
+                        'start_x': main_rect[0],
+                        'end_x': main_rect[0] + main_rect[2],
+                        'start_y': main_rect[1],
+                        'end_y': main_rect[1] + main_rect[3],
+                        'width': main_rect[2],
+                        'height': main_rect[3]
+                    }
+            else:
+                # alert_pixels가 없는 경우 ROI 전체 영역을 경계 박스로 사용
+                alert_info['alert_region'] = {
+                    'start_x': main_rect[0],
+                    'end_x': main_rect[0] + main_rect[2],
+                    'start_y': main_rect[1],
+                    'end_y': main_rect[1] + main_rect[3],
+                    'width': main_rect[2],
+                    'height': main_rect[3]
+                }
+            
+            # 전체 ROI 영역의 온도 통계 추가 (시나리오1과 동일한 구조로 저장)
+            if roi_temperature_stats:
+                alert_info['temperature_stats'] = roi_temperature_stats
+                logger.info(f"시나리오2: temperature_stats 저장 완료 - "
+                          f"min={roi_temperature_stats['min']:.1f}°C, "
+                          f"max={roi_temperature_stats['max']:.1f}°C, "
+                          f"average={roi_temperature_stats['average']:.1f}°C")
+            else:
+                logger.warning("시나리오2: ROI 온도 통계가 없어 temperature_stats를 저장하지 않습니다")
             
             # DB에 경보 저장
             query = """
@@ -1702,29 +2306,28 @@ class VideoAlertChecker:
                 alert_type,  # alert_type
                 alert_level,  # alert_level (0~3)
                 'P001',  # alert_status
-                json.dumps(concern_info, ensure_ascii=False),  # alert_info_json
-                0,  # fk_detect_zone_id (시나리오3는 전체 영역 분석)
+                json.dumps(alert_info, ensure_ascii=False),  # alert_info_json
+                int(zone_info.get('zone_type', 1)),  # fk_detect_zone_id
                 0,  # fk_process_user_id
                 now,  # create_date
                 now,  # update_date
-                self.current_snapshot_data_id,  # fk_video_receive_data_id
+                video_data_id,  # fk_video_receive_data_id
                 json.dumps(snapshot_images, ensure_ascii=False) if snapshot_images else None  # snapshotImages
             )
             
             cursor.execute(query, values)
-            logger.info(f"시나리오3 경보 생성 완료: 좌표=({concern_area['x']},{concern_area['y']}), "
-                       f"온도={concern_area['temperature']:.1f}°C, C2M거리={concern_area['c2m_distance']:.1f}°C, "
-                       f"레벨={alert_level}")
+            logger.info(f"시나리오2 경보 생성 완료: Zone {zone_info.get('zone_type', 'unknown')}, "
+                       f"벗어난 픽셀 {alert_pixel_count}개, 레벨={alert_level}")
             
             return True
             
         except Exception as e:
-            logger.error(f"시나리오3 경보 생성 오류: {str(e)}")
+            logger.error(f"시나리오2 경보 생성 오류: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
         finally:
             if cursor:
                 cursor.close()
-
 
     def run(self):
         logger.info("VideoAlertChecker 시작...")
