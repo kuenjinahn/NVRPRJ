@@ -528,7 +528,7 @@ config = load_config()
 API_BASE_URL = config.get('API', 'base_url', fallback='http://localhost:9001')
 
 # 글로벌 상수 설정
-PANORAMA_INTERVAL_SECONDS = 3600  # 1시간 = 3600초
+PANORAMA_INTERVAL_SECONDS = 600  # 1시간 = 3600초
 PANORAMA_INTERVAL_MINUTES = PANORAMA_INTERVAL_SECONDS // 60  # 60분
 
 # PTZ 프리셋 이동 여부 설정
