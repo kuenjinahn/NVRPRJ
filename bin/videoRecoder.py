@@ -859,13 +859,12 @@ class RTSPRecorder:
                 cmd += ["-stimeout", str(self.cfg.timeout_value_us * 1_000_000)]
                 print(f"[Recorder-{self.cfg.camera_name}] Added stimeout option: -stimeout {self.cfg.timeout_value_us * 1_000_000}")
 
+        # 입력 옵션 (RTSP 스트림 처리용)
         cmd += [
             "-analyzeduration", self.cfg.analyzeduration,
             "-probesize", self.cfg.probesize,
-            # DTS 문제 해결을 위한 안전한 옵션들
+            # 입력 스트림 처리 옵션 (RTSP 스트림의 타임스탬프 문제 해결)
             "-fflags", "+genpts+igndts+discardcorrupt",  # 타임스탬프 생성 + 손상된 DTS 무시 + 손상된 프레임 제거
-            "-avoid_negative_ts", "make_zero",  # 음수 타임스탬프 방지
-            "-max_interleave_delta", "0",  # 인터리브 델타 최대값 제한
             "-i", self.cfg.rtsp_url,
             "-map", "0",
         ]
@@ -880,15 +879,14 @@ class RTSPRecorder:
                 "-force_key_frames", f"expr:gte(t,n_forced*{gop})",
             ]
         else:
-            # DTS 문제 해결을 위한 안전한 옵션 사용
+            # 스트림 복사 모드
             cmd += [
                 "-c:v", "copy",
-                "-avoid_negative_ts", "make_zero",
-                "-fflags", "+genpts+igndts",  # 타임스탬프 생성 + 손상된 DTS 무시
             ]
 
+        # 출력 옵션 (세그먼트 파일 생성용)
         cmd += [
-            "-an",
+            "-an",  # 오디오 제거
             "-f", "segment",
             "-segment_time", str(SPLIT_SECONDS),  # 문자열로 변환
             "-reset_timestamps", "1",
@@ -898,7 +896,7 @@ class RTSPRecorder:
             "-segment_start_number", "0",  # 세그먼트 번호 시작
             "-segment_list_size", "0",  # 세그먼트 리스트 파일 생성 안함
             "-segment_list_flags", "live",  # 라이브 스트리밍용 플래그
-            # DTS 문제 해결을 위한 안전한 옵션들
+            # 출력 파일 처리 옵션 (세그먼트 파일의 타임스탬프 문제 해결)
             "-fflags", "+genpts+igndts+discardcorrupt",  # 타임스탬프 생성 + 손상된 DTS 무시 + 손상된 프레임 제거
             "-avoid_negative_ts", "make_zero",  # 음수 타임스탬프 방지
             "-max_interleave_delta", "0",  # 인터리브 델타 최대값 제한
