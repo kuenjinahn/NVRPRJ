@@ -1172,8 +1172,13 @@ class MultiCameraRecorder:
                                             print(f"No valid protocol found in URL: {rtsp_url}")
                                             continue
                             
-                            # URL 정리 (앞뒤 공백 제거)
+                            # URL 정리 (앞뒤 공백 제거 및 끝에 붙은 점 제거)
                             rtsp_url = rtsp_url.strip()
+                            # URL 끝에 붙은 점(.) 제거 (DB에서 잘못 저장된 경우 대비)
+                            original_url = rtsp_url
+                            if rtsp_url.endswith('.'):
+                                rtsp_url = rtsp_url.rstrip('.')
+                                print(f"[ConfigLoader] ⚠️ URL 끝의 점(.) 제거: '{original_url}' -> '{rtsp_url}'")
                             
                             # 순차적인 카메라 이름 생성 (camera1, camera2, ...)
                             camera_name = self._generate_camera_name(camera_index)
