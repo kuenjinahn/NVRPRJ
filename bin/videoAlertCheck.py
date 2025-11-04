@@ -235,14 +235,17 @@ class VideoAlertChecker:
                         zone_type = row['zone_type']
                         
                         if isinstance(segment_data, list):
-                            # 리스트인 경우 각 항목에 zone_type 추가
+                            # 리스트인 경우 각 항목에 zone_type 추가하고 좌표 변환
                             for segment in segment_data:
                                 if isinstance(segment, dict):
                                     segment['zone_type'] = zone_type
+                                    # start_point_x/y, end_point_x/y 형식을 left/top/right/bottom으로 변환
+                                    segment = self._convert_roi_coordinates(segment)
                                 zone_segments.append(segment)
                         elif isinstance(segment_data, dict):
-                            # 딕셔너리인 경우 zone_type 추가
+                            # 딕셔너리인 경우 zone_type 추가하고 좌표 변환
                             segment_data['zone_type'] = zone_type
+                            segment_data = self._convert_roi_coordinates(segment_data)
                             zone_segments.append(segment_data)
                         else:
                             # 기타 타입인 경우 zone_type과 함께 딕셔너리로 변환
@@ -264,6 +267,70 @@ class VideoAlertChecker:
         finally:
             if cursor:
                 cursor.close()
+
+    def _convert_roi_coordinates(self, segment):
+        """
+        ROI 좌표를 표준 형식(left, top, right, bottom)으로 변환
+        start_point_x/y, end_point_x/y 형식을 지원
+        """
+        try:
+            if not isinstance(segment, dict):
+                return segment
+            
+            # 이미 left, top, right, bottom 형식이 있으면 좌표를 검증하고 반환
+            if all(key in segment for key in ['left', 'top', 'right', 'bottom']):
+                left = int(segment['left'])
+                top = int(segment['top'])
+                right = int(segment['right'])
+                bottom = int(segment['bottom'])
+                
+                # 좌표 검증: left < right, top < bottom
+                if left >= right or top >= bottom:
+                    logger.warning(f"ROI 좌표 검증 실패: left={left} >= right={right} 또는 top={top} >= bottom={bottom}, 원본 segment: {segment}")
+                    # 좌표를 교정 (더 작은 값을 left/top으로, 더 큰 값을 right/bottom으로)
+                    if left >= right:
+                        left, right = min(left, right), max(left, right)
+                    if top >= bottom:
+                        top, bottom = min(top, bottom), max(top, bottom)
+                    segment['left'] = left
+                    segment['top'] = top
+                    segment['right'] = right
+                    segment['bottom'] = bottom
+                    logger.info(f"ROI 좌표 교정: left={left}, top={top}, right={right}, bottom={bottom}")
+                
+                logger.info(f"ROI 좌표 확인: left={left}, top={top}, right={right}, bottom={bottom} (width={right-left}, height={bottom-top})")
+                return segment
+            
+            # start_point_x/y, end_point_x/y 형식인 경우 변환
+            if all(key in segment for key in ['start_point_x', 'start_point_y', 'end_point_x', 'end_point_y']):
+                start_x = int(segment['start_point_x'])
+                start_y = int(segment['start_point_y'])
+                end_x = int(segment['end_point_x'])
+                end_y = int(segment['end_point_y'])
+                
+                # left는 작은 x 값, right는 큰 x 값
+                # top은 작은 y 값, bottom은 큰 y 값
+                left = min(start_x, end_x)
+                right = max(start_x, end_x)
+                top = min(start_y, end_y)
+                bottom = max(start_y, end_y)
+                
+                segment['left'] = left
+                segment['top'] = top
+                segment['right'] = right
+                segment['bottom'] = bottom
+                
+                logger.info(f"ROI 좌표 변환: start_point({start_x}, {start_y}), end_point({end_x}, {end_y}) -> left={left}, top={top}, right={right}, bottom={bottom}")
+                
+                return segment
+            
+            # 좌표 정보가 없는 경우
+            logger.warning(f"ROI 좌표 정보가 없습니다: {segment}")
+            return segment
+            
+        except Exception as e:
+            logger.error(f"ROI 좌표 변환 오류: {str(e)}, segment: {segment}")
+            return segment
 
     def get_camera_info_list(self):
         """
@@ -610,14 +677,24 @@ class VideoAlertChecker:
                     rect = zone_info['rect']
                 elif all(key in zone_info for key in ['left', 'right', 'top', 'bottom']):
                     # left, right, top, bottom 형식: [left, top, width, height]
-                    left = zone_info['left']
-                    right = zone_info['right']
-                    top = zone_info['top']
-                    bottom = zone_info['bottom']
+                    left = int(zone_info['left'])
+                    right = int(zone_info['right'])
+                    top = int(zone_info['top'])
+                    bottom = int(zone_info['bottom'])
+                    
+                    # 좌표 검증
+                    if left >= right or top >= bottom:
+                        logger.warning(f"extract_roi_temperature_data: 좌표 검증 실패 - left={left} >= right={right} 또는 top={top} >= bottom={bottom}")
+                        if left >= right:
+                            left, right = min(left, right), max(left, right)
+                        if top >= bottom:
+                            top, bottom = min(top, bottom), max(top, bottom)
+                    
                     width = right - left
                     height = bottom - top
                     rect = [left, top, width, height]
-                    logger.info(f"zone_info 좌표 변환: left={left}, top={top}, right={right}, bottom={bottom} -> rect=[{left}, {top}, {width}, {height}]")
+                    logger.info(f"extract_roi_temperature_data: 좌표 변환 - left={left}, top={top}, right={right}, bottom={bottom} -> rect=[{left}, {top}, {width}, {height}]")
+                    logger.info(f"extract_roi_temperature_data: 실제 영역 - x: {left}~{right} ({width}px), y: {top}~{bottom} ({height}px)")
                 else:
                     logger.warning(f"유효하지 않은 zone_info 형식: {zone_info}")
                     return None
@@ -813,6 +890,287 @@ class VideoAlertChecker:
             
         except Exception as e:
             logger.error(f"ROI_POLYGON 구조 분석 오류: {str(e)}")
+
+    def draw_roi_on_panorama(self, panorama_data_json, zone_info, output_filename=None):
+        """
+        파노라마 이미지에 ROI 박스 영역을 그려서 저장
+        """
+        try:
+            if not panorama_data_json:
+                logger.warning("파노라마 데이터가 없어 ROI를 그릴 수 없습니다")
+                return None
+            
+            # panoramaData JSON 파싱
+            panorama_data = json.loads(panorama_data_json)
+            
+            # image base64 데이터 추출
+            image_base64 = panorama_data.get('image')
+            if not image_base64:
+                logger.error("파노라마 데이터에 image 필드가 없습니다")
+                return None
+            
+            # base64 이미지를 디코딩하여 OpenCV로 로드
+            image_data = base64.b64decode(image_base64)
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                logger.error("파노라마 이미지 디코딩 실패")
+                return None
+            
+            # 파노라마 이미지 크기를 1920x480으로 강제 리사이즈
+            height, width = image.shape[:2]
+            target_width = 1920
+            target_height = 480
+            if width != target_width or height != target_height:
+                logger.info(f"draw_roi_on_panorama: 파노라마 이미지 크기 조정: {width}x{height} -> {target_width}x{target_height}")
+                image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+                logger.info(f"draw_roi_on_panorama: 파노라마 이미지 크기 조정 완료: {target_width}x{target_height}")
+            else:
+                logger.info(f"draw_roi_on_panorama: 파노라마 이미지 크기 확인: {width}x{height} (정상)")
+            
+            # ROI 좌표 추출 (우선순위: zone_segment_coords > left/top/right/bottom > actual_rect)
+            left = None
+            top = None
+            right = None
+            bottom = None
+            
+            # 1순위: zone_segment_coords (DB에서 가져온 원본 좌표 - 가장 정확함)
+            if 'zone_segment_coords' in zone_info:
+                coords = zone_info['zone_segment_coords']
+                left = int(coords.get('left', 0))
+                top = int(coords.get('top', 0))
+                right = int(coords.get('right', 0))
+                bottom = int(coords.get('bottom', 0))
+                logger.info(f"draw_roi_on_panorama: zone_segment_coords 사용 - left={left}, top={top}, right={right}, bottom={bottom}")
+            # 2순위: left, top, right, bottom 직접
+            elif all(key in zone_info for key in ['left', 'top', 'right', 'bottom']):
+                left = int(zone_info['left'])
+                top = int(zone_info['top'])
+                right = int(zone_info['right'])
+                bottom = int(zone_info['bottom'])
+                logger.info(f"draw_roi_on_panorama: left/top/right/bottom 사용 - left={left}, top={top}, right={right}, bottom={bottom}")
+            # 3순위: actual_rect (변환된 좌표)
+            elif 'actual_rect' in zone_info:
+                x, y, w, h = zone_info['actual_rect']
+                left = x
+                top = y
+                right = x + w
+                bottom = y + h
+                logger.info(f"draw_roi_on_panorama: actual_rect 사용 - left={left}, top={top}, right={right}, bottom={bottom} (원본: x={x}, y={y}, w={w}, h={h})")
+            else:
+                logger.error(f"ROI 좌표 정보를 찾을 수 없습니다. zone_info 키: {list(zone_info.keys())}")
+                return None
+            
+            # 좌표 검증
+            if left is None or top is None or right is None or bottom is None:
+                logger.error(f"ROI 좌표가 None입니다: left={left}, top={top}, right={right}, bottom={bottom}")
+                return None
+                
+            if left >= right or top >= bottom:
+                logger.warning(f"ROI 좌표 검증 실패: left={left}, top={top}, right={right}, bottom={bottom}")
+                return None
+            
+            logger.info(f"최종 ROI 좌표: left={left}, top={top}, right={right}, bottom={bottom} (width={right-left}, height={bottom-top})")
+            
+            # ROI 박스 그리기 (사각형)
+            # BGR 색상: 주황색 (0, 165, 255)
+            color = (0, 165, 255)  # 주황색
+            thickness = 3  # 선 두께
+            
+            # 메인 ROI 박스 그리기
+            cv2.rectangle(image, (left, top), (right, bottom), color, thickness)
+            
+            # ROI 영역에 텍스트 추가
+            zone_type = zone_info.get('zone_type', 'unknown')
+            label = f"ROI-{zone_type}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.8
+            text_color = (0, 165, 255)  # 주황색
+            text_thickness = 2
+            
+            # 텍스트 배경 (반투명)
+            (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, text_thickness)
+            cv2.rectangle(image, (left, top - text_height - 10), (left + text_width, top), (0, 0, 0), -1)
+            cv2.putText(image, label, (left, top - 5), font, font_scale, text_color, text_thickness)
+            
+            # 좌표 정보 텍스트 추가
+            coord_text = f"({left},{top})-({right},{bottom})"
+            (coord_width, coord_height), _ = cv2.getTextSize(coord_text, font, 0.5, 1)
+            cv2.rectangle(image, (left, bottom + 5), (left + coord_width + 10, bottom + coord_height + 15), (0, 0, 0), -1)
+            cv2.putText(image, coord_text, (left + 5, bottom + coord_height + 10), font, 0.5, (255, 255, 255), 1)
+            
+            # alert_boxes가 있으면 각 박스도 그리기
+            if isinstance(zone_info, dict) and 'roi_polygon' in zone_info:
+                roi_polygon_data = zone_info['roi_polygon']
+                if isinstance(roi_polygon_data, dict) and 'alert_boxes' in roi_polygon_data:
+                    alert_boxes = roi_polygon_data['alert_boxes']
+                    for box in alert_boxes:
+                        if 'rect' in box:
+                            box_x, box_y, box_w, box_h = box['rect']
+                            # 경보 박스는 빨간색으로 그리기
+                            cv2.rectangle(image, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 255), 2)
+            
+            # 저장할 파일명 생성
+            if output_filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                zone_type_str = zone_info.get('zone_type', 'unknown')
+                output_filename = f"panorama_roi_{zone_type_str}_{timestamp}.jpg"
+            
+            # 이미지 파일 경로 설정
+            snapshots_dir = os.path.join(os.path.dirname(__file__), 'snapshots')
+            os.makedirs(snapshots_dir, exist_ok=True)
+            
+            output_path = os.path.join(snapshots_dir, output_filename)
+            
+            # 이미지 저장
+            cv2.imwrite(output_path, image)
+            
+            logger.info(f"ROI 박스가 그려진 파노라마 이미지 저장 완료: {output_path}")
+            logger.info(f"ROI 영역: left={left}, top={top}, right={right}, bottom={bottom}")
+            
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"파노라마 이미지에 ROI 그리기 오류: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    def draw_roi_on_panorama_and_get_base64(self, panorama_data_json, zone_info):
+        """
+        파노라마 이미지에 ROI 박스 영역을 그려서 base64로 반환 (파일 저장 없음)
+        """
+        try:
+            if not panorama_data_json:
+                logger.warning("파노라마 데이터가 없어 ROI를 그릴 수 없습니다")
+                return None
+            
+            # panoramaData JSON 파싱
+            panorama_data = json.loads(panorama_data_json)
+            
+            # image base64 데이터 추출
+            image_base64 = panorama_data.get('image')
+            if not image_base64:
+                logger.error("파노라마 데이터에 image 필드가 없습니다")
+                return None
+            
+            # base64 이미지를 디코딩하여 OpenCV로 로드
+            image_data = base64.b64decode(image_base64)
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                logger.error("파노라마 이미지 디코딩 실패")
+                return None
+            
+            # 파노라마 이미지 크기를 1920x480으로 강제 리사이즈
+            height, width = image.shape[:2]
+            target_width = 1920
+            target_height = 480
+            if width != target_width or height != target_height:
+                logger.info(f"draw_roi_on_panorama_and_get_base64: 파노라마 이미지 크기 조정: {width}x{height} -> {target_width}x{target_height}")
+                image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+                logger.info(f"draw_roi_on_panorama_and_get_base64: 파노라마 이미지 크기 조정 완료: {target_width}x{target_height}")
+            else:
+                logger.info(f"draw_roi_on_panorama_and_get_base64: 파노라마 이미지 크기 확인: {width}x{height} (정상)")
+            
+            # ROI 좌표 추출 (우선순위: zone_segment_coords > left/top/right/bottom > actual_rect)
+            left = None
+            top = None
+            right = None
+            bottom = None
+            
+            # 1순위: zone_segment_coords (DB에서 가져온 원본 좌표 - 가장 정확함)
+            if 'zone_segment_coords' in zone_info:
+                coords = zone_info['zone_segment_coords']
+                left = int(coords.get('left', 0))
+                top = int(coords.get('top', 0))
+                right = int(coords.get('right', 0))
+                bottom = int(coords.get('bottom', 0))
+                logger.info(f"draw_roi_on_panorama_and_get_base64: zone_segment_coords 사용 - left={left}, top={top}, right={right}, bottom={bottom}")
+            # 2순위: left, top, right, bottom 직접
+            elif all(key in zone_info for key in ['left', 'top', 'right', 'bottom']):
+                left = int(zone_info['left'])
+                top = int(zone_info['top'])
+                right = int(zone_info['right'])
+                bottom = int(zone_info['bottom'])
+                logger.info(f"draw_roi_on_panorama_and_get_base64: left/top/right/bottom 사용 - left={left}, top={top}, right={right}, bottom={bottom}")
+            # 3순위: actual_rect (변환된 좌표)
+            elif 'actual_rect' in zone_info:
+                x, y, w, h = zone_info['actual_rect']
+                left = x
+                top = y
+                right = x + w
+                bottom = y + h
+                logger.info(f"draw_roi_on_panorama_and_get_base64: actual_rect 사용 - left={left}, top={top}, right={right}, bottom={bottom} (원본: x={x}, y={y}, w={w}, h={h})")
+            else:
+                logger.error(f"ROI 좌표 정보를 찾을 수 없습니다. zone_info 키: {list(zone_info.keys())}")
+                return None
+            
+            # 좌표 검증
+            if left is None or top is None or right is None or bottom is None:
+                logger.error(f"ROI 좌표가 None입니다: left={left}, top={top}, right={right}, bottom={bottom}")
+                return None
+                
+            if left >= right or top >= bottom:
+                logger.warning(f"ROI 좌표 검증 실패: left={left}, top={top}, right={right}, bottom={bottom}")
+                return None
+            
+            logger.info(f"최종 ROI 좌표: left={left}, top={top}, right={right}, bottom={bottom} (width={right-left}, height={bottom-top})")
+            
+            # ROI 박스 그리기 (사각형)
+            # BGR 색상: 주황색 (0, 165, 255)
+            color = (0, 165, 255)  # 주황색
+            thickness = 3  # 선 두께
+            
+            # 메인 ROI 박스 그리기
+            cv2.rectangle(image, (left, top), (right, bottom), color, thickness)
+            
+            # ROI 영역에 텍스트 추가
+            zone_type = zone_info.get('zone_type', 'unknown')
+            label = f"ROI-{zone_type}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.8
+            text_color = (0, 165, 255)  # 주황색
+            text_thickness = 2
+            
+            # 텍스트 배경 (반투명)
+            (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, text_thickness)
+            cv2.rectangle(image, (left, top - text_height - 10), (left + text_width, top), (0, 0, 0), -1)
+            cv2.putText(image, label, (left, top - 5), font, font_scale, text_color, text_thickness)
+            
+            # 좌표 정보 텍스트 추가
+            coord_text = f"({left},{top})-({right},{bottom})"
+            (coord_width, coord_height), _ = cv2.getTextSize(coord_text, font, 0.5, 1)
+            cv2.rectangle(image, (left, bottom + 5), (left + coord_width + 10, bottom + coord_height + 15), (0, 0, 0), -1)
+            cv2.putText(image, coord_text, (left + 5, bottom + coord_height + 10), font, 0.5, (255, 255, 255), 1)
+            
+            # alert_boxes가 있으면 각 박스도 그리기
+            if isinstance(zone_info, dict) and 'roi_polygon' in zone_info:
+                roi_polygon_data = zone_info['roi_polygon']
+                if isinstance(roi_polygon_data, dict) and 'alert_boxes' in roi_polygon_data:
+                    alert_boxes = roi_polygon_data['alert_boxes']
+                    for box in alert_boxes:
+                        if 'rect' in box:
+                            box_x, box_y, box_w, box_h = box['rect']
+                            # 경보 박스는 빨간색으로 그리기
+                            cv2.rectangle(image, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 255), 2)
+            
+            # 이미지를 JPEG 형식으로 인코딩하여 base64로 변환
+            _, buffer = cv2.imencode('.jpg', image)
+            roi_image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            logger.info(f"ROI 박스가 그려진 파노라마 이미지 생성 완료 (base64, 크기: {len(roi_image_base64)} 문자)")
+            logger.info(f"ROI 영역: left={left}, top={top}, right={right}, bottom={bottom}")
+            
+            return roi_image_base64
+            
+        except Exception as e:
+            logger.error(f"파노라마 이미지에 ROI 그리기 오류: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
     def extract_panorama_image(self, panorama_data_json):
         """
@@ -1268,13 +1626,24 @@ class VideoAlertChecker:
                 # zone_segment_json에서 실제 ROI 좌표 추출
                 if 'left' in zone_info and 'top' in zone_info and 'right' in zone_info and 'bottom' in zone_info:
                     # zone_segment_json의 실제 좌표 사용
+                    left = int(zone_info['left'])
+                    top = int(zone_info['top'])
+                    right = int(zone_info['right'])
+                    bottom = int(zone_info['bottom'])
+                    
+                    # 좌표 검증 및 로깅
+                    logger.info(f"Zone {zone_info.get('zone_type', 'unknown')}: 원본 좌표 - left={left}, top={top}, right={right}, bottom={bottom}")
+                    
+                    # 실제 rect 형식: [x, y, width, height]
                     actual_rect = [
-                        zone_info['left'],      # x
-                        zone_info['top'],       # y
-                        zone_info['right'] - zone_info['left'],  # width
-                        zone_info['bottom'] - zone_info['top']   # height
+                        left,           # x 좌표
+                        top,            # y 좌표
+                        right - left,   # width (너비)
+                        bottom - top    # height (높이)
                     ]
-                    logger.info(f"Zone {zone_info.get('zone_type', 'unknown')}: zone_segment_json 좌표 사용 - {actual_rect}")
+                    
+                    logger.info(f"Zone {zone_info.get('zone_type', 'unknown')}: 변환된 rect - [x={actual_rect[0]}, y={actual_rect[1]}, w={actual_rect[2]}, h={actual_rect[3]}]")
+                    logger.info(f"Zone {zone_info.get('zone_type', 'unknown')}: 실제 영역 범위 - x: {left}~{right} ({actual_rect[2]}px), y: {top}~{bottom} ({actual_rect[3]}px)")
                 else:
                     # 기존 rect 정보 사용 (fallback)
                     actual_rect = zone_info.get('rect', [0, 0, 320, 240])
@@ -1382,7 +1751,8 @@ class VideoAlertChecker:
             if not cursor:
                 return False
             
-            # 스냅샷이 제공되지 않은 경우에만 캡처 (재사용 우선)
+            # 파노라마 데이터 조회 (ROI 그리기용)
+            panorama_data_record = None
             if panorama_snapshot is None:
                 panorama_data_record = self.get_latest_temperature_data()
                 if panorama_data_record:
@@ -1392,6 +1762,8 @@ class VideoAlertChecker:
                     logger.warning("시나리오1: 파노라마 데이터 조회 실패 - 데이터가 없습니다")
             else:
                 logger.info("시나리오1: 파노라마 스냅샷 재사용")
+                # ROI 그리기를 위해 파노라마 데이터 조회
+                panorama_data_record = self.get_latest_temperature_data()
             
             if visible_stream_snapshot is None:
                 logger.info("시나리오1: 실화상 카메라 스트림 스냅샷 캡처 (새로 캡처)")
@@ -1472,6 +1844,57 @@ class VideoAlertChecker:
             else:
                 alert_rect = zone_info.get('rect', [0, 0, 640, 240])  # 파노라마 기본 크기로 변경
                 logger.info(f"alert_info에 기존 rect 좌표 사용: {alert_rect}")
+            
+            # ROI 박스를 파노라마 이미지에 그려서 저장하고 DB 저장용 이미지로 사용
+            roi_drawn_image_base64 = None
+            if panorama_data_record and panorama_data_record.get('panoramaData'):
+                try:
+                    # zone_info에 roi_polygon 정보 추가 (이미 생성된 경우)
+                    zone_info_with_polygon = zone_info.copy()
+                    if isinstance(roi_polygon_data, dict):
+                        zone_info_with_polygon['roi_polygon'] = roi_polygon_data
+                    
+                    # 좌표 정보 로깅 (디버깅용)
+                    logger.info(f"ROI 박스 그리기 전 zone_info 좌표 확인:")
+                    logger.info(f"  - left: {zone_info_with_polygon.get('left', 'N/A')}")
+                    logger.info(f"  - top: {zone_info_with_polygon.get('top', 'N/A')}")
+                    logger.info(f"  - right: {zone_info_with_polygon.get('right', 'N/A')}")
+                    logger.info(f"  - bottom: {zone_info_with_polygon.get('bottom', 'N/A')}")
+                    logger.info(f"  - actual_rect: {zone_info_with_polygon.get('actual_rect', 'N/A')}")
+                    logger.info(f"  - zone_segment_coords: {zone_info_with_polygon.get('zone_segment_coords', 'N/A')}")
+                    
+                    # ROI 박스가 그려진 이미지를 base64로 반환
+                    roi_drawn_image_base64 = self.draw_roi_on_panorama_and_get_base64(
+                        panorama_data_record['panoramaData'],
+                        zone_info_with_polygon
+                    )
+                    if roi_drawn_image_base64:
+                        logger.info("ROI 박스가 그려진 파노라마 이미지 생성 완료 (base64)")
+                        
+                        # ROI 박스가 그려진 이미지로 panorama_snapshot 교체
+                        if panorama_snapshot:
+                            panorama_snapshot['image_data'] = roi_drawn_image_base64
+                            panorama_snapshot['roi_drawn'] = True
+                            logger.info("snapshot_images의 파노라마 이미지를 ROI 박스가 그려진 이미지로 교체")
+                        else:
+                            # panorama_snapshot이 없는 경우 새로 생성
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            panorama_snapshot = {
+                                'panorama_image': True,
+                                'image_type': 'panorama',
+                                'timestamp': datetime.now().isoformat(),
+                                'image_data': roi_drawn_image_base64,
+                                'roi_drawn': True,
+                                'filename': f"panorama_roi_{timestamp}.jpg"
+                            }
+                            snapshot_images.insert(0, panorama_snapshot)  # 맨 앞에 추가
+                            logger.info("ROI 박스가 그려진 파노라마 이미지를 snapshot_images에 추가")
+                    else:
+                        logger.warning("ROI 박스가 그려진 이미지 생성 실패 - 원본 이미지 사용")
+                except Exception as e:
+                    logger.error(f"ROI 박스 그리기 오류: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
             alert_info = {
                 'scenario': 'scenario1',
@@ -2017,13 +2440,24 @@ class VideoAlertChecker:
                 try:
                     # zone_segment_json에서 실제 ROI 좌표 추출
                     if 'left' in zone_info and 'top' in zone_info and 'right' in zone_info and 'bottom' in zone_info:
+                        left = int(zone_info['left'])
+                        top = int(zone_info['top'])
+                        right = int(zone_info['right'])
+                        bottom = int(zone_info['bottom'])
+                        
+                        # 좌표 검증 및 로깅
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - 원본 좌표 - left={left}, top={top}, right={right}, bottom={bottom}")
+                        
+                        # 실제 rect 형식: [x, y, width, height]
                         actual_rect = [
-                            zone_info['left'],
-                            zone_info['top'],
-                            zone_info['right'] - zone_info['left'],
-                            zone_info['bottom'] - zone_info['top']
+                            left,           # x 좌표
+                            top,            # y 좌표
+                            right - left,   # width (너비)
+                            bottom - top    # height (높이)
                         ]
-                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - zone_segment_json 좌표 사용: {actual_rect}")
+                        
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - 변환된 rect - [x={actual_rect[0]}, y={actual_rect[1]}, w={actual_rect[2]}, h={actual_rect[3]}]")
+                        logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - 실제 영역 범위 - x: {left}~{right} ({actual_rect[2]}px), y: {top}~{bottom} ({actual_rect[3]}px)")
                     else:
                         actual_rect = zone_info.get('rect', [0, 0, 320, 240])
                         logger.info(f"시나리오2: Zone {zone_info.get('zone_type', 'unknown')} - 기존 rect 좌표 사용: {actual_rect}")

@@ -345,6 +345,15 @@ class RTSPRecorder:
             print(f"[Recorder-{self.cfg.camera_name}] 🔍 RTSP 연결 실패 분석:")
             print(f"  - 가능한 원인: 카메라 IP/포트 오류, 네트워크 타임아웃")
             print(f"  - 해결 방안: 카메라 설정 확인, 방화벽 설정 점검")
+        elif "invalid data found when processing input" in error_line_lower or ("error opening input" in error_line_lower and "invalid data" in error_line_lower):
+            print(f"[Recorder-{self.cfg.camera_name}] 🔍 입력 스트림 처리 오류 분석:")
+            print(f"  - 가능한 원인: RTSP 스트림 데이터 손상, 입력 옵션 오류, 스트림 형식 불일치")
+            print(f"  - 해결 방안: 입력 옵션 최소화(-fflags 제거), 타임아웃 설정 확인, RTSP 스트림 상태 점검")
+            print(f"  - 참고: -fflags는 입력 옵션으로 사용하면 안 됩니다 (출력 옵션에서만 사용)")
+        elif "error opening input" in error_line_lower:
+            print(f"[Recorder-{self.cfg.camera_name}] 🔍 입력 파일 열기 오류 분석:")
+            print(f"  - 가능한 원인: RTSP URL 오류, 네트워크 연결 실패, 인증 실패")
+            print(f"  - 해결 방안: RTSP URL 확인, 카메라 접근 가능 여부 점검, 인증 정보 확인")
         elif "segment" in error_line_lower and "failed" in error_line_lower:
             print(f"[Recorder-{self.cfg.camera_name}] 🔍 세그먼트 분할 실패 분석:")
             print(f"  - 가능한 원인: 출력 디렉토리 권한 문제, 디스크 공간 부족")
@@ -860,11 +869,11 @@ class RTSPRecorder:
                 print(f"[Recorder-{self.cfg.camera_name}] Added stimeout option: -stimeout {self.cfg.timeout_value_us * 1_000_000}")
 
         # 입력 옵션 (RTSP 스트림 처리용)
+        # 주의: -fflags는 입력 옵션으로 사용하면 안 됩니다. RTSP 스트림을 열 때 문제를 일으킬 수 있습니다.
         cmd += [
             "-analyzeduration", self.cfg.analyzeduration,
             "-probesize", self.cfg.probesize,
-            # 입력 스트림 처리 옵션 (RTSP 스트림의 타임스탬프 문제 해결)
-            "-fflags", "+genpts+igndts+discardcorrupt",  # 타임스탬프 생성 + 손상된 DTS 무시 + 손상된 프레임 제거
+            # RTSP 스트림 연결 옵션만 사용 (타임스탬프 처리는 출력 옵션에서 수행)
             "-i", self.cfg.rtsp_url,
             "-map", "0",
         ]
