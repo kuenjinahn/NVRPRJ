@@ -970,7 +970,7 @@ class RTSPRecorder:
             "-probesize", self.cfg.probesize,
             # RTSP 스트림 연결 옵션만 사용 (타임스탬프 처리는 출력 옵션에서 수행)
             "-i", self.cfg.rtsp_url,
-            "-map", "0",
+            "-map", "0:v",  # 비디오 스트림만 매핑 (오디오 제외)
         ]
 
         if self.cfg.reencode_video:
@@ -989,8 +989,9 @@ class RTSPRecorder:
             ]
 
         # 출력 옵션 (세그먼트 파일 생성용)
+        # 주의: -map 0:v로 비디오만 매핑했으므로 -an은 필요 없지만 안전을 위해 유지
         cmd += [
-            "-an",  # 오디오 제거
+            "-an",  # 오디오 제거 (이중 방어)
             "-f", "segment",
             "-segment_time", str(SPLIT_SECONDS),  # 문자열로 변환
             "-reset_timestamps", "1",
