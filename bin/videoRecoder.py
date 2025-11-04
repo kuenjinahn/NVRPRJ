@@ -284,6 +284,22 @@ class RTSPRecorder:
             if os.path.exists(file_path):
                 print(f"[Recorder-{self.cfg.camera_name}] File created after {i+1} seconds: {file_path}")
                 
+                # 파일 크기 확인 (0바이트 파일 체크)
+                file_size = os.path.getsize(file_path)
+                if file_size == 0:
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ 0바이트 파일 발견: {file_path}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 스트림 연결 실패 또는 데이터 수신 실패로 인한 빈 파일")
+                    try:
+                        # 0바이트 파일 삭제
+                        os.remove(file_path)
+                        print(f"[Recorder-{self.cfg.camera_name}] ✅ 0바이트 파일 삭제 완료: {file_path}")
+                    except Exception as e:
+                        print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
+                    
+                    # 재연결 트리거를 위해 에러 플래그 설정
+                    print(f"[Recorder-{self.cfg.camera_name}] 🔄 재연결이 필요합니다 (RTSP 스트림 연결 실패)")
+                    return
+                
                 # 이미 처리된 세그먼트인지 확인
                 if file_path in self._processed_segments:
                     print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Already processed segment: {file_path}")
@@ -294,6 +310,7 @@ class RTSPRecorder:
                 if segment_number is not None:
                     # 처리된 세그먼트 목록에 추가
                     self._processed_segments.add(file_path)
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
                     # 데이터베이스에 INSERT
                     self._insert_recording_history(file_path, segment_number)
                 else:
@@ -495,8 +512,10 @@ class RTSPRecorder:
 
     def _check_rtsp_connection(self):
         """RTSP 연결 상태 확인"""
+        check_start_time = datetime.now()
         try:
             print(f"[Recorder-{self.cfg.camera_name}] 🔍 Checking RTSP connection status...")
+            print(f"[Recorder-{self.cfg.camera_name}] ⏰ 연결 체크 시작 시간: {check_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
             
             # RTSP URL에서 IP 주소 추출
             rtsp_url = self.cfg.rtsp_url
@@ -509,10 +528,18 @@ class RTSPRecorder:
                 
                 if ip_end != -1:
                     ip_address = rtsp_url[ip_start:ip_end]
-                    print(f"[Recorder-{self.cfg.camera_name}] RTSP IP: {ip_address}")
+                    port_start = rtsp_url.find(":", ip_start) + 1
+                    port_end = rtsp_url.find("/", port_start)
+                    port = rtsp_url[port_start:port_end] if port_end != -1 else "554"
+                    
+                    print(f"[Recorder-{self.cfg.camera_name}] 📋 RTSP 연결 정보:")
+                    print(f"[Recorder-{self.cfg.camera_name}]   - IP 주소: {ip_address}")
+                    print(f"[Recorder-{self.cfg.camera_name}]   - 포트: {port}")
+                    print(f"[Recorder-{self.cfg.camera_name}]   - 전체 URL: {rtsp_url}")
                     
                     # ping 테스트
                     import subprocess
+                    ping_start_time = datetime.now()
                     try:
                         result = subprocess.run(
                             ["ping", "-n", "1", ip_address], 
@@ -520,19 +547,37 @@ class RTSPRecorder:
                             text=True, 
                             timeout=5
                         )
+                        ping_elapsed = (datetime.now() - ping_start_time).total_seconds()
                         if result.returncode == 0:
-                            print(f"[Recorder-{self.cfg.camera_name}] ✅ Ping to {ip_address}: SUCCESS")
+                            print(f"[Recorder-{self.cfg.camera_name}] ✅ Ping to {ip_address}: SUCCESS (소요 시간: {ping_elapsed:.2f}초)")
+                            return True
                         else:
-                            print(f"[Recorder-{self.cfg.camera_name}] ❌ Ping to {ip_address}: FAILED")
+                            print(f"[Recorder-{self.cfg.camera_name}] ❌ Ping to {ip_address}: FAILED (소요 시간: {ping_elapsed:.2f}초)")
+                            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 네트워크 연결 문제 가능성")
+                            return False
+                    except subprocess.TimeoutExpired:
+                        ping_elapsed = (datetime.now() - ping_start_time).total_seconds()
+                        print(f"[Recorder-{self.cfg.camera_name}] ❌ Ping to {ip_address}: TIMEOUT (소요 시간: {ping_elapsed:.2f}초)")
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 네트워크 타임아웃 - 카메라에 접근할 수 없습니다")
+                        return False
                     except Exception as e:
-                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Ping test failed: {e}")
+                        ping_elapsed = (datetime.now() - ping_start_time).total_seconds()
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Ping test failed: {e} (소요 시간: {ping_elapsed:.2f}초)")
+                        return False
                 else:
                     print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract IP from RTSP URL")
+                    return False
             else:
                 print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Invalid RTSP URL format")
+                return False
                 
         except Exception as e:
-            print(f"[Recorder-{self.cfg.camera_name}] Error checking RTSP connection: {e}")
+            check_elapsed = (datetime.now() - check_start_time).total_seconds()
+            print(f"[Recorder-{self.cfg.camera_name}] ❌ Error checking RTSP connection: {e} (소요 시간: {check_elapsed:.2f}초)")
+            return False
+        finally:
+            check_elapsed = (datetime.now() - check_start_time).total_seconds()
+            print(f"[Recorder-{self.cfg.camera_name}] ⏰ 전체 연결 체크 소요 시간: {check_elapsed:.2f}초")
 
     def _monitor_segment_files(self):
         """파일 시스템을 직접 모니터링하여 세그먼트 파일 감지"""
@@ -556,10 +601,27 @@ class RTSPRecorder:
                 print(f"[Recorder-{self.cfg.camera_name}] 🔍 Found {len(new_files)} new segment files")
                 
                 for file_path in new_files:
+                    # 파일 크기 확인 (0바이트 파일 체크)
+                    if not os.path.exists(file_path):
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 파일이 존재하지 않습니다: {file_path}")
+                        continue
+                    
+                    file_size = os.path.getsize(file_path)
+                    if file_size == 0:
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ 0바이트 파일 발견: {os.path.basename(file_path)}")
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 스트림 연결 실패로 인한 빈 파일 - 건너뜀")
+                        try:
+                            os.remove(file_path)
+                            print(f"[Recorder-{self.cfg.camera_name}] ✅ 0바이트 파일 삭제 완료: {os.path.basename(file_path)}")
+                        except Exception as e:
+                            print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
+                        continue
+                    
                     # 세그먼트 번호 추출
                     segment_number = self._extract_segment_number(file_path)
                     if segment_number is not None:
                         print(f"[Recorder-{self.cfg.camera_name}] 🎯 Processing new segment #{segment_number}: {os.path.basename(file_path)}")
+                        print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
                         
                         # 처리된 세그먼트 목록에 추가
                         self._processed_segments.add(file_path)
@@ -610,6 +672,22 @@ class RTSPRecorder:
             if file_path:
                 print(f"[Recorder-{self.cfg.camera_name}] ✅ File path extracted: {file_path}")
                 
+                # 파일 존재 및 크기 확인
+                if not os.path.exists(file_path):
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 파일이 존재하지 않습니다: {file_path}")
+                    return
+                
+                file_size = os.path.getsize(file_path)
+                if file_size == 0:
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ 0바이트 파일 발견: {file_path}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 스트림 연결 실패로 인한 빈 파일 - DB INSERT 건너뜀")
+                    try:
+                        os.remove(file_path)
+                        print(f"[Recorder-{self.cfg.camera_name}] ✅ 0바이트 파일 삭제 완료: {file_path}")
+                    except Exception as e:
+                        print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
+                    return
+                
                 # 이미 처리된 세그먼트인지 확인
                 if file_path in self._processed_segments:
                     print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Already processed segment: {file_path}")
@@ -619,6 +697,7 @@ class RTSPRecorder:
                 segment_number = self._extract_segment_number(file_path)
                 if segment_number is not None:
                     print(f"[Recorder-{self.cfg.camera_name}] 🎯 New segment #{segment_number} detected: {file_path}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
                     
                     # 처리된 세그먼트 목록에 추가
                     self._processed_segments.add(file_path)
@@ -746,8 +825,24 @@ class RTSPRecorder:
             print(f"[Recorder-{self.cfg.camera_name}] 🔍 Testing database connection...")
             print(f"[Recorder-{self.cfg.camera_name}] DB Config: {DBSERVER_IP}:{DBSERVER_PORT}, User: {DBSERVER_USER}, DB: {DBSERVER_DB}")
             
-            # 파일 정보 수집
-            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            # 파일 정보 수집 및 0바이트 파일 검증
+            if not os.path.exists(file_path):
+                print(f"[Recorder-{self.cfg.camera_name}] ❌ 파일이 존재하지 않습니다: {file_path}")
+                return
+                
+            file_size = os.path.getsize(file_path)
+            
+            # 0바이트 파일 체크 및 처리
+            if file_size == 0:
+                print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ 0바이트 파일 - DB INSERT 건너뜀: {file_path}")
+                print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 스트림 연결 실패로 인한 빈 파일입니다")
+                try:
+                    # 0바이트 파일 삭제
+                    os.remove(file_path)
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ 0바이트 파일 삭제 완료: {file_path}")
+                except Exception as e:
+                    print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
+                return
             
             # 세그먼트별 정확한 시작/종료 시간 계산
             if segment_number is not None:
@@ -931,7 +1026,47 @@ class RTSPRecorder:
     def _monitor_loop(self):
         while not self._stop.is_set():
             try:
+                # RTSP 스트림 연결 전 검증 및 대기
+                connection_prep_start = datetime.now()
+                print(f"[Recorder-{self.cfg.camera_name}] 🔍 RTSP 스트림 연결 준비 시작...")
+                print(f"[Recorder-{self.cfg.camera_name}] ⏰ 준비 시작 시간: {connection_prep_start.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                print(f"[Recorder-{self.cfg.camera_name}] 📋 RTSP URL: {self.cfg.rtsp_url}")
+                print(f"[Recorder-{self.cfg.camera_name}] 📋 RTSP Transport: {self.cfg.rtsp_transport}")
+                print(f"[Recorder-{self.cfg.camera_name}] 📋 Analyzeduration: {self.cfg.analyzeduration}")
+                print(f"[Recorder-{self.cfg.camera_name}] 📋 Probesize: {self.cfg.probesize}")
+                
+                # RTSP URL 검증
+                if not self.cfg.rtsp_url or not self.cfg.rtsp_url.strip():
+                    print(f"[Recorder-{self.cfg.camera_name}] ❌ RTSP URL이 비어있습니다")
+                    print(f"[Recorder-{self.cfg.camera_name}] 🔄 재연결 대기 중... ({self.cfg.reconnect_delay_sec}초)")
+                    time.sleep(self.cfg.reconnect_delay_sec)
+                    continue
+                
+                if not self.cfg.rtsp_url.startswith(('rtsp://', 'http://', 'https://')):
+                    print(f"[Recorder-{self.cfg.camera_name}] ❌ RTSP URL 형식 오류: {self.cfg.rtsp_url}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP URL은 'rtsp://' 또는 'http://' 또는 'https://'로 시작해야 합니다")
+                    print(f"[Recorder-{self.cfg.camera_name}] 🔄 재연결 대기 중... ({self.cfg.reconnect_delay_sec}초)")
+                    time.sleep(self.cfg.reconnect_delay_sec)
+                    continue
+                
+                # RTSP 연결 테스트 (선택적)
+                connection_test_start = datetime.now()
+                connection_test_result = self._check_rtsp_connection()
+                connection_test_elapsed = (datetime.now() - connection_test_start).total_seconds()
+                if connection_test_result:
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ RTSP 연결 테스트 성공 (소요 시간: {connection_test_elapsed:.2f}초)")
+                else:
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 연결 테스트 실패 또는 건너뜀 (소요 시간: {connection_test_elapsed:.2f}초)")
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ FFmpeg가 직접 연결을 시도합니다")
+                
+                # 타이밍 문제 해결을 위한 대기 시간 추가 (카메라 준비 시간)
+                print(f"[Recorder-{self.cfg.camera_name}] ⏳ 스트림 연결 전 준비 대기 중... (2초)")
+                time.sleep(2)  # 카메라가 준비될 시간 제공
+                prep_elapsed = (datetime.now() - connection_prep_start).total_seconds()
+                print(f"[Recorder-{self.cfg.camera_name}] ⏰ 전체 준비 소요 시간: {prep_elapsed:.2f}초")
+                
                 cmd = self.build_ffmpeg_cmd()
+                print(f"[Recorder-{self.cfg.camera_name}] 🚀 FFmpeg 명령어 실행 시작...")
                 print(f"[Recorder-{self.cfg.camera_name}] Launch FFmpeg:", " ".join(shlex.quote(c) for c in cmd))
                 
                 # FFmpeg 명령어에서 출력 경로 확인
@@ -945,6 +1080,9 @@ class RTSPRecorder:
                     print(f"[Recorder-{self.cfg.camera_name}] Output path: {cmd[output_path_index]}")
                     print(f"[Recorder-{self.cfg.camera_name}] Pattern contains strftime: {'%' in cmd[output_path_index]}")
 
+                ffmpeg_start_time = datetime.now()
+                print(f"[Recorder-{self.cfg.camera_name}] ⏰ FFmpeg 프로세스 시작 시간: {ffmpeg_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                
                 self.process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -952,6 +1090,10 @@ class RTSPRecorder:
                     text=True,
                     universal_newlines=True,
                 )
+                
+                ffmpeg_process_elapsed = (datetime.now() - ffmpeg_start_time).total_seconds() * 1000
+                print(f"[Recorder-{self.cfg.camera_name}] ✅ FFmpeg 프로세스 생성 완료 (PID: {self.process.pid})")
+                print(f"[Recorder-{self.cfg.camera_name}] ⏰ 프로세스 생성 소요 시간: {ffmpeg_process_elapsed:.2f}ms")
 
                 # FFmpeg 실행 중 실시간 세그먼트 모니터링을 위한 별도 스레드 시작
                 import threading
@@ -983,10 +1125,17 @@ class RTSPRecorder:
                     
                     # 에러 및 경고 로그만 처리
                     if "error" in line_lower or "failed" in line_lower:
-                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ ERROR: {line.rstrip()}")
+                        error_time = datetime.now()
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ ERROR: {line.rstrip()}")
+                        print(f"[Recorder-{self.cfg.camera_name}] ⏰ 에러 발생 시간: {error_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                        if ffmpeg_start_time:
+                            error_elapsed = (error_time - ffmpeg_start_time).total_seconds()
+                            print(f"[Recorder-{self.cfg.camera_name}] ⏰ FFmpeg 시작 후 에러까지 소요 시간: {error_elapsed:.2f}초")
                         self._analyze_error(line)
                     elif "warning" in line_lower:
-                        print(f"[Recorder-{self.camera_name}] ⚠️ WARNING: {line.rstrip()}")
+                        warning_time = datetime.now()
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ WARNING: {line.rstrip()}")
+                        print(f"[Recorder-{self.cfg.camera_name}] ⏰ 경고 발생 시간: {warning_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
                     
                     if self._stop.is_set():
                         break
@@ -995,10 +1144,24 @@ class RTSPRecorder:
                 if ret is None:
                     continue
                 
+                ffmpeg_end_time = datetime.now()
+                if ffmpeg_start_time:
+                    total_elapsed = (ffmpeg_end_time - ffmpeg_start_time).total_seconds()
+                    print(f"[Recorder-{self.cfg.camera_name}] ⏰ FFmpeg 총 실행 시간: {total_elapsed:.2f}초")
+                
                 if ret == 0:
-                    print(f"[Recorder-{self.cfg.camera_name}] FFmpeg completed successfully")
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ FFmpeg completed successfully")
                 else:
-                    print(f"[Recorder-{self.cfg.camera_name}] FFmpeg exited with code {ret}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ❌ FFmpeg exited with code {ret}")
+                    print(f"[Recorder-{self.cfg.camera_name}] ⏰ 종료 시간: {ffmpeg_end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                    print(f"[Recorder-{self.cfg.camera_name}] 🔍 스트림 연결 실패 원인 분석:")
+                    print(f"[Recorder-{self.cfg.camera_name}]   1. RTSP URL 확인: {self.cfg.rtsp_url}")
+                    print(f"[Recorder-{self.cfg.camera_name}]   2. 네트워크 연결 상태 점검 필요")
+                    print(f"[Recorder-{self.cfg.camera_name}]   3. 카메라 접근 가능 여부 확인 필요")
+                    print(f"[Recorder-{self.cfg.camera_name}]   4. 인증 정보 확인 필요")
+                    print(f"[Recorder-{self.cfg.camera_name}]   5. 타임아웃 설정: {self.cfg.timeout_mode}={self.cfg.timeout_value_us}초")
+                    print(f"[Recorder-{self.cfg.camera_name}]   6. RTSP Transport: {self.cfg.rtsp_transport}")
+                    print(f"[Recorder-{self.cfg.camera_name}]   7. Analyzeduration: {self.cfg.analyzeduration}, Probesize: {self.cfg.probesize}")
                     
                 # 세그먼트 파일 확인
                 self._check_segment_files()
