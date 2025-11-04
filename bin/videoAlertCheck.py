@@ -226,6 +226,10 @@ class VideoAlertChecker:
             cursor.execute(query)
             results = cursor.fetchall()
             
+            logger.info(f"DB에서 조회된 ROI 레코드 수: {len(results)}개")
+            for idx, row in enumerate(results):
+                logger.info(f"  [{idx+1}] zone_type: {row['zone_type']}, zone_segment_json 길이: {len(row['zone_segment_json']) if row['zone_segment_json'] else 0}")
+            
             zone_segments = []
             for row in results:
                 if row['zone_segment_json']:
@@ -234,21 +238,29 @@ class VideoAlertChecker:
                         segment_data = json.loads(row['zone_segment_json'])
                         zone_type = row['zone_type']
                         
+                        logger.info(f"zone_type={zone_type}의 segment_data 타입: {type(segment_data)}")
+                        if isinstance(segment_data, (list, dict)):
+                            logger.info(f"zone_type={zone_type}의 segment_data 내용 (처음 200자): {str(segment_data)[:200]}")
+                        
                         if isinstance(segment_data, list):
                             # 리스트인 경우 각 항목에 zone_type 추가하고 좌표 변환
-                            for segment in segment_data:
+                            logger.info(f"zone_type={zone_type}: 리스트로 {len(segment_data)}개 항목 발견")
+                            for idx, segment in enumerate(segment_data):
                                 if isinstance(segment, dict):
                                     segment['zone_type'] = zone_type
                                     # start_point_x/y, end_point_x/y 형식을 left/top/right/bottom으로 변환
                                     segment = self._convert_roi_coordinates(segment)
+                                    logger.info(f"zone_type={zone_type}: [{idx+1}] ROI 추가 - left={segment.get('left')}, top={segment.get('top')}, right={segment.get('right')}, bottom={segment.get('bottom')}")
                                 zone_segments.append(segment)
                         elif isinstance(segment_data, dict):
                             # 딕셔너리인 경우 zone_type 추가하고 좌표 변환
                             segment_data['zone_type'] = zone_type
                             segment_data = self._convert_roi_coordinates(segment_data)
+                            logger.info(f"zone_type={zone_type}: 단일 딕셔너리 ROI 추가 - left={segment_data.get('left')}, top={segment_data.get('top')}, right={segment_data.get('right')}, bottom={segment_data.get('bottom')}")
                             zone_segments.append(segment_data)
                         else:
                             # 기타 타입인 경우 zone_type과 함께 딕셔너리로 변환
+                            logger.warning(f"zone_type={zone_type}: 알 수 없는 타입의 segment_data - {type(segment_data)}")
                             zone_segments.append({
                                 'data': segment_data,
                                 'zone_type': zone_type
@@ -258,7 +270,9 @@ class VideoAlertChecker:
                         continue
             
             self.zone_list = zone_segments
-            logger.info(f"Zone segments 조회 완료: {len(zone_segments)}개")
+            logger.info(f"Zone segments 조회 완료: 총 {len(zone_segments)}개 ROI")
+            for idx, seg in enumerate(zone_segments):
+                logger.info(f"  [{idx+1}] zone_type={seg.get('zone_type', 'unknown')}, left={seg.get('left', 'N/A')}, top={seg.get('top', 'N/A')}, right={seg.get('right', 'N/A')}, bottom={seg.get('bottom', 'N/A')}")
             return zone_segments
 
         except Exception as e:
@@ -2580,7 +2594,8 @@ class VideoAlertChecker:
             if not cursor:
                 return False
             
-            # 스냅샷이 제공되지 않은 경우에만 캡처 (재사용 우선)
+            # 파노라마 데이터 조회 (ROI 그리기용)
+            panorama_data_record = None
             if panorama_snapshot is None:
                 panorama_data_record = self.get_latest_temperature_data()
                 if panorama_data_record:
@@ -2590,6 +2605,8 @@ class VideoAlertChecker:
                     logger.warning("시나리오2: 파노라마 데이터 조회 실패 - 데이터가 없습니다")
             else:
                 logger.info("시나리오2: 파노라마 스냅샷 재사용")
+                # ROI 그리기를 위해 파노라마 데이터 조회
+                panorama_data_record = self.get_latest_temperature_data()
             
             if visible_stream_snapshot is None:
                 logger.info("시나리오2: 실화상 카메라 스트림 스냅샷 캡처 (새로 캡처)")
@@ -2615,6 +2632,75 @@ class VideoAlertChecker:
                 logger.warning("실화상 스트림 이미지가 없음")
             
             logger.info(f"총 {len(snapshot_images)}개의 스냅샷 이미지 준비 완료 (파노라마: {1 if panorama_snapshot else 0}개, 실화상 스트림: {1 if visible_stream_snapshot else 0}개)")
+            
+            # 시나리오1처럼 ROI 박스를 파노라마 이미지에 그리기
+            if panorama_data_record and panorama_snapshot:
+                try:
+                    # zone_info에 좌표 정보 추가 (시나리오1과 동일한 방식)
+                    zone_info_with_polygon = zone_info.copy()
+                    
+                    # 좌표 변환 (시나리오1과 동일)
+                    if 'zone_segment_coords' not in zone_info_with_polygon:
+                        # zone_segment_coords가 없으면 추가
+                        if 'actual_rect' in zone_info_with_polygon:
+                            x, y, w, h = zone_info_with_polygon['actual_rect']
+                            zone_info_with_polygon['zone_segment_coords'] = {
+                                'left': x,
+                                'top': y,
+                                'right': x + w,
+                                'bottom': y + h
+                            }
+                            logger.info(f"시나리오2: actual_rect에서 zone_segment_coords 생성 - left={x}, top={y}, right={x+w}, bottom={y+h}")
+                        elif all(key in zone_info_with_polygon for key in ['left', 'top', 'right', 'bottom']):
+                            zone_info_with_polygon['zone_segment_coords'] = {
+                                'left': zone_info_with_polygon['left'],
+                                'top': zone_info_with_polygon['top'],
+                                'right': zone_info_with_polygon['right'],
+                                'bottom': zone_info_with_polygon['bottom']
+                            }
+                            logger.info(f"시나리오2: left/top/right/bottom에서 zone_segment_coords 생성")
+                    
+                    logger.info(f"시나리오2: ROI 박스 그리기 시작")
+                    logger.info(f"  - zone_type: {zone_info_with_polygon.get('zone_type', 'N/A')}")
+                    logger.info(f"  - left: {zone_info_with_polygon.get('left', 'N/A')}")
+                    logger.info(f"  - top: {zone_info_with_polygon.get('top', 'N/A')}")
+                    logger.info(f"  - right: {zone_info_with_polygon.get('right', 'N/A')}")
+                    logger.info(f"  - bottom: {zone_info_with_polygon.get('bottom', 'N/A')}")
+                    logger.info(f"  - actual_rect: {zone_info_with_polygon.get('actual_rect', 'N/A')}")
+                    logger.info(f"  - zone_segment_coords: {zone_info_with_polygon.get('zone_segment_coords', 'N/A')}")
+                    
+                    # ROI 박스가 그려진 이미지를 base64로 반환
+                    roi_drawn_image_base64 = self.draw_roi_on_panorama_and_get_base64(
+                        panorama_data_record['panoramaData'],
+                        zone_info_with_polygon
+                    )
+                    if roi_drawn_image_base64:
+                        logger.info("시나리오2: ROI 박스가 그려진 파노라마 이미지 생성 완료 (base64)")
+                        
+                        # ROI 박스가 그려진 이미지로 panorama_snapshot 교체
+                        if panorama_snapshot:
+                            panorama_snapshot['image_data'] = roi_drawn_image_base64
+                            panorama_snapshot['roi_drawn'] = True
+                            logger.info("시나리오2: snapshot_images의 파노라마 이미지를 ROI 박스가 그려진 이미지로 교체")
+                        else:
+                            # panorama_snapshot이 없는 경우 새로 생성
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            panorama_snapshot = {
+                                'panorama_image': True,
+                                'image_type': 'panorama',
+                                'timestamp': datetime.now().isoformat(),
+                                'image_data': roi_drawn_image_base64,
+                                'roi_drawn': True,
+                                'filename': f"panorama_roi_{timestamp}.jpg"
+                            }
+                            snapshot_images.insert(0, panorama_snapshot)  # 맨 앞에 추가
+                            logger.info("시나리오2: ROI 박스가 그려진 파노라마 이미지를 snapshot_images에 추가")
+                    else:
+                        logger.warning("시나리오2: ROI 박스가 그려진 이미지 생성 실패 - 원본 이미지 사용")
+                except Exception as e:
+                    logger.error(f"시나리오2: ROI 박스 그리기 오류: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
             # ROI 폴리곤 생성
             if 'actual_rect' in zone_info:
