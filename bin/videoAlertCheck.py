@@ -544,14 +544,15 @@ class VideoAlertChecker:
                     try:
                         # JSON 파싱하여 zone_segment_json 내용을 리스트로 변환
                         segment_data = json.loads(row['zone_segment_json'])
-                        zone_type = row['zone_type']
+                        zone_type_raw = row['zone_type']
                         
-                        # DB에서 zone_type은 숫자로 저장되어 있음
-                        # 숫자 타입 확인 및 로깅
-                        if isinstance(zone_type, (int, float)):
-                            zone_type = int(zone_type)  # 정수로 변환
-                        elif isinstance(zone_type, str) and zone_type.isdigit():
-                            zone_type = int(zone_type)  # 숫자 문자열을 정수로 변환
+                        # DB에서 zone_type은 STRING 타입으로 저장되어 있으므로 조회 시 강제로 정수로 변환
+                        # _convert_zone_type_to_int 함수를 사용하여 일관된 변환 처리
+                        zone_type = self._convert_zone_type_to_int(zone_type_raw)
+                        
+                        # 변환 결과 로깅 (디버깅용)
+                        if zone_type_raw != zone_type:
+                            logger.info(f"DB에서 zone_type 변환: '{zone_type_raw}' (타입: {type(zone_type_raw).__name__}) -> {zone_type} (정수)")
                         
                         # logger.info(f"zone_type={zone_type} (타입: {type(zone_type).__name__})의 segment_data 타입: {type(segment_data)}")
                         # if isinstance(segment_data, (list, dict)):
@@ -1179,8 +1180,17 @@ class VideoAlertChecker:
             valid_temps = roi_temp[~np.isnan(roi_temp)]
             
             if len(valid_temps) > 0:
+                # zone_type은 항상 ROI 번호(정수)여야 함
+                roi_zone_type = zone_info.get('zone_type', 1)
+                if not isinstance(roi_zone_type, (int, float)):
+                    if isinstance(roi_zone_type, str) and roi_zone_type.isdigit():
+                        roi_zone_type = int(roi_zone_type)
+                    else:
+                        logger.warning(f"extract_roi_temperature_data: zone_type이 ROI 번호가 아닙니다: '{roi_zone_type}', 기본값 1 사용")
+                        roi_zone_type = 1
+                
                 roi_data = {
-                    'zone_type': zone_info.get('zone_type', 'unknown'),
+                    'zone_type': int(roi_zone_type),  # zone_type은 항상 ROI 번호(정수)
                     'rect': rect,
                     'temperatures': valid_temps.tolist(),
                     'min_temp': float(np.min(valid_temps)),
@@ -1211,28 +1221,18 @@ class VideoAlertChecker:
                 return False
             
             # ROI 번호 추출 (zone_type)
-            zone_type = zone_info.get('zone_type', 'unknown')
+            # zone_type은 항상 ROI 번호(정수)여야 함
+            zone_type = zone_info.get('zone_type', 1)
             
-            # zone_type에서 ROI 번호 추출 ("Z1" -> 1, "Z001" -> 1, "1" -> 1)
-            # zone_type의 숫자를 그대로 roiNumber로 사용
-            roi_number = None
-            if isinstance(zone_type, str):
-                # "Z1", "Z001", "Z01" 등의 형식 처리
-                match = re.match(r'Z?0*(\d+)', zone_type)
-                if match:
-                    try:
-                        roi_number = int(match.group(1))  # Z1 -> 1, Z2 -> 2, ...
-                    except ValueError:
-                        logger.warning(f"zone_type에서 ROI 번호 추출 실패: {zone_type}")
-                else:
-                    # 숫자만 있는 경우
-                    try:
-                        roi_number = int(zone_type)  # 1 -> 1, 2 -> 2, ...
-                    except ValueError:
-                        logger.warning(f"zone_type에서 ROI 번호 추출 실패: {zone_type}")
-            elif isinstance(zone_type, int):
-                roi_number = zone_type  # 1 -> 1, 2 -> 2, ...
+            # zone_type을 강제로 정수로 변환
+            roi_number = self._convert_zone_type_to_int(zone_type)
             
+            # zone_type이 0인 경우 제외 (번호가 없는 경우)
+            if roi_number == 0:
+                logger.warning(f"zone_type={zone_type}인 ROI는 온도 데이터를 저장하지 않습니다 (ROI 번호가 0)")
+                return False
+            
+            # roi_number가 유효하지 않은 경우 (None이거나 음수)
             if roi_number is None or roi_number < 0:
                 logger.warning(f"ROI 번호를 추출할 수 없습니다. zone_type: {zone_type}, roi_number: {roi_number}")
                 return False
@@ -2415,6 +2415,8 @@ class VideoAlertChecker:
             
             # 각 ROI 영역을 20x20 박스로 분할하여 검사
             alert_detected = False
+            # 이미 경보가 생성된 ROI 번호를 추적 (중복 방지)
+            alerted_roi_numbers = set()
             # logger.info(f"시나리오1: 총 {len(zones_to_check)}개 ROI 영역 처리 시작")
             for idx, zone_info in enumerate(zones_to_check, 1):
                 # logger.info(f"시나리오1: [{idx}/{len(zones_to_check)}] Zone {zone_info.get('zone_type', 'unknown')} 처리 시작")
@@ -2476,6 +2478,9 @@ class VideoAlertChecker:
                     # alert_boxes 중 가장 높은 alert_level 사용 (1~4)
                     max_alert_level = max([box.get('alert_level', 1) for box in alert_boxes]) if alert_boxes else 1
                     
+                    # ROI 번호 추출 (중복 방지용)
+                    roi_number = self._convert_zone_type_to_int(zone_info.get('zone_type', 1))
+                    
                     self.create_scenario1_alert(
                         panorama_data_record['id'],
                         zone_info,
@@ -2487,64 +2492,76 @@ class VideoAlertChecker:
                         visible_stream_snapshot  # 재사용할 실화상 스트림 스냅샷
                     )
                     alert_detected = True
+                    # 경보가 생성된 ROI 번호 기록
+                    alerted_roi_numbers.add(roi_number)
 
             # 전체 영역 온도차 변화율 검사 (25% 이상) - OR 조건으로 추가
+            # 기능 주석 처리 요청으로 인해 비활성화
             # zone_type이 0인 ROI는 제외하고 검사
-            valid_zones = [z for z in zones_to_check if z.get('zone_type') != 0 and z.get('zone_type') != '0']
-            if len(valid_zones) > 1:
-                logger.info(f"시나리오1: 전체 영역 검사 시작 (유효한 ROI: {len(valid_zones)}개, 전체: {len(zones_to_check)}개)")
-                # 강제 종료 체크
-                if self.force_exit:
-                    # logger.info("강제 종료 요청됨, 시나리오1 중단")
-                    return False
-                    
-                # 전체 영역의 온도 데이터 수집 (zone_type 0 제외)
-                all_temps = []
-                for zone_info in valid_zones:
-                    roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
-                    if roi_data and roi_data['temperatures']:
-                        all_temps.extend(roi_data['temperatures'])
-                
-                # 전체 영역 온도차 변화율 계산
-                if len(all_temps) > 0:
-                    overall_temp_diff = max(all_temps) - min(all_temps)
-                    overall_avg_temp = np.mean(all_temps)
-                    
-                    if overall_avg_temp > 0:
-                        temp_change_percent = (overall_temp_diff / overall_avg_temp) * 100
-                        # logger.info(f"전체 영역 온도차 변화율: {temp_change_percent:.1f}% (최대: {max(all_temps):.1f}°C, 최소: {min(all_temps):.1f}°C)")
-                        
-                        # DB 설정값(levels)에 따라 경보 레벨 결정 (1~4단계)
-                        # levels는 온도차 변화율(%) 기준값 배열 (예: [10, 15, 20, 25])
-                        # 10% 이상: Level 1, 15% 이상: Level 2, 20% 이상: Level 3, 25% 이상: Level 4
-                        alert_level = None
-                        for level, threshold in enumerate(levels):
-                            if temp_change_percent >= threshold:
-                                alert_level = level + 1  # 1~4 레벨로 변환
-                        
-                        # 경보 조건을 만족하는 경우 경보 생성
-                        if alert_level is not None:
-                            threshold_index = alert_level - 1  # 로그 출력용 인덱스
-                            logger.info(f"시나리오1 경보 감지: 전체 영역 온도차 변화율 {temp_change_percent:.1f}% >= {levels[threshold_index]}% (Level {alert_level})")
-                            
-                            # 전체 영역 ROI 데이터 생성 (파노라마 크기)
-                            overall_zone_info = {
-                                'zone_type': 'overall',
-                                'rect': [0, 0, 1920, 480]  # 1920x480 파노라마 전체 영역
-                            }
-                            
-                            # 경보 생성 (DB 설정값에 따른 alert_level 사용)
-                            self.create_scenario1_alert(
-                                panorama_data_record['id'],
-                                overall_zone_info,
-                                'S002',
-                                temp_change_percent,
-                                alert_level,  # DB 설정값에 따라 결정된 레벨 (1~4)
-                                None,  # alert_boxes는 없음
-                                panorama_snapshot,  # 재사용할 파노라마 스냅샷
-                                visible_stream_snapshot  # 재사용할 실화상 스트림 스냅샷
-                            )
-                            alert_detected = True
+            # valid_zones = [z for z in zones_to_check if z.get('zone_type') != 0 and z.get('zone_type') != '0']
+            # if len(valid_zones) > 1:
+            #     logger.info(f"시나리오1: 전체 영역 검사 시작 (유효한 ROI: {len(valid_zones)}개, 전체: {len(zones_to_check)}개)")
+            #     # 강제 종료 체크
+            #     if self.force_exit:
+            #         # logger.info("강제 종료 요청됨, 시나리오1 중단")
+            #         return False
+            #         
+            #     # 전체 영역의 온도 데이터 수집 (zone_type 0 제외)
+            #     all_temps = []
+            #     for zone_info in valid_zones:
+            #         roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
+            #         if roi_data and roi_data['temperatures']:
+            #             all_temps.extend(roi_data['temperatures'])
+            #     
+            #     # 전체 영역 온도차 변화율 계산
+            #     if len(all_temps) > 0:
+            #         overall_temp_diff = max(all_temps) - min(all_temps)
+            #         overall_avg_temp = np.mean(all_temps)
+            #         
+            #         if overall_avg_temp > 0:
+            #             temp_change_percent = (overall_temp_diff / overall_avg_temp) * 100
+            #             # logger.info(f"전체 영역 온도차 변화율: {temp_change_percent:.1f}% (최대: {max(all_temps):.1f}°C, 최소: {min(all_temps):.1f}°C)")
+            #             
+            #             # DB 설정값(levels)에 따라 경보 레벨 결정 (1~4단계)
+            #             # levels는 온도차 변화율(%) 기준값 배열 (예: [10, 15, 20, 25])
+            #             # 10% 이상: Level 1, 15% 이상: Level 2, 20% 이상: Level 3, 25% 이상: Level 4
+            #             alert_level = None
+            #             for level, threshold in enumerate(levels):
+            #                 if temp_change_percent >= threshold:
+            #                     alert_level = level + 1  # 1~4 레벨로 변환
+            #             
+            #             # 경보 조건을 만족하는 경우 경보 생성
+            #             if alert_level is not None:
+            #                 threshold_index = alert_level - 1  # 로그 출력용 인덱스
+            #                 logger.info(f"시나리오1 경보 감지: 전체 영역 온도차 변화율 {temp_change_percent:.1f}% >= {levels[threshold_index]}% (Level {alert_level})")
+            #                 
+            #                 # 전체 영역 경보는 zone_type 1을 사용하므로, 이미 ROI 1에 대해 경보가 생성되었는지 확인
+            #                 # ROI 1에 대해 이미 경보가 생성된 경우 중복 방지
+            #                 if 1 in alerted_roi_numbers:
+            #                     logger.info(f"시나리오1: ROI 1에 대해 이미 경보가 생성되어 전체 영역 경보를 건너뜁니다 (중복 방지)")
+            #                 else:
+            #                     # 전체 영역 ROI 데이터 생성 (파노라마 크기)
+            #                     # zone_type은 ROI 번호여야 하므로 전체 영역의 경우 기본 ROI 번호 1 사용
+            #                     overall_zone_info = {
+            #                         'zone_type': 1,  # ROI 번호 (전체 영역의 경우 기본값 1)
+            #                         'rect': [0, 0, 1920, 480]  # 1920x480 파노라마 전체 영역
+            #                     }
+            #                     
+            #                     # 경보 생성 (DB 설정값에 따른 alert_level 사용)
+            #                     # 시나리오1이므로 alert_type은 'S001'이어야 함
+            #                     self.create_scenario1_alert(
+            #                         panorama_data_record['id'],
+            #                         overall_zone_info,
+            #                         'S001',  # 시나리오1이므로 'S001'로 수정
+            #                         temp_change_percent,
+            #                         alert_level,  # DB 설정값에 따라 결정된 레벨 (1~4)
+            #                         None,  # alert_boxes는 없음
+            #                         panorama_snapshot,  # 재사용할 파노라마 스냅샷
+            #                         visible_stream_snapshot  # 재사용할 실화상 스트림 스냅샷
+            #                     )
+            #                     alert_detected = True
+            #                     # 경보가 생성된 ROI 번호 기록
+            #                     alerted_roi_numbers.add(1)
 
             if not alert_detected:
                 # logger.info("시나리오1: 경보 조건을 만족하지 않습니다")
@@ -2559,8 +2576,8 @@ class VideoAlertChecker:
 
     def _convert_zone_type_to_int(self, zone_type):
         """
-        zone_type을 정수로 변환
-        'overall' 또는 다른 문자열인 경우 기본값 1 반환
+        zone_type을 정수로 변환 (ROI 번호)
+        zone_type은 항상 ROI 번호(정수)여야 함
         """
         try:
             if isinstance(zone_type, (int, float)):
@@ -2570,8 +2587,9 @@ class VideoAlertChecker:
                 if zone_type.isdigit():
                     return int(zone_type)
                 else:
-                    # 'overall' 등 문자열인 경우 기본값 1 반환
-                    logger.warning(f"zone_type이 숫자가 아닌 문자열입니다: '{zone_type}', 기본값 1 사용")
+                    # 숫자가 아닌 문자열인 경우 (예: 'overall', 'unknown' 등)
+                    # ROI 번호가 아니므로 경고 후 기본값 1 반환
+                    logger.warning(f"zone_type이 숫자가 아닌 문자열입니다: '{zone_type}', ROI 번호가 아니므로 기본값 1 사용")
                     return 1
             else:
                 logger.warning(f"zone_type이 예상하지 못한 타입입니다: {type(zone_type)}, 기본값 1 사용")
@@ -2667,9 +2685,17 @@ class VideoAlertChecker:
                     main_polygon = self.create_roi_polygon(main_rect)
                     # logger.info(f"기존 rect 좌표로 main_roi 생성: {main_rect}")
                 
+                # zone_type은 항상 ROI 번호(정수)여야 함
+                roi_zone_type = zone_info.get('zone_type', 1)
+                if not isinstance(roi_zone_type, (int, float)):
+                    if isinstance(roi_zone_type, str) and roi_zone_type.isdigit():
+                        roi_zone_type = int(roi_zone_type)
+                    else:
+                        roi_zone_type = 1
+                
                 roi_polygon_data = {
                     'main_roi': {
-                        'zone_type': zone_info.get('zone_type', 'unknown'),
+                        'zone_type': int(roi_zone_type),  # zone_type은 항상 ROI 번호(정수)
                         'rect': main_rect,
                         'polygon': main_polygon
                     },
@@ -2740,12 +2766,22 @@ class VideoAlertChecker:
                     import traceback
                     logger.error(traceback.format_exc())
             
+            # zone_type은 항상 ROI 번호(정수)여야 함
+            zone_type_value = zone_info.get('zone_type', 1)
+            # zone_type이 정수가 아닌 경우 정수로 변환
+            if not isinstance(zone_type_value, (int, float)):
+                if isinstance(zone_type_value, str) and zone_type_value.isdigit():
+                    zone_type_value = int(zone_type_value)
+                else:
+                    logger.warning(f"zone_type이 ROI 번호가 아닙니다: '{zone_type_value}', 기본값 1 사용")
+                    zone_type_value = 1
+            
             alert_info = {
                 'scenario': 'scenario1',
                 'alert_type': alert_type,
                 'threshold_value': threshold_value,
-                'alert_level': alert_level,
-                'zone_type': zone_info.get('zone_type', 'unknown'),
+                'alert_level': alert_level,  # alert_level은 항상 숫자 (1~4)
+                'zone_type': int(zone_type_value),  # zone_type은 항상 ROI 번호(정수)
                 'rect': alert_rect,
                 'detection_time': datetime.now().isoformat(),
                 'roi_polygon': roi_polygon_data
@@ -2779,6 +2815,35 @@ class VideoAlertChecker:
                     alert_info['temperature_stats'] = {}
                 alert_info['temperature_stats']['change_percent'] = threshold_value
                 alert_info['overall_analysis'] = True
+                
+                # alert_boxes가 없는 경우 전체 영역의 온도 정보를 추출하여 추가
+                if 'max' not in alert_info['temperature_stats'] or 'min' not in alert_info['temperature_stats'] or 'average' not in alert_info['temperature_stats']:
+                    # 파노라마 데이터에서 전체 영역 온도 정보 추출
+                    # panorama_data_record가 함수 내에서 사용 가능한지 확인
+                    panorama_data = None
+                    if panorama_data_record and panorama_data_record.get('panoramaData'):
+                        panorama_data = panorama_data_record['panoramaData']
+                    else:
+                        # panorama_data_record가 없으면 최신 데이터 조회
+                        latest_data = self.get_latest_temperature_data()
+                        if latest_data and latest_data.get('panoramaData'):
+                            panorama_data = latest_data['panoramaData']
+                    
+                    if panorama_data:
+                        try:
+                            temp_matrix = self.create_temperature_matrix(panorama_data)
+                            if temp_matrix is not None:
+                                # 전체 영역 온도 데이터 추출
+                                all_temps = temp_matrix[~np.isnan(temp_matrix)]
+                                if len(all_temps) > 0:
+                                    alert_info['temperature_stats']['max'] = float(np.max(all_temps))
+                                    alert_info['temperature_stats']['min'] = float(np.min(all_temps))
+                                    alert_info['temperature_stats']['average'] = float(np.mean(all_temps))
+                                    logger.info(f"overall_change_percent: 전체 영역 온도 정보 추가 - max={alert_info['temperature_stats']['max']:.1f}°C, min={alert_info['temperature_stats']['min']:.1f}°C, avg={alert_info['temperature_stats']['average']:.1f}°C")
+                        except Exception as e:
+                            logger.error(f"overall_change_percent 온도 정보 추출 오류: {str(e)}")
+                    else:
+                        logger.warning("overall_change_percent: 파노라마 데이터를 찾을 수 없어 온도 정보를 추가할 수 없습니다")
             
             # 디버깅을 위한 로그 추가
             # logger.info(f"경보 정보 구성 완료: roi_polygon 구조 = {type(roi_polygon_data)}")
@@ -2803,11 +2868,14 @@ class VideoAlertChecker:
             """
             
             now = datetime.now()
+            # alert_level을 정수로 변환하여 저장 (문자열 'overall' 등이 아닌 숫자만 저장)
+            alert_level_int = int(alert_level) if alert_level is not None else 1
+            
             values = (
                 1,  # fk_camera_id
                 now,  # alert_accur_time
                 alert_type,  # alert_type
-                alert_level,  # alert_level (1~4)
+                alert_level_int,  # alert_level (1~4) - 정수로 저장
                 'P001',  # alert_status
                 alert_info_json,  # alert_info_json (이미 직렬화됨)
                 self._convert_zone_type_to_int(zone_info.get('zone_type', 1)),  # fk_detect_zone_id
@@ -2891,26 +2959,11 @@ class VideoAlertChecker:
                 return None
             
             # zone_info에서 ROI 번호 추출 (zone_type)
-            zone_type = zone_info.get('zone_type', 'unknown')
+            # zone_type은 항상 ROI 번호(정수)여야 함
+            zone_type = zone_info.get('zone_type', 1)
             
-            # zone_type에서 ROI 번호 추출 ("Z1" -> 1, "Z001" -> 1, "1" -> 1)
-            roi_number = None
-            if isinstance(zone_type, str):
-                # "Z1", "Z001", "Z01" 등의 형식 처리
-                match = re.match(r'Z?0*(\d+)', zone_type)
-                if match:
-                    try:
-                        roi_number = int(match.group(1))  # Z1 -> 1, Z2 -> 2, ...
-                    except ValueError:
-                        logger.warning(f"시나리오2: zone_type에서 ROI 번호 추출 실패: {zone_type}")
-                else:
-                    # 숫자만 있는 경우
-                    try:
-                        roi_number = int(zone_type)  # 1 -> 1, 2 -> 2, ...
-                    except ValueError:
-                        logger.warning(f"시나리오2: zone_type에서 ROI 번호 추출 실패: {zone_type}")
-            elif isinstance(zone_type, int):
-                roi_number = zone_type  # 1 -> 1, 2 -> 2, ...
+            # zone_type을 강제로 정수로 변환
+            roi_number = self._convert_zone_type_to_int(zone_type)
             
             if roi_number is None or roi_number < 0:
                 logger.warning(f"시나리오2: ROI 번호를 추출할 수 없습니다. zone_type: {zone_type}")
@@ -3704,17 +3757,27 @@ class VideoAlertChecker:
             # alert_segments가 있는 경우 각 등분의 정보 저장
             
             # 경보 정보 구성
+            # zone_type은 항상 ROI 번호(정수)여야 함
+            zone_type_value = zone_info.get('zone_type', 1)
+            # zone_type이 정수가 아닌 경우 정수로 변환
+            if not isinstance(zone_type_value, (int, float)):
+                if isinstance(zone_type_value, str) and zone_type_value.isdigit():
+                    zone_type_value = int(zone_type_value)
+                else:
+                    logger.warning(f"zone_type이 ROI 번호가 아닙니다: '{zone_type_value}', 기본값 1 사용")
+                    zone_type_value = 1
+            
             alert_info = {
                 'scenario': 'scenario2',
                 'alert_type': alert_type,
                 'alert_segment_count': alert_segment_count,
-                'alert_level': alert_level,
-                'zone_type': zone_info.get('zone_type', 'unknown'),
+                'alert_level': alert_level,  # alert_level은 항상 숫자 (1~4)
+                'zone_type': int(zone_type_value),  # zone_type은 항상 ROI 번호(정수)
                 'rect': main_rect,
                 'detection_time': datetime.now().isoformat(),
                 'roi_polygon': {
                     'main_roi': {
-                        'zone_type': zone_info.get('zone_type', 'unknown'),
+                        'zone_type': int(zone_type_value),  # zone_type은 항상 ROI 번호(정수)
                         'rect': main_rect,
                         'polygon': main_polygon
                     },
@@ -3816,11 +3879,14 @@ class VideoAlertChecker:
             """
             
             now = datetime.now()
+            # alert_level을 정수로 변환하여 저장 (문자열 'overall' 등이 아닌 숫자만 저장)
+            alert_level_int = int(alert_level) if alert_level is not None else 1
+            
             values = (
                 1,  # fk_camera_id
                 now,  # alert_accur_time
                 alert_type,  # alert_type
-                alert_level,  # alert_level (1~4)
+                alert_level_int,  # alert_level (1~4) - 정수로 저장
                 'P001',  # alert_status
                 json.dumps(alert_info, ensure_ascii=False),  # alert_info_json
                 self._convert_zone_type_to_int(zone_info.get('zone_type', 1)),  # fk_detect_zone_id
@@ -3843,16 +3909,59 @@ class VideoAlertChecker:
                 min_temp = None
                 avg_temp = None
                 
+                # alert_info의 temperature_stats에서 먼저 추출
                 if 'temperature_stats' in alert_info:
                     max_temp = alert_info['temperature_stats'].get('max')
                     min_temp = alert_info['temperature_stats'].get('min')
                     avg_temp = alert_info['temperature_stats'].get('average')
                 
-                # roi_temperature_stats에서 추출
-                if max_temp is None and roi_temperature_stats:
-                    max_temp = roi_temperature_stats.get('max')
-                    min_temp = roi_temperature_stats.get('min')
-                    avg_temp = roi_temperature_stats.get('average')
+                # temperature_stats가 없거나 값이 없는 경우 roi_temperature_stats에서 추출
+                if (max_temp is None or min_temp is None or avg_temp is None) and roi_temperature_stats:
+                    if max_temp is None:
+                        max_temp = roi_temperature_stats.get('max')
+                    if min_temp is None:
+                        min_temp = roi_temperature_stats.get('min')
+                    if avg_temp is None:
+                        avg_temp = roi_temperature_stats.get('average')
+                
+                # 여전히 온도 정보가 없는 경우 파노라마 데이터에서 직접 추출
+                if (max_temp is None or min_temp is None or avg_temp is None):
+                    try:
+                        # 파노라마 데이터에서 전체 영역 온도 정보 추출
+                        panorama_data = None
+                        if panorama_snapshot and panorama_snapshot.get('panorama_image'):
+                            # panorama_snapshot에서 panoramaData 추출 시도
+                            latest_data = self.get_latest_temperature_data()
+                            if latest_data and latest_data.get('panoramaData'):
+                                panorama_data = latest_data['panoramaData']
+                        else:
+                            latest_data = self.get_latest_temperature_data()
+                            if latest_data and latest_data.get('panoramaData'):
+                                panorama_data = latest_data['panoramaData']
+                        
+                        if panorama_data:
+                            temp_matrix = self.create_temperature_matrix(panorama_data)
+                            if temp_matrix is not None:
+                                # ROI 영역 추출
+                                if 'actual_rect' in zone_info:
+                                    x, y, w, h = zone_info['actual_rect']
+                                else:
+                                    x, y, w, h = zone_info.get('rect', [0, 0, 640, 240])
+                                
+                                # 경계 체크
+                                if x + w <= temp_matrix.shape[1] and y + h <= temp_matrix.shape[0]:
+                                    roi_temp = temp_matrix[y:y+h, x:x+w]
+                                    valid_temps = roi_temp[~np.isnan(roi_temp)]
+                                    if len(valid_temps) > 0:
+                                        if max_temp is None:
+                                            max_temp = float(np.max(valid_temps))
+                                        if min_temp is None:
+                                            min_temp = float(np.min(valid_temps))
+                                        if avg_temp is None:
+                                            avg_temp = float(np.mean(valid_temps))
+                                        logger.info(f"시나리오2: 파노라마 데이터에서 온도 정보 추출 - max={max_temp:.1f}°C, min={min_temp:.1f}°C, avg={avg_temp:.1f}°C")
+                    except Exception as e:
+                        logger.error(f"시나리오2: 파노라마 데이터에서 온도 정보 추출 오류: {str(e)}")
                 
                 # 파일 경로와 파일 이름 (SFTP 업로드된 파일명 사용)
                 # SFTP root_path 사용 (~/ftp_data -> ftp_data로 변환)
@@ -3966,7 +4075,14 @@ class VideoAlertChecker:
                                 # ROI가 있는 경우에만 온도 데이터 추출 및 DB 삽입
                                 if self.zone_list:
                                     # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입
+                                    # zone_type이 0인 ROI는 제외 (scenario1_judge와 동일한 필터링)
                                     for zone_info in self.zone_list:
+                                        zone_type = zone_info.get('zone_type')
+                                        # zone_type = 0 또는 '0'인 경우 제외 (번호가 없는 경우)
+                                        if zone_type == 0 or zone_type == '0':
+                                            logger.debug(f"zone_type={zone_type}인 ROI는 온도 데이터 저장을 건너뜁니다")
+                                            continue
+                                        
                                         roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
                                         if roi_data:
                                             self.insert_roi_temperature_data(roi_data, zone_info)

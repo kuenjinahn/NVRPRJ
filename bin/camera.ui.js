@@ -124,3 +124,4 @@ if (cluster.isPrimary) {
 } else {
   new Interface(logger, config);
 }
+

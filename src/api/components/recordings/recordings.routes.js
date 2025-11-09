@@ -1217,7 +1217,8 @@ export const routesConfig = (app) => {
           fileSize: data.fileSize || data.file_size || 0,
           status: data.status || 'completed',
           filePath: actualFilePath, // 실제 파일 경로
-          streamUrl: `${req.protocol}://${req.get('host')}/api/recordings/stream/${data.id}`,
+          // 상대 경로로 반환하여 클라이언트의 프록시를 통해 접근하도록 함
+          streamUrl: `/api/recordings/stream/${data.id}`,
           fileType: 'mp4'
         };
       });

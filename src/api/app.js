@@ -216,7 +216,24 @@ export default class App {
       })
     );
 
-    app.use(history({ index: 'index.html' }));
+    // SPA 라우팅을 위한 history API fallback 설정
+    // API 경로(/api/*)와 특정 경로(/swagger, /version)를 제외하고 모든 GET 요청을 index.html로 리다이렉트
+    app.use(history({
+      index: '/index.html',
+      // API 경로와 특정 경로를 제외
+      rewrites: [
+        // API 경로는 제외 (원래 경로 유지)
+        { from: /^\/api\/.*$/, to: function (context) { return context.parsedUrl.pathname; } },
+        // swagger 경로는 제외
+        { from: /^\/swagger\/.*$/, to: function (context) { return context.parsedUrl.pathname; } },
+        // version 경로는 제외
+        { from: /^\/version$/, to: function (context) { return context.parsedUrl.pathname; } }
+      ],
+      // HTML Accept 헤더가 있는 요청만 처리
+      htmlAcceptHeaders: ['text/html', 'application/xhtml+xml'],
+      // 점이 있는 파일 경로도 처리
+      disableDotRule: true
+    }));
     app.use(express.static(path.join(__dirname, '../../interface')));
 
     return app;
