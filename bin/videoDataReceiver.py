@@ -180,7 +180,7 @@ class VideoDataReceiver:
             logger.info(f"현재 데이터베이스: {current_db.get('current_db') if current_db else 'None'}")
             
             # 테이블명은 소문자로 처리
-            table_name = 'dubhrdamtif'
+            table_name = 'dubhrdamtif_vw'
             
             # 테이블 존재 여부 확인
             try:
@@ -209,15 +209,15 @@ class VideoDataReceiver:
             # 테이블명은 소문자, 필드명은 대문자
             query = f"""
                 SELECT `RWL`, `DAMBSARF`, `DQTY` 
-                FROM `{table_name}` 
-                WHERE `DAMCD` = %s 
+                FROM dubhrdamtif_vw 
+                WHERE `DAMCD` = {MSDB_CODE}
                 AND `obsdh` > DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 HOUR), '%%Y%%m%%d%%H')
                 ORDER BY `obsdh` DESC
                 LIMIT 1
             """
             
             logger.info(f"MSDB (MariaDB) 쿼리 실행: DAMCD = {MSDB_CODE}, 테이블 = {table_name}")
-            cursor.execute(query, (MSDB_CODE,))
+            cursor.execute(query)
             result = cursor.fetchone()
             cursor.close()
             
