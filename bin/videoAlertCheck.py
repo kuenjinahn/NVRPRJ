@@ -3963,19 +3963,27 @@ class VideoAlertChecker:
                             # 온도 매트릭스 생성
                             temp_matrix = self.create_temperature_matrix(panorama_data_record['panoramaData'])
                             if temp_matrix is not None:
-                                # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입
-                                for zone_info in self.zone_list:
-                                    roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
-                                    if roi_data:
-                                        self.insert_roi_temperature_data(roi_data, zone_info)
+                                # ROI가 있는 경우에만 온도 데이터 추출 및 DB 삽입
+                                if self.zone_list:
+                                    # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입
+                                    for zone_info in self.zone_list:
+                                        roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
+                                        if roi_data:
+                                            self.insert_roi_temperature_data(roi_data, zone_info)
+                                else:
+                                    logger.warning("DB에 ROI가 없어 ROI 온도 데이터 추출을 건너뜁니다")
                         except Exception as e:
                             logger.error(f"ROI 온도 데이터 DB 삽입 오류: {str(e)}")
                             import traceback
                             logger.error(traceback.format_exc())
                     
-                    # 시나리오1과 시나리오2 실행
-                    self.scenario1_judge()
-                    self.scenario2_judge()
+                    # ROI가 있는 경우에만 시나리오1과 시나리오2 실행
+                    if self.zone_list:
+                        # 시나리오1과 시나리오2 실행
+                        self.scenario1_judge()
+                        self.scenario2_judge()
+                    else:
+                        logger.warning("DB에 ROI가 없어 경고 발생 알고리즘을 수행하지 않습니다")
                    
                     # 강제 종료 체크
                     if self.force_exit:
