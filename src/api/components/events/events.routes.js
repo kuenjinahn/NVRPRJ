@@ -802,7 +802,7 @@ router.post('/ptz/wiper', async (req, res) => {
  *           minimum: 1
  *           maximum: 3
  *           default: 1
- *         description: PTZ 번호 (1-3, 기본값: 1)
+ *         description: 'PTZ 번호 (1-3, 기본값: 1)'
  *     responses:
  *       200:
  *         description: PTZ 위치 조회 성공

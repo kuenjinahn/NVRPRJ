@@ -31,6 +31,13 @@ export const list = async (req, res, next) => {
 
     // 필터 처리
     const where = {};
+    // popup_close 필터 처리
+    // includeClosed가 'true'이면 모든 데이터 조회 (popup_close 조건 없음)
+    // includeClosed가 'true'가 아니면 popup_close = 0인 것만 조회
+    if (req.query.includeClosed !== 'true') {
+      where.popup_close = 0;
+    }
+
     if (req.query.status) where.alert_status = req.query.status;
     if (req.query.level) where.alert_level = req.query.level;
     if (req.query.startDate && req.query.endDate) {
@@ -40,11 +47,19 @@ export const list = async (req, res, next) => {
       where.alert_description = { [Op.like]: `%${req.query.search}%` };
     }
 
+    console.log('----------> alerts list where 조건:', JSON.stringify(where, null, 2));
+    console.log('----------> alerts list offset:', offset, 'limit:', limit);
+
     const { count, rows } = await AlertModel.list({ where, offset, limit });
+
+    console.log('----------> alerts list 조회 결과 count:', count);
+    console.log('----------> alerts list 조회 결과 rows 개수:', rows.length);
+
     res.locals.items = rows;
     res.locals.totalItems = count;
     return next();
   } catch (error) {
+    console.error('----------> alerts list 오류:', error);
     res.status(500).send({
       statusCode: 500,
       message: error.message,
@@ -154,27 +169,50 @@ export const getAlertSettings = async (req, res) => {
 
 export const saveAlertSettings = async (req, res) => {
   try {
-    const { alert_setting_json } = req.body.settings;
-    const fk_user_id = 1; // 고정값으로 설정
-    console.log('----------> saveAlertSettings', req.body);
-    let setting = await AlertSetting.findOne({ where: { fk_user_id } });
+    console.log('----------> saveAlertSettings req.body:', JSON.stringify(req.body, null, 2));
+
+    // req.body.settings가 있으면 그것을 사용, 없으면 req.body 직접 사용
+    const settingsData = req.body.settings || req.body;
+    const alert_setting_json = settingsData.alert_setting_json;
+
+    console.log('----------> alert_setting_json:', alert_setting_json);
+
+    if (!alert_setting_json) {
+      console.error('----------> alert_setting_json이 없습니다!');
+      return res.status(400).json({ error: 'alert_setting_json is required' });
+    }
+
+    // 테이블에 1개만 있으므로 fk_user_id 조건 없이 첫 번째 레코드 조회
+    let setting = await AlertSetting.findOne();
+
     if (setting) {
-      // update
-      await setting.update({
-        alert_setting_json,
-        update_date: new Date()
-      });
+      // 기존 설정 업데이트
+      console.log('----------> 기존 설정 업데이트');
+      console.log('----------> 기존 alert_setting_json:', setting.alert_setting_json);
+      console.log('----------> 새로운 alert_setting_json:', alert_setting_json);
+
+      setting.alert_setting_json = alert_setting_json;
+      setting.update_date = new Date();
+      await setting.save();
+
+      console.log('----------> 업데이트 완료');
+      console.log('----------> 업데이트 후 설정:', setting.get({ plain: true }));
     } else {
-      // insert
+      // 새 설정 생성 (fk_user_id는 기본값 1로 설정)
+      console.log('----------> 새 설정 생성');
       setting = await AlertSetting.create({
         alert_setting_json,
-        fk_user_id,
+        fk_user_id: 1,
         create_date: new Date(),
         update_date: new Date()
       });
+      console.log('----------> 생성 완료');
     }
+
+    console.log('----------> 최종 저장된 설정:', setting.get({ plain: true }));
     res.json({ result: setting });
   } catch (err) {
+    console.error('saveAlertSettings error:', err);
     res.status(500).json({ error: err.message });
   }
 };

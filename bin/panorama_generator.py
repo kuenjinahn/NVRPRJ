@@ -12,6 +12,7 @@ import platform
 from logging.handlers import RotatingFileHandler
 import signal
 import pymysql
+import pymysql.err
 from configparser import ConfigParser
 from datetime import datetime, timedelta
 import traceback
@@ -25,12 +26,21 @@ import numpy as np
 import requests
 from PIL import Image
 import io
+import zipfile
 import subprocess
 import tempfile
 import hashlib
 import random
 import string
-import paramiko
+import pickle
+
+# 컬러바 분석 모듈 import (logger 설정 전에 import 시도, 실패 시 나중에 처리)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'temp_extractor', 'temp_extractor'))
+try:
+    from colorbar_analyzer import analyze_colorbar, get_temperature_from_color_with_map
+    COLORBAR_ANALYZER_AVAILABLE = True
+except ImportError:
+    COLORBAR_ANALYZER_AVAILABLE = False
 
 def create_digest_auth(username, password, method, uri, realm, nonce, qop, nc, cnonce):
     """Digest 인증 헤더 생성"""
@@ -113,350 +123,6 @@ def make_digest_request(url, username, password, timeout=10):
         logger.error(f"[인증] 요청 실패: {e}")
         raise
 
-def create_sftp_connection():
-    """SFTP 서버 연결"""
-    try:
-        # SFTP 설정 읽기
-        sftp_ip = config.get('SFTP', 'ip')
-        sftp_port = config.getint('SFTP', 'port')
-        sftp_user = config.get('SFTP', 'user')
-        sftp_password = config.get('SFTP', 'password')
-        
-        logger.info(f"SFTP 서버 연결 시도: {sftp_user}@{sftp_ip}:{sftp_port}")
-        
-        # SSH 클라이언트 생성
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        # SSH 연결
-        ssh_client.connect(
-            hostname=sftp_ip,
-            port=sftp_port,
-            username=sftp_user,
-            password=sftp_password,
-            timeout=10
-        )
-        
-        # SFTP 클라이언트 생성
-        sftp_client = ssh_client.open_sftp()
-        
-        logger.info("SFTP 서버 연결 성공")
-        return ssh_client, sftp_client
-        
-    except Exception as e:
-        logger.error(f"SFTP 서버 연결 실패: {e}")
-        return None, None
-
-def close_sftp_connection(ssh_client, sftp_client):
-    """SFTP 연결 종료"""
-    try:
-        if sftp_client:
-            sftp_client.close()
-        if ssh_client:
-            ssh_client.close()
-        logger.info("SFTP 연결 종료 완료")
-    except Exception as e:
-        logger.warning(f"SFTP 연결 종료 중 오류: {e}")
-
-def create_remote_directory_tree(sftp_client, root_path, year, month, day):
-    """원격 서버에 년/월/일 폴더 구조 생성"""
-    try:
-        logger.info(f"폴더 구조 생성 시작: {root_path}")
-        
-        # 년/월/일 폴더 경로 생성
-        year_path = f"{root_path}/{year}"
-        month_path = f"{year_path}/{month:02d}"
-        day_path = f"{month_path}/{day:02d}"
-        
-        logger.info(f"생성할 경로들: {[year_path, month_path, day_path]}")
-        
-        # 각 폴더를 순차적으로 생성 (상위 폴더부터)
-        paths_to_create = [year_path, month_path, day_path]
-        
-        for i, path in enumerate(paths_to_create):
-            logger.info(f"폴더 생성 시도 {i+1}/{len(paths_to_create)}: {path}")
-            
-            # 폴더가 이미 존재하는지 확인
-            try:
-                sftp_client.stat(path)
-                logger.info(f"폴더 이미 존재: {path}")
-                continue
-            except FileNotFoundError:
-                logger.info(f"폴더가 존재하지 않음, 생성 시도: {path}")
-            except Exception as stat_error:
-                logger.warning(f"폴더 확인 중 오류: {stat_error}")
-            
-            # 폴더 생성 시도
-            try:
-                sftp_client.mkdir(path)
-                logger.info(f"폴더 생성 성공: {path}")
-            except Exception as mkdir_error:
-                logger.error(f"폴더 생성 실패 {path}: {mkdir_error}")
-                
-                # 폴더가 이미 존재하는 경우 (Failure 오류)
-                if "Failure" in str(mkdir_error):
-                    logger.info(f"폴더가 이미 존재함 (Failure 무시): {path}")
-                    # 폴더가 실제로 존재하는지 다시 확인
-                    try:
-                        sftp_client.stat(path)
-                        logger.info(f"폴더 존재 확인됨: {path}")
-                        continue  # 다음 폴더로 진행
-                    except FileNotFoundError:
-                        logger.error(f"폴더가 실제로 존재하지 않음: {path}")
-                        return None
-                # 상위 디렉토리가 없어서 실패한 경우, 단계별로 생성
-                elif "No such file" in str(mkdir_error) or "No such file or directory" in str(mkdir_error):
-                    logger.info(f"상위 디렉토리부터 단계별 생성 시도: {path}")
-                    if not create_directories_step_by_step(sftp_client, path):
-                        logger.error(f"단계별 생성 실패: {path}")
-                        return None
-                    # 단계별 생성 후 다시 시도
-                    try:
-                        sftp_client.mkdir(path)
-                        logger.info(f"폴더 생성 완료 (재시도): {path}")
-                    except Exception as retry_error:
-                        if "Failure" in str(retry_error):
-                            logger.info(f"재시도 시에도 폴더가 이미 존재함: {path}")
-                            continue
-                        else:
-                            logger.error(f"폴더 생성 재시도 실패 {path}: {retry_error}")
-                            return None
-                elif "Permission denied" in str(mkdir_error):
-                    logger.error(f"폴더 생성 권한 없음 {path}: {mkdir_error}")
-                    return None
-                else:
-                    logger.error(f"폴더 생성 실패 (기타 오류) {path}: {mkdir_error}")
-                    return None
-        
-        # 최종 확인
-        try:
-            sftp_client.stat(day_path)
-            logger.info(f"폴더 구조 생성 완료: {day_path}")
-            return day_path
-        except Exception as final_error:
-            logger.error(f"최종 폴더 확인 실패: {day_path}, 오류: {final_error}")
-            return None
-        
-    except Exception as e:
-        logger.error(f"원격 폴더 생성 실패: {e}")
-        return None
-
-def create_directories_step_by_step(sftp_client, target_path):
-    """단계별로 디렉토리 생성 (더 안전한 방법)"""
-    try:
-        logger.info(f"단계별 디렉토리 생성 시작: {target_path}")
-        
-        # 경로를 '/'로 분할
-        path_parts = target_path.split('/')
-        path_parts = [part for part in path_parts if part]  # 빈 문자열 제거
-        
-        logger.info(f"경로 분할 결과: {path_parts}")
-        
-        current_path = ''
-        
-        for i, part in enumerate(path_parts):
-            if i == 0 and target_path.startswith('/'):
-                # 절대 경로의 첫 번째 부분
-                current_path = f"/{part}"
-            else:
-                # 상대 경로이거나 절대 경로의 나머지 부분
-                current_path = f"{current_path}/{part}" if current_path else part
-            
-            logger.info(f"현재 처리 중인 경로: {current_path}")
-            
-            try:
-                # 현재 경로가 존재하는지 확인
-                sftp_client.stat(current_path)
-                logger.debug(f"디렉토리 이미 존재: {current_path}")
-            except FileNotFoundError:
-                # 존재하지 않으면 생성
-                try:
-                    sftp_client.mkdir(current_path)
-                    logger.info(f"디렉토리 생성 완료: {current_path}")
-                except Exception as mkdir_error:
-                    logger.error(f"디렉토리 생성 실패 {current_path}: {mkdir_error}")
-                    return False
-            except Exception as stat_error:
-                logger.error(f"디렉토리 확인 실패 {current_path}: {stat_error}")
-                return False
-        
-        logger.info(f"단계별 디렉토리 생성 완료: {target_path}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"단계별 디렉토리 생성 실패: {e}")
-        return False
-
-def create_parent_directories(sftp_client, target_path):
-    """상위 디렉토리들을 재귀적으로 생성"""
-    try:
-        logger.info(f"상위 디렉토리 생성 시작: {target_path}")
-        
-        # 절대 경로인지 확인하고 적절히 처리
-        is_absolute = target_path.startswith('/')
-        
-        # 경로를 '/'로 분할하여 각 단계별로 생성
-        path_parts = target_path.split('/')
-        
-        # 빈 문자열 제거 (split으로 인한 빈 요소들)
-        path_parts = [part for part in path_parts if part]
-        
-        current_path = ''
-        
-        for i, part in enumerate(path_parts):
-            if is_absolute and i == 0:
-                # 절대 경로의 첫 번째 부분 (루트)
-                current_path = f"/{part}"
-            else:
-                # 상대 경로이거나 절대 경로의 나머지 부분
-                current_path = f"{current_path}/{part}" if current_path else part
-            
-            try:
-                # 현재 경로가 존재하는지 확인
-                sftp_client.stat(current_path)
-                logger.debug(f"상위 폴더 이미 존재: {current_path}")
-            except FileNotFoundError:
-                # 존재하지 않으면 생성
-                try:
-                    sftp_client.mkdir(current_path)
-                    logger.info(f"상위 폴더 생성 완료: {current_path}")
-                except Exception as mkdir_error:
-                    logger.error(f"상위 폴더 생성 실패 {current_path}: {mkdir_error}")
-                    # 권한 오류인 경우 더 자세한 정보 출력
-                    if "Permission denied" in str(mkdir_error):
-                        logger.error(f"권한 없음: {current_path}")
-                    elif "Failure" in str(mkdir_error):
-                        logger.error(f"SFTP 서버 오류: {current_path}")
-                    return False
-            except Exception as stat_error:
-                logger.error(f"경로 확인 실패 {current_path}: {stat_error}")
-                return False
-        
-        logger.info(f"상위 디렉토리 생성 완료: {target_path}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"상위 디렉토리 생성 실패: {e}")
-        return False
-
-def upload_panorama_to_sftp(panorama_base64, timestamp):
-    """파노라마 이미지를 SFTP 서버에 업로드"""
-    try:
-        # SFTP 연결
-        ssh_client, sftp_client = create_sftp_connection()
-        if not sftp_client:
-            return False
-        
-        try:
-            # 설정에서 SFTP 정보 읽기
-            root_path = config.get('SFTP', 'root_path')
-            
-            # 타임스탬프에서 년/월/일 추출
-            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            year = dt.year
-            month = dt.month
-            day = dt.day
-            hour = dt.hour
-            minute = dt.minute
-            second = dt.second
-            
-            # 홈 디렉토리 기반 경로 처리
-            if root_path.startswith('~/'):
-                # 홈 디렉토리 경로를 절대 경로로 변환
-                relative_path = root_path[2:]  # ~/ 제거
-                
-                # 여러 가능한 홈 디렉토리 경로 시도
-                possible_home_dirs = [
-                    f"/home/{config.get('SFTP', 'user')}",  # 일반적인 홈 디렉토리
-                    f"/home/akj",  # 하드코딩된 사용자명
-                    "/home",  # 홈 디렉토리 루트
-                    "/tmp"  # 임시 디렉토리 (폴백)
-                ]
-                
-                home_dir = None
-                for possible_home in possible_home_dirs:
-                    try:
-                        # 디렉토리가 존재하는지 확인
-                        sftp_client.stat(possible_home)
-                        home_dir = possible_home
-                        logger.info(f"홈 디렉토리 확인: {home_dir}")
-                        break
-                    except FileNotFoundError:
-                        continue
-                    except Exception as e:
-                        logger.debug(f"홈 디렉토리 확인 실패 {possible_home}: {e}")
-                        continue
-                
-                if home_dir:
-                    root_path = f"{home_dir}/{relative_path}"
-                    logger.info(f"홈 디렉토리 경로 변환: ~/{relative_path} -> {root_path}")
-                else:
-                    # 홈 디렉토리를 찾을 수 없는 경우, 상대 경로로 시도
-                    logger.warning("홈 디렉토리를 찾을 수 없어 상대 경로로 시도")
-                    root_path = relative_path
-            
-            # ftp_data 폴더가 없으면 생성
-            try:
-                sftp_client.stat(root_path)
-                logger.info(f"폴더 존재 확인: {root_path}")
-            except FileNotFoundError:
-                logger.info(f"폴더가 없어서 생성 시도: {root_path}")
-                try:
-                    sftp_client.mkdir(root_path)
-                    logger.info(f"폴더 생성 완료: {root_path}")
-                except Exception as e:
-                    logger.error(f"폴더 생성 실패: {e}")
-                    return False
-            except Exception as e:
-                logger.error(f"폴더 확인 실패: {e}")
-                return False
-            
-            # 파일명 생성: {date_time}_{댐코드}.jpg 형식
-            # config.ini에서 댐코드 읽기
-            dam_code = config.get('SFTP', 'code', fallback='1001210')
-            
-            # 날짜시간 형식: YYYYMMDDHHMMSS
-            date_time = f"{year:04d}{month:02d}{day:02d}{hour:02d}{minute:02d}{second:02d}"
-            
-            # 파일명 생성: {date_time}_{댐코드}.jpg
-            filename = f"{date_time}_{dam_code}.jpg"
-            # ftp_data 폴더에 직접 저장
-            remote_file_path = f"{root_path}/{filename}"
-            
-            # Base64 이미지를 바이너리로 변환
-            image_data = base64.b64decode(panorama_base64)
-            
-            # 임시 파일에 저장
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-                temp_file.write(image_data)
-                temp_file_path = temp_file.name
-            
-            try:
-                # SFTP로 파일 업로드
-                sftp_client.put(temp_file_path, remote_file_path)
-                logger.info(f"파노라마 이미지 SFTP 업로드 완료: {remote_file_path}")
-                
-                # 업로드된 파일 크기 확인
-                remote_file_stat = sftp_client.stat(remote_file_path)
-                logger.info(f"업로드된 파일 크기: {remote_file_stat.st_size} bytes")
-                
-                return True
-                
-            finally:
-                # 임시 파일 삭제
-                try:
-                    os.unlink(temp_file_path)
-                except Exception as e:
-                    logger.warning(f"임시 파일 삭제 실패: {e}")
-        
-        finally:
-            # SFTP 연결 종료
-            close_sftp_connection(ssh_client, sftp_client)
-            
-    except Exception as e:
-        logger.error(f"SFTP 업로드 실패: {e}")
-        return False
-
 def load_config():
     """설정 파일 로드"""
     config = ConfigParser()
@@ -535,6 +201,10 @@ PANORAMA_INTERVAL_MINUTES = PANORAMA_INTERVAL_SECONDS // 60  # 60분
 ENABLE_PRESET_MOVEMENT = True  # True: 실제 이동, False: 이동 없이 대기만
 PRESET_WAIT_SECONDS = 5  # 프리셋 이동 비활성화 시 대기 시간 (초)
 
+# 컬러바 온도 설정 (컬러바 이미지에 명시된 온도 범위)
+TEMP_MIN_GLOBAL = 35.0  # 최저 온도 (도)
+TEMP_MAX_GLOBAL = 51.0  # 최고 온도 (도)
+
 ### mariadb 연결정보 ####
 DBSERVER_IP = config.get('DATABASE', 'host')
 DBSERVER_PORT = config.getint('DATABASE', 'port')
@@ -570,6 +240,10 @@ console_handler.setFormatter(logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 ))
 logger.addHandler(console_handler)
+
+# 컬러바 분석 모듈 사용 가능 여부 로깅
+if not COLORBAR_ANALYZER_AVAILABLE:
+    logger.warning("colorbar_analyzer 모듈을 찾을 수 없습니다. 밝기 기반 온도 계산을 사용합니다.")
 
 # =========================
 # PNT Protocol Constants (pnt_server.py와 동일)
@@ -825,6 +499,34 @@ class PanoramaGenerator:
         self.thermal_camera_ip = None
         self.thermal_camera_port = None
         
+        # 컬러바 관련 설정
+        self.colorbar_image_path = None
+        self.color_mapping = None
+        self.temp_min = TEMP_MIN_GLOBAL
+        self.temp_max = TEMP_MAX_GLOBAL
+        
+        # 컬러바 이미지 경로 설정 (config에서 가져오거나 기본값 사용)
+        # config.ini에 COLORBAR 섹션이 있으면 사용, 없으면 기본 경로 시도
+        try:
+            self.colorbar_image_path = config.get('COLORBAR', 'image_path', fallback=None)
+            if self.colorbar_image_path:
+                # 상대 경로를 절대 경로로 변환
+                if not os.path.isabs(self.colorbar_image_path):
+                    base_dir = os.path.dirname(os.path.dirname(__file__))
+                    self.colorbar_image_path = os.path.join(base_dir, self.colorbar_image_path)
+                
+                # 컬러바 온도 범위 설정 (config에서 가져오거나 기본값 사용)
+                self.temp_min = config.getfloat('COLORBAR', 'temp_min', fallback=TEMP_MIN_GLOBAL)
+                self.temp_max = config.getfloat('COLORBAR', 'temp_max', fallback=TEMP_MAX_GLOBAL)
+                
+                logger.info(f"컬러바 이미지 경로: {self.colorbar_image_path}")
+                logger.info(f"컬러바 온도 범위: {self.temp_min}°C ~ {self.temp_max}°C")
+            else:
+                logger.info("컬러바 이미지 경로가 설정되지 않았습니다. 밝기 기반 온도 계산을 사용합니다.")
+        except Exception as e:
+            logger.warning(f"컬러바 설정 로드 실패: {e}. 밝기 기반 온도 계산을 사용합니다.")
+            self.colorbar_image_path = None
+        
         # PTZ 이동이 활성화된 경우에만 PTZ 클라이언트 생성
         # 디버그 모드일 때는 프리셋 이동을 건너뛰므로 PTZ 클라이언트 생성하지 않음
         if ENABLE_PRESET_MOVEMENT and not self.debug_mode:
@@ -982,7 +684,7 @@ class PanoramaGenerator:
                 
                 if success:
                     logger.info(f"프리셋 {preset_number} 이동 성공")
-                    time.sleep(3)  # 카메라 이동 대기
+                    time.sleep(7)  # 카메라 이동 대기 (간격 단축 시 충분한 안정화 시간 확보)
                     logger.info(f"프리셋 {preset_number} 이동 완료")
                     return True
                 else:
@@ -1047,8 +749,8 @@ class PanoramaGenerator:
                     stderr=subprocess.PIPE
                 )
                 
-                # 출력 데이터 수집 (타임아웃 설정)
-                stdout_data, stderr_data = process.communicate(timeout=30)
+                # 출력 데이터 수집 (타임아웃 설정 - 간격 단축 시 안정성을 위해 증가)
+                stdout_data, stderr_data = process.communicate(timeout=45)
                 
                 # 디버깅을 위한 로그
                 if stderr_data:
@@ -1129,6 +831,143 @@ class PanoramaGenerator:
             logger.error(f"이미지 머지 실패: {e}")
             return None
 
+    def _load_colorbar_mapping(self):
+        """컬러바 매핑 로드 (lazy loading)"""
+        if self.color_mapping is not None:
+            return self.color_mapping
+        
+        if not COLORBAR_ANALYZER_AVAILABLE:
+            logger.warning("colorbar_analyzer 모듈을 사용할 수 없습니다.")
+            return None
+        
+        if not self.colorbar_image_path or not os.path.exists(self.colorbar_image_path):
+            logger.warning(f"컬러바 이미지 파일을 찾을 수 없습니다: {self.colorbar_image_path}")
+            return None
+        
+        try:
+            logger.info("컬러바 이미지 분석 시작...")
+            self.color_mapping = analyze_colorbar(
+                self.colorbar_image_path, 
+                self.temp_min, 
+                self.temp_max
+            )
+            
+            if self.color_mapping is None:
+                logger.warning("컬러바 분석에 실패했습니다.")
+                return None
+            
+            logger.info(f"컬러바 분석 완료: {len(self.color_mapping)}개 색상-온도 매핑 생성")
+            return self.color_mapping
+            
+        except Exception as e:
+            logger.error(f"컬러바 분석 오류: {e}")
+            logger.error(traceback.format_exc())
+            return None
+
+    def extract_temperature_from_image(self, panorama_base64):
+        """파노라마 이미지에서 온도 데이터 추출 및 최고/최저 온도 계산 (컬러바 분석 기반)"""
+        try:
+            # base64 이미지를 디코딩하여 OpenCV로 로드
+            image_data = base64.b64decode(panorama_base64)
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                logger.warning("파노라마 이미지 디코딩 실패 - 온도 계산 건너뜀")
+                return None, None
+            
+            # 이미지 크기 확인 및 검증 (1920x480)
+            height, width = image.shape[:2]
+            target_width = 1920
+            target_height = 480
+            
+            logger.info(f"파노라마 이미지 크기: {width}x{height}")
+            
+            # 이미지 크기가 1920x480이 아니면 리사이즈
+            if width != target_width or height != target_height:
+                logger.warning(f"이미지 크기가 1920x480이 아닙니다. 리사이즈: {width}x{height} -> {target_width}x{target_height}")
+                image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+                width = target_width
+                height = target_height
+                logger.info(f"이미지 리사이즈 완료: {width}x{height}")
+            else:
+                logger.info(f"이미지 크기 확인: {width}x{height} (정상)")
+            
+            # 컬러바 매핑 로드 (컬러바 분석 기반 사용 가능한 경우)
+            color_mapping = self._load_colorbar_mapping()
+            use_colorbar = color_mapping is not None and COLORBAR_ANALYZER_AVAILABLE
+            
+            if use_colorbar:
+                logger.info("컬러바 분석 기반 온도 추정 사용")
+            else:
+                logger.info("밝기 기반 가상 온도 계산 사용 (컬러바 분석 불가)")
+            
+            # 온도 데이터 추출 (1920x480 크기만큼 모든 픽셀)
+            temperatures = []
+            sample_interval = 1  # 모든 픽셀 샘플링 (1920x480 = 921,600개)
+            
+            for y in range(0, height, sample_interval):
+                for x in range(0, width, sample_interval):
+                    # BGR 이미지에서 픽셀 값 추출
+                    pixel = image[y, x]
+                    pixel_color_bgr = pixel
+                    
+                    if use_colorbar:
+                        # 컬러바 분석 기반 온도 추정
+                        temperature = get_temperature_from_color_with_map(
+                            pixel_color_bgr, 
+                            color_mapping, 
+                            self.temp_min, 
+                            self.temp_max
+                        )
+                    else:
+                        # 밝기 기반 가상 온도 계산 (fallback)
+                        b, g, r = pixel[0], pixel[1], pixel[2]
+                        brightness = (r + g + b) / 3
+                        temperature = 20 + (brightness / 255) * 40  # 20-60도 범위
+                    
+                    temperatures.append(temperature)
+            
+            # temperatures 크기 확인 (1920x480 = 921,600개)
+            expected_count = target_width * target_height
+            actual_count = len(temperatures)
+            if actual_count != expected_count:
+                logger.warning(f"temperatures 크기 불일치: 예상={expected_count}개, 실제={actual_count}개")
+            else:
+                logger.info(f"temperatures 크기 확인: {actual_count}개 (1920x480 = {expected_count}개)")
+            
+            if not temperatures:
+                logger.warning("온도 데이터가 없습니다")
+                return None, None, None
+            
+            # 최고/최저 온도 계산
+            min_temp = min(temperatures)
+            max_temp = max(temperatures)
+            
+            method_name = "컬러바 분석" if use_colorbar else "밝기 기반"
+            logger.info(f"온도 계산 완료 ({method_name}): 최저온도={min_temp:.2f}°C, 최고온도={max_temp:.2f}°C (샘플링: {len(temperatures)}개 픽셀)")
+            
+            # temperatures 파일 저장 (주석처리)
+            # try:
+            #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            #     temperatures_file_path = os.path.join(os.path.dirname(__file__), f"temperatures_{timestamp}.json")
+            #     
+            #     with open(temperatures_file_path, 'w', encoding='utf-8') as f:
+            #         json.dump(temperatures, f, ensure_ascii=False, indent=2)
+            #     
+            #     logger.info(f"temperatures 파일 저장 완료: {temperatures_file_path}")
+            # except Exception as e:
+            #     logger.error(f"temperatures 파일 저장 실패: {e}")
+            #     import traceback
+            #     logger.error(traceback.format_exc())
+            
+            return min_temp, max_temp, temperatures
+            
+        except Exception as e:
+            logger.error(f"온도 추출 오류: {e}")
+            logger.error(traceback.format_exc())
+            return None, None, None
+
     def save_panorama_to_db(self, panorama_base64):
         """파노라마 이미지를 데이터베이스에 저장"""
         try:
@@ -1138,29 +977,95 @@ class PanoramaGenerator:
             current_time = datetime.now()
             timestamp = current_time.isoformat()
             
+            # 파노라마 이미지에서 온도 데이터 추출 및 최고/최저 온도 계산
+            # extract_temperature_from_image에서 이미 color_mapping을 로드하므로 재사용
+            min_temp, max_temp, temperatures = self.extract_temperature_from_image(panorama_base64)
+            
+            # temperatures 크기 확인 (1920x480 = 921,600개)
+            target_width = 1920
+            target_height = 480
+            expected_count = target_width * target_height
+            
+            if temperatures is not None:
+                actual_count = len(temperatures)
+                if actual_count != expected_count:
+                    logger.warning(f"DB 저장 전 temperatures 크기 불일치: 예상={expected_count}개, 실제={actual_count}개")
+                else:
+                    logger.info(f"DB 저장 전 temperatures 크기 확인: {actual_count}개 (1920x480 = {expected_count}개)")
+            else:
+                logger.warning("temperatures가 None입니다. DB 저장 시 temperatures 필드가 저장되지 않습니다.")
+            
+            # temperatures를 zip 압축
+            temperatures_compressed = None
+            if temperatures is not None:
+                try:
+                    # temperatures를 JSON 문자열로 변환
+                    temperatures_json = json.dumps(temperatures, ensure_ascii=False)
+                    
+                    # zip 압축
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        zip_file.writestr('temperatures.json', temperatures_json.encode('utf-8'))
+                    
+                    # base64로 인코딩
+                    temperatures_compressed = base64.b64encode(zip_buffer.getvalue()).decode('utf-8')
+                    
+                    original_size = len(temperatures_json.encode('utf-8'))
+                    compressed_size = len(temperatures_compressed.encode('utf-8'))
+                    compression_ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
+                    
+                    logger.info(f"temperatures 압축 완료: 원본={original_size} bytes ({original_size / 1024 / 1024:.2f} MB), "
+                              f"압축={compressed_size} bytes ({compressed_size / 1024 / 1024:.2f} MB), "
+                              f"압축률={compression_ratio:.1f}%")
+                except Exception as e:
+                    logger.error(f"temperatures 압축 실패: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 압축 실패 시 원본 사용
+                    temperatures_compressed = None
+            
             # 파노라마 데이터 구성 (테이블 구조에 맞게 최적화)
             panorama_data = {
                 "type": "panorama",
                 "timestamp": timestamp,
                 "image": panorama_base64,
+                "temperatures": temperatures_compressed if temperatures_compressed else temperatures,  # zip 압축된 데이터 또는 원본
+                "temperatures_compressed": temperatures_compressed is not None,  # 압축 여부 플래그
                 "presets": [2, 1, 3],
                 "description": "PTZ 프리셋 투어 파노라마",
                 "created_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
             }
             
+            # 온도 데이터가 추출된 경우에만 추가
+            if min_temp is not None and max_temp is not None:
+                panorama_data["minTemp"] = round(min_temp, 2)
+                panorama_data["maxTemp"] = round(max_temp, 2)
+                # logger.info(f"온도 데이터 추가: minTemp={panorama_data['minTemp']}, maxTemp={panorama_data['maxTemp']}")
+            
             # panoramaData 필드에 JSON 데이터 저장
+            panorama_data_json = json.dumps(panorama_data, ensure_ascii=False)
+            json_size = len(panorama_data_json.encode('utf-8'))
+            
+            
+            # DB 저장 시도
             query = "INSERT INTO tb_video_panorama_data (panoramaData) VALUES (%s)"
-            cursor.execute(query, (json.dumps(panorama_data, ensure_ascii=False),))
-            cursor.close()
+            try:
+                cursor.execute(query, (panorama_data_json,))
+                cursor.close()
+                logger.info(f"파노라마 데이터 저장 완료 (크기: {json_size} bytes, {json_size / 1024 / 1024:.2f} MB)")
+            except pymysql.err.OperationalError as e:
+                if "max_allowed_packet" in str(e):
+                    logger.error(f"max_allowed_packet 오류: {e}")
+                    logger.error(f"JSON 데이터 크기: {json_size} bytes ({json_size / 1024 / 1024:.2f} MB)")
+                    logger.error("해결 방법: 서버 설정 파일(my.cnf 또는 my.ini)에서 max_allowed_packet을 증가시키거나, 데이터를 압축/분할하여 저장해야 합니다.")
+                    cursor.close()
+                    return False
+                else:
+                    raise
             
-            logger.info("파노라마 데이터 저장 완료")
+            # logger.info("파노라마 데이터 저장 완료")
             
-            # DB 저장 성공 후 SFTP 업로드 수행
-            logger.info("SFTP 업로드 시작...")
-            if upload_panorama_to_sftp(panorama_base64, timestamp):
-                logger.info("SFTP 업로드 성공")
-            else:
-                logger.warning("SFTP 업로드 실패 (DB 저장은 완료됨)")
+            # SFTP 업로드는 videoAlertCheck.py에서 처리됨
             
             return True
             
@@ -1202,10 +1107,10 @@ class PanoramaGenerator:
                 
                 logger.info(f"=== 프리셋 {preset_num} 처리 완료 ===")
                 
-                # 프리셋 간 잠시 대기 (연결 안정화)
+                # 프리셋 간 잠시 대기 (연결 안정화 및 간격 단축 시 충분한 대기 시간)
                 if preset_num < 3:  # 마지막 프리셋이 아닌 경우
                     logger.info("다음 프리셋 처리 전 잠시 대기...")
-                    time.sleep(2)
+                    time.sleep(3)  # 2초 → 3초로 증가 (연결 안정화)
             
             # 4. 3개 이미지를 수평으로 머지
             panorama_base64 = self.merge_images_horizontally(snapshots)
@@ -1244,23 +1149,48 @@ class PanoramaGenerator:
             movement_status = "활성화" if ENABLE_PRESET_MOVEMENT else "비활성화"
         logger.info(f"파노라마 생성 스케줄러 시작 (간격: {PANORAMA_INTERVAL_MINUTES}분, 프리셋 이동: {movement_status})")
         
+        # 중복 실행 방지를 위한 플래그
+        self.is_generating = False
+        
         while self.running:
             try:
+                # 이전 파노라마 생성이 진행 중이면 대기
+                if self.is_generating:
+                    logger.warning("이전 파노라마 생성이 진행 중입니다. 10초 대기 후 다시 확인합니다...")
+                    time.sleep(10)
+                    continue
+                
                 current_time = datetime.now()
                 logger.info(f"현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                # 파노라마 생성 실행
-                if self.generate_panorama():
-                    logger.info("파노라마 생성 성공")
-                else:
-                    logger.error("파노라마 생성 실패")
+                # 파노라마 생성 시작 시간 기록
+                start_time = time.time()
+                self.is_generating = True
                 
-                # 다음 실행까지 대기
-                logger.info(f"다음 실행까지 {PANORAMA_INTERVAL_MINUTES}분 대기...")
-                for i in range(PANORAMA_INTERVAL_SECONDS):  # 설정된 간격을 1초씩 나누어 대기
-                    if not self.running:
-                        break
-                    time.sleep(1)
+                try:
+                    # 파노라마 생성 실행
+                    if self.generate_panorama():
+                        logger.info("파노라마 생성 성공")
+                    else:
+                        logger.error("파노라마 생성 실패")
+                finally:
+                    # 생성 완료 플래그 해제
+                    self.is_generating = False
+                
+                # 실제 소요 시간 계산
+                elapsed_time = time.time() - start_time
+                logger.info(f"파노라마 생성 소요 시간: {elapsed_time:.2f}초")
+                
+                # 다음 실행까지 대기 (생성 시간을 고려하여 조정)
+                remaining_time = max(0, PANORAMA_INTERVAL_SECONDS - int(elapsed_time))
+                if remaining_time > 0:
+                    logger.info(f"다음 실행까지 {remaining_time}초 ({remaining_time // 60}분) 대기...")
+                    for i in range(remaining_time):
+                        if not self.running:
+                            break
+                        time.sleep(1)
+                else:
+                    logger.warning(f"파노라마 생성 시간({elapsed_time:.2f}초)이 설정된 간격({PANORAMA_INTERVAL_SECONDS}초)보다 깁니다. 즉시 다음 실행을 시작합니다.")
                 
             except KeyboardInterrupt:
                 logger.info("사용자에 의해 중단됨")
@@ -1268,6 +1198,7 @@ class PanoramaGenerator:
             except Exception as e:
                 logger.error(f"스케줄러 실행 중 오류: {e}")
                 logger.error(traceback.format_exc())
+                self.is_generating = False  # 오류 발생 시 플래그 해제
                 time.sleep(60)  # 오류 발생 시 1분 대기 후 재시도
 
 def main():

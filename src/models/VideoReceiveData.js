@@ -16,6 +16,11 @@ const VideoReceiveData = sequelize.define('VideoReceiveData', {
     allowNull: false,
     defaultValue: DataTypes.NOW
   },
+  roiNumber: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'roiNumber'
+  },
   data_raw: {
     type: DataTypes.TEXT('long'),
     allowNull: true,

@@ -44,11 +44,12 @@ export const routesConfig = (app) => {
     StatisticController.getRealtimeTemp,
   ]);
 
-  app.get('/api/statistic/daily-roi-avg-temp', [
-    ValidationMiddleware.validJWTNeeded,
-    PermissionMiddleware.minimumPermissionLevelRequired('statistic:access'),
-    StatisticController.getDailyRoiAvgTemp,
-  ]);
+  // getDailyRoiAvgTemp 함수가 controller에 없으므로 주석 처리
+  // app.get('/api/statistic/daily-roi-avg-temp', [
+  //   ValidationMiddleware.validJWTNeeded,
+  //   PermissionMiddleware.minimumPermissionLevelRequired('statistic:access'),
+  //   StatisticController.getDailyRoiAvgTemp,
+  // ]);
 
   app.get('/api/statistic/daily-roi-min-change', [
     ValidationMiddleware.validJWTNeeded,
@@ -145,6 +146,12 @@ export const routesConfig = (app) => {
     ValidationMiddleware.validJWTNeeded,
     PermissionMiddleware.minimumPermissionLevelRequired('statistic:access'),
     StatisticController.getRoiTimeSeriesData,
+  ]);
+
+  app.get('/api/statistic/roi-temperature-time-series', [
+    ValidationMiddleware.validJWTNeeded,
+    PermissionMiddleware.minimumPermissionLevelRequired('statistic:access'),
+    StatisticController.getRoiTemperatureTimeSeries,
   ]);
 
   const routes = app._router.stack

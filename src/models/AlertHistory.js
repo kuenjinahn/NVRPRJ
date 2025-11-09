@@ -67,6 +67,11 @@ const AlertHistory = sequelize.define('AlertHistory', {
   alert_info_json: {
     type: DataTypes.TEXT('medium'),
     allowNull: true
+  },
+  popup_close: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: 0
   }
 }, {
   tableName: 'tb_alert_history',
