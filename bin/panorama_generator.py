@@ -34,13 +34,47 @@ import random
 import string
 import pickle
 
-# 컬러바 분석 모듈 import (logger 설정 전에 import 시도, 실패 시 나중에 처리)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'temp_extractor', 'temp_extractor'))
-try:
-    from colorbar_analyzer import analyze_colorbar, get_temperature_from_color_with_map
-    COLORBAR_ANALYZER_AVAILABLE = True
-except ImportError:
-    COLORBAR_ANALYZER_AVAILABLE = False
+# 컬러바 분석 함수 직접 구현
+def analyze_colorbar(colorbar_image_path, temp_min, temp_max, num_steps=256):
+    """컬러바 이미지를 분석하여 색상-온도 매핑 생성"""
+    colorbar_img = cv2.imread(colorbar_image_path)
+    if colorbar_img is None:
+        return None
+    h, w, _ = colorbar_img.shape
+    center_column = colorbar_img[:, w // 2, :]
+    color_to_temp_map = {}
+    for i in range(num_steps):
+        pixel_y = int(i * (h - 1) / (num_steps - 1))
+        b, g, r = center_column[pixel_y]
+        norm_pos = pixel_y / (h - 1)
+        temperature = temp_min + norm_pos * (temp_max - temp_min)
+        color_to_temp_map[tuple(map(int, (r, g, b)))] = temperature
+    return color_to_temp_map
+
+def get_temperature_from_color_with_map(pixel_color_bgr, color_map, temp_min, temp_max):
+    """픽셀 색상으로부터 온도 추정 (가장 가까운 색상 매핑 사용)"""
+    r_pixel, g_pixel, b_pixel = pixel_color_bgr[2], pixel_color_bgr[1], pixel_color_bgr[0]  # BGR을 RGB로
+
+    if (r_pixel, g_pixel, b_pixel) in color_map:
+        return color_map[(r_pixel, g_pixel, b_pixel)]
+    
+    min_dist = float('inf')
+    closest_temp = (temp_min + temp_max) / 2  # 기본값
+
+    for map_rgb, map_temp in color_map.items():
+        r_map, g_map, b_map = map_rgb[0], map_rgb[1], map_rgb[2]
+
+        diff_r = np.int64(r_map) - np.int64(r_pixel)
+        diff_g = np.int64(g_map) - np.int64(g_pixel)
+        diff_b = np.int64(b_map) - np.int64(b_pixel)
+
+        dist = np.sqrt(diff_r**2 + diff_g**2 + diff_b**2)
+
+        if dist < min_dist:
+            min_dist = dist
+            closest_temp = map_temp
+            
+    return closest_temp
 
 def create_digest_auth(username, password, method, uri, realm, nonce, qop, nc, cnonce):
     """Digest 인증 헤더 생성"""
@@ -244,11 +278,7 @@ console_handler.setFormatter(logging.Formatter(
 ))
 logger.addHandler(console_handler)
 
-# 컬러바 분석 모듈 사용 가능 여부 확인
-if not COLORBAR_ANALYZER_AVAILABLE:
-    logger.error("colorbar_analyzer 모듈을 찾을 수 없습니다. 컬러바 기반 온도 측정이 불가능합니다.")
-    logger.error("프로그램을 종료합니다.")
-    sys.exit(1)
+# 컬러바 분석 함수는 직접 구현되어 있음 (별도 확인 불필요)
 
 # =========================
 # PNT Protocol Constants (pnt_server.py와 동일)
@@ -848,11 +878,6 @@ class PanoramaGenerator:
         if self.color_mapping is not None:
             return self.color_mapping
         
-        if not COLORBAR_ANALYZER_AVAILABLE:
-            logger.error("colorbar_analyzer 모듈을 사용할 수 없습니다.")
-            logger.error("컬러바 기반 온도 측정이 불가능합니다. 프로그램을 종료합니다.")
-            sys.exit(1)
-        
         if not self.colorbar_image_path or not os.path.exists(self.colorbar_image_path):
             logger.error(f"컬러바 이미지 파일을 찾을 수 없습니다: {self.colorbar_image_path}")
             logger.error("컬러바 기반 온도 측정이 불가능합니다. 프로그램을 종료합니다.")
@@ -917,11 +942,6 @@ class PanoramaGenerator:
             
             if color_mapping is None:
                 logger.error("컬러바 매핑을 로드할 수 없습니다.")
-                logger.error("컬러바 기반 온도 측정이 불가능합니다. 프로그램을 종료합니다.")
-                sys.exit(1)
-            
-            if not COLORBAR_ANALYZER_AVAILABLE:
-                logger.error("colorbar_analyzer 모듈을 사용할 수 없습니다.")
                 logger.error("컬러바 기반 온도 측정이 불가능합니다. 프로그램을 종료합니다.")
                 sys.exit(1)
             
