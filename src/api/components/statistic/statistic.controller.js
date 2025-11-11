@@ -117,15 +117,14 @@ export const getRoiDataList = async (req, res) => {
 
     // Process each zone - 각 ROI에 대해 최신 데이터 조회
     const roiDataPromises = zones.map(async (zone) => {
-      // zone_type에서 ROI 번호 추출 (Z0 -> 0, Z1 -> 1, Z2 -> 2, Z001 -> 1, ...)
-      // zone_type의 숫자를 그대로 roiNumber로 사용
+      // zone_type을 int로 변환하여 roiNumber에 대입
+      // zone_type이 0이어도 유효한 값이므로 명시적으로 체크
+      console.log('======>  zone', zone);
       let roiNumber = null;
-      if (zone.zone_type) {
-        const zoneTypeStr = zone.zone_type.toString();
-        // "Z0", "Z00", "0" 등의 형식도 처리
-        const match = zoneTypeStr.match(/Z?0*(\d+)/);
-        if (match) {
-          roiNumber = parseInt(match[1]); // Z0 -> 0, Z1 -> 1, Z2 -> 2, Z001 -> 1, ...
+      if (zone.zone_type !== null && zone.zone_type !== undefined && zone.zone_type !== '') {
+        roiNumber = parseInt(zone.zone_type);
+        if (isNaN(roiNumber)) {
+          roiNumber = null;
         }
       }
 

@@ -40,8 +40,62 @@ export const list = async (req, res, next) => {
 
     if (req.query.status) where.alert_status = req.query.status;
     if (req.query.level) where.alert_level = req.query.level;
+
+    // 날짜 필터 처리
     if (req.query.startDate && req.query.endDate) {
-      where.alert_accur_time = { [Op.between]: [req.query.startDate, req.query.endDate] };
+      // 날짜 문자열을 데이터베이스 형식으로 변환
+      // 클라이언트에서 'YYYY-MM-DDTHH:mm:ss' 형식으로 보내지만,
+      // 데이터베이스는 'YYYY-MM-DD HH:mm:ss' 형식을 사용하므로 'T'를 공백으로 변환
+      let startDateStr = req.query.startDate.replace('T', ' ');
+      let endDateStr = req.query.endDate.replace('T', ' ');
+
+      // endDate가 초 단위까지만 있으면 59초까지 포함하도록 수정
+      if (endDateStr.length === 19) { // YYYY-MM-DD HH:mm:ss 형식
+        // 이미 초 단위까지 포함되어 있음
+      } else if (endDateStr.length === 16) { // YYYY-MM-DD HH:mm 형식
+        endDateStr = endDateStr + ':59'; // 59초까지 포함
+      }
+
+      console.log('----------> 날짜 필터:', {
+        originalStartDate: req.query.startDate,
+        originalEndDate: req.query.endDate,
+        convertedStartDate: startDateStr,
+        convertedEndDate: endDateStr
+      });
+
+      // Sequelize.literal을 사용하여 직접 SQL 비교
+      // 데이터베이스의 DATETIME 형식과 문자열을 직접 비교
+      // 기존 조건과 함께 사용하기 위해 Op.and로 결합
+      const dateConditions = [
+        literal(`alert_accur_time >= '${startDateStr}'`),
+        literal(`alert_accur_time <= '${endDateStr}'`)
+      ];
+
+      // 기존 where 조건들을 Op.and 배열로 변환
+      const existingConditions = [];
+      Object.keys(where).forEach(key => {
+        if (key !== Op.and) {
+          existingConditions.push({ [key]: where[key] });
+        }
+      });
+
+      // 모든 조건을 Op.and로 결합
+      if (existingConditions.length > 0 || where[Op.and]) {
+        where[Op.and] = [
+          ...(where[Op.and] || []),
+          ...existingConditions,
+          ...dateConditions
+        ];
+        // 기존 조건들을 제거 (Op.and로 이동했으므로)
+        Object.keys(where).forEach(key => {
+          if (key !== Op.and) {
+            delete where[key];
+          }
+        });
+      } else {
+        // 조건이 없으면 날짜 조건만 사용
+        where[Op.and] = dateConditions;
+      }
     }
     if (req.query.search) {
       where.alert_description = { [Op.like]: `%${req.query.search}%` };

@@ -76,6 +76,7 @@ MSDB_PASSWORD = config.get('MSDB', 'password')
 MSDB_DB = config.get('MSDB', 'dbname')
 MSDB_DAMNAME = config.get('MSDB', 'damname', fallback='')
 MSDB_CODE = config.get('MSDB', 'code', fallback='1001210')
+MSDB_ROOT_PATH = config.get('MSDB', 'root_path', fallback='')
 msdb_conn = None
 ########################
 
@@ -299,6 +300,9 @@ class VideoAlertChecker:
                 NUM_IMAGES = VALUES(NUM_IMAGES)
             """
             
+            # FILE_PATH는 config.ini의 MSDB root_path 사용
+            msdb_file_path = MSDB_ROOT_PATH if MSDB_ROOT_PATH else file_path
+            
             values = (
                 MSDB_DAMNAME,  # DAMNAME
                 int(MSDB_CODE),  # DAMCD
@@ -307,7 +311,7 @@ class VideoAlertChecker:
                 min_temp_float,  # MIN_TEMP
                 avg_temp_float,  # AVG_TEMP
                 int(alert_level),  # ALERT_NUM
-                file_path,  # FILE_PATH
+                msdb_file_path,  # FILE_PATH (config.ini의 root_path 사용)
                 file_name,  # FILE_NAME
                 3  # NUM_IMAGES (고정값)
             )
@@ -1172,6 +1176,33 @@ class VideoAlertChecker:
             
             x, y, w, h = rect
             
+            # 매트릭스 크기 확인
+            if not isinstance(temp_matrix, np.ndarray):
+                logger.error(f"extract_roi_temperature_data: temp_matrix가 numpy 배열이 아닙니다: {type(temp_matrix)}")
+                return None
+            
+            matrix_height, matrix_width = temp_matrix.shape
+            expected_width = 1920
+            expected_height = 480
+            
+            # 매트릭스 크기 검증
+            if matrix_width != expected_width or matrix_height != expected_height:
+                logger.error(f"extract_roi_temperature_data: 매트릭스 크기 불일치 - 예상={expected_width}x{expected_height}, 실제={matrix_width}x{matrix_height}, zone_type={zone_info.get('zone_type', 'unknown')}")
+                return None
+            
+            # ROI 좌표 범위 검증
+            if x < 0 or y < 0 or x + w > matrix_width or y + h > matrix_height:
+                logger.error(f"extract_roi_temperature_data: ROI 좌표가 매트릭스 범위를 벗어남 - "
+                           f"ROI=[x={x}, y={y}, w={w}, h={h}], "
+                           f"매트릭스=[width={matrix_width}, height={matrix_height}], "
+                           f"zone_type={zone_info.get('zone_type', 'unknown')}")
+                # 범위를 벗어난 경우 매트릭스 범위 내로 클리핑
+                x = max(0, min(x, matrix_width - 1))
+                y = max(0, min(y, matrix_height - 1))
+                w = min(w, matrix_width - x)
+                h = min(h, matrix_height - y)
+                logger.warning(f"extract_roi_temperature_data: ROI 좌표 클리핑 - [x={x}, y={y}, w={w}, h={h}]")
+            
             # ROI 영역 추출
             roi_temp = temp_matrix[y:y+h, x:x+w]
             # print("temp_matrix :", temp_matrix)
@@ -1224,15 +1255,18 @@ class VideoAlertChecker:
             # zone_type은 항상 ROI 번호(정수)여야 함
             zone_type = zone_info.get('zone_type', 1)
             
+            # zone_type이 string인 경우 int로 변환 후 처리
+            if isinstance(zone_type, str):
+                try:
+                    zone_type = int(zone_type)
+                except (ValueError, TypeError):
+                    logger.warning(f"zone_type을 int로 변환할 수 없습니다: {zone_type}, 기본값 1 사용")
+                    zone_type = 1
+            
             # zone_type을 강제로 정수로 변환
             roi_number = self._convert_zone_type_to_int(zone_type)
-            
-            # zone_type이 0인 경우 제외 (번호가 없는 경우)
-            if roi_number == 0:
-                logger.warning(f"zone_type={zone_type}인 ROI는 온도 데이터를 저장하지 않습니다 (ROI 번호가 0)")
-                return False
-            
-            # roi_number가 유효하지 않은 경우 (None이거나 음수)
+            print("======>  roi_number ", roi_number,", zone_type ", zone_type)
+            # roi_number가 유효하지 않은 경우 (None이거나 음수, 0은 유효한 값이므로 포함)
             if roi_number is None or roi_number < 0:
                 logger.warning(f"ROI 번호를 추출할 수 없습니다. zone_type: {zone_type}, roi_number: {roi_number}")
                 return False
@@ -1264,16 +1298,20 @@ class VideoAlertChecker:
                 VALUES (%s, %s, %s, %s)
             """
             
+            data_value_json = json.dumps(data_value, ensure_ascii=False)
+            logger.debug(f"ROI 온도 데이터 DB 삽입 시도: ROI={roi_number}, fk_camera_id=1, create_date={create_date}, data_value={data_value_json}")
+            
             cursor.execute(sql, (
                 1,  # fk_camera_id (기본값 1)
                 create_date,
                 roi_number,  # roiNumber 컬럼에 저장
-                json.dumps(data_value, ensure_ascii=False)
+                data_value_json
             ))
             
             # 커밋 (autocommit이 True로 설정되어 있지만 명시적으로 커밋)
             if nvrdb:
                 nvrdb.commit()
+                logger.debug(f"ROI 온도 데이터 DB 커밋 완료: ROI={roi_number}")
             
             logger.info(f"ROI 온도 데이터 DB 삽입 성공: ROI={roi_number}, "
                        f"최대온도={max_temp:.1f}°C, 최소온도={min_temp:.1f}°C, 평균온도={avg_temp:.1f}°C")
@@ -2335,14 +2373,16 @@ class VideoAlertChecker:
             
             # 강제 종료 체크
             if self.force_exit:
-                # logger.info("강제 종료 요청됨, 시나리오1 중단")
+                logger.info("강제 종료 요청됨, 시나리오1 중단")
                 return False
             
             # 최신 파노라마 데이터 조회
             panorama_data_record = self.get_latest_temperature_data()
             if not panorama_data_record:
-                # logger.info("시나리오1: 파노라마 데이터가 없습니다")
+                logger.info("시나리오1: 파노라마 데이터가 없습니다")
                 return False
+            
+            logger.info(f"시나리오1: 파노라마 데이터 조회 성공 (ID: {panorama_data_record.get('id', 'unknown')})")
             
             # 온도 매트릭스 생성 (1920x480 파노라마 크기)
             # panorama_data_json의 colorbarMapping을 사용하여 온도 매트릭스 생성
@@ -2363,7 +2403,7 @@ class VideoAlertChecker:
             # self.save_temperature_matrix_to_csv(temp_matrix, 1920, 480)  # CSV 파일 저장 주석처리
             # zone_type 리스트 가져오기
             if not self.zone_list:
-                # logger.warning("시나리오1: zone_list가 없어 기본 ROI 영역을 사용합니다")
+                logger.warning("시나리오1: zone_list가 없어 기본 ROI 영역을 사용합니다")
                 # 기본 ROI 영역 설정 (1920x480 파노라마 전체 영역을 6개 구역으로 분할)
                 default_zones = [
                     {'zone_type': '1', 'rect': [0, 0, 640, 240]},        # 좌상단 (0,0 ~ 639,239)
@@ -2376,6 +2416,8 @@ class VideoAlertChecker:
                 zones_to_check = default_zones
             else:
                 zones_to_check = self.zone_list
+            
+            logger.info(f"시나리오1: 총 {len(zones_to_check)}개 ROI 영역 처리 시작")
 
 
 
@@ -2385,7 +2427,7 @@ class VideoAlertChecker:
                 return False
             
             levels = self.alert_settings['alarmLevels']['scenario1']
-            # logger.info(f"시나리오1 기준값: {levels}")
+            logger.info(f"시나리오1 기준값: {levels}")
             # 4단계 기준값: [2, 5, 8, 10]
 
             # 스냅샷을 한 번만 캡처 (모든 경보에서 재사용)
@@ -2394,17 +2436,17 @@ class VideoAlertChecker:
             
             # 파노라마 이미지 추출
             panorama_snapshot = self.extract_panorama_image(panorama_data_record['panoramaData'])
-            # if panorama_snapshot:
-            #     logger.info("시나리오1: 파노라마 이미지 추출 성공")
-            # else:
-            #     logger.warning("시나리오1: 파노라마 이미지 추출 실패")
+            if panorama_snapshot:
+                logger.info("시나리오1: 파노라마 이미지 추출 성공")
+            else:
+                logger.warning("시나리오1: 파노라마 이미지 추출 실패")
             
             # 실화상 카메라 스트림 스냅샷 이미지 캡처 (videoType=2) - 한 번만
             visible_stream_snapshot = self.capture_visible_camera_snapshot()
-            # if visible_stream_snapshot:
-            #     logger.info("시나리오1: 실화상 카메라 스냅샷 캡처 완료")
-            # else:
-            #     logger.warning("시나리오1: 실화상 카메라 스냅샷 캡처 실패")
+            if visible_stream_snapshot:
+                logger.info("시나리오1: 실화상 카메라 스냅샷 캡처 완료")
+            else:
+                logger.warning("시나리오1: 실화상 카메라 스냅샷 캡처 실패")
             
             # 업로드된 파노라마 스냅샷 사용 (run 메서드에서 업로드됨)
             if self.uploaded_panorama_snapshot:
@@ -2417,9 +2459,8 @@ class VideoAlertChecker:
             alert_detected = False
             # 이미 경보가 생성된 ROI 번호를 추적 (중복 방지)
             alerted_roi_numbers = set()
-            # logger.info(f"시나리오1: 총 {len(zones_to_check)}개 ROI 영역 처리 시작")
             for idx, zone_info in enumerate(zones_to_check, 1):
-                # logger.info(f"시나리오1: [{idx}/{len(zones_to_check)}] Zone {zone_info.get('zone_type', 'unknown')} 처리 시작")
+                logger.info(f"시나리오1: [{idx}/{len(zones_to_check)}] Zone {zone_info.get('zone_type', 'unknown')} 처리 시작")
                 # 강제 종료 체크
                 if self.force_exit:
                     logger.info("강제 종료 요청됨, 시나리오1 중단")
@@ -2455,13 +2496,15 @@ class VideoAlertChecker:
                 boxes = self.create_20x20_boxes(actual_rect, box_size=20)
                 
                 if not boxes:
-                    # logger.warning(f"Zone {zone_info.get('zone_type', 'unknown')}: 20x20 박스 생성 실패")
+                    logger.warning(f"시나리오1: Zone {zone_info.get('zone_type', 'unknown')} - 20x20 박스 생성 실패")
                     continue
+                
+                logger.info(f"시나리오1: Zone {zone_info.get('zone_type', 'unknown')} - {len(boxes)}개 20x20 박스 생성 완료")
                 
                 # 20x20 박스들의 온도차 분석
                 alert_boxes = self.analyze_20x20_boxes(temp_matrix, boxes, levels)
                 
-                # logger.info(f"Zone {zone_info.get('zone_type', 'unknown')}: 20x20 박스 분석 완료, 총 {len(boxes)}개 박스 중 {len(alert_boxes) if alert_boxes else 0}개에서 경보 조건 감지")
+                logger.info(f"시나리오1: Zone {zone_info.get('zone_type', 'unknown')} - 20x20 박스 분석 완료, 총 {len(boxes)}개 박스 중 {len(alert_boxes) if alert_boxes else 0}개에서 경보 조건 감지")
                 
                 if alert_boxes:
                     # 경보 생성 (여러 박스의 정보를 포함)
@@ -2481,6 +2524,8 @@ class VideoAlertChecker:
                     # ROI 번호 추출 (중복 방지용)
                     roi_number = self._convert_zone_type_to_int(zone_info.get('zone_type', 1))
                     
+                    logger.info(f"시나리오1 경보 감지: Zone {zone_info.get('zone_type', 'unknown')}, 경보 박스 {len(alert_boxes)}개, 최대 레벨 {max_alert_level}")
+                    
                     self.create_scenario1_alert(
                         panorama_data_record['id'],
                         zone_info,
@@ -2494,6 +2539,7 @@ class VideoAlertChecker:
                     alert_detected = True
                     # 경보가 생성된 ROI 번호 기록
                     alerted_roi_numbers.add(roi_number)
+                    logger.info(f"시나리오1: Zone {zone_info.get('zone_type', 'unknown')} 경보 생성 완료")
 
             # 전체 영역 온도차 변화율 검사 (25% 이상) - OR 조건으로 추가
             # 기능 주석 처리 요청으로 인해 비활성화
@@ -2564,8 +2610,9 @@ class VideoAlertChecker:
             #                     alerted_roi_numbers.add(1)
 
             if not alert_detected:
-                # logger.info("시나리오1: 경보 조건을 만족하지 않습니다")
-                pass
+                logger.info("시나리오1: 경보 조건을 만족하지 않습니다")
+            else:
+                logger.info(f"시나리오1: 총 {len(alerted_roi_numbers)}개 ROI에서 경보 감지 완료")
             
             return alert_detected
             
@@ -2995,8 +3042,56 @@ class VideoAlertChecker:
             results = cursor.fetchall()
             
             if not results:
-                logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} (roiNumber={roi_number}) - 최근 {hours}시간 데이터가 없습니다")
-                return None
+                logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} (roiNumber={roi_number}) - 최근 {hours}시간 데이터가 없습니다. 현재 시점까지 조회 가능한 데이터로 대체 시도")
+                
+                # 최근 1시간 데이터가 없으면 현재 시점까지 조회된 모든 데이터 조회
+                fallback_query = """
+                    SELECT data_value, create_date 
+                    FROM tb_video_receive_data 
+                    WHERE roiNumber = %s
+                    ORDER BY create_date DESC
+                    LIMIT 100
+                """
+                cursor.execute(fallback_query, (roi_number,))
+                fallback_results = cursor.fetchall()
+                
+                if not fallback_results:
+                    logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} (roiNumber={roi_number}) - 조회 가능한 데이터가 전혀 없습니다")
+                    return None
+                
+                # 조회된 데이터의 평균 온도 계산
+                fallback_temps = []
+                for row in fallback_results:
+                    try:
+                        data_value_json = row['data_value']
+                        if not data_value_json:
+                            continue
+                        
+                        data_value = json.loads(data_value_json) if isinstance(data_value_json, str) else data_value_json
+                        avg_temp = data_value.get('avg_temp')
+                        if avg_temp is None:
+                            continue
+                        
+                        avg_temp = float(avg_temp)
+                        fallback_temps.append(avg_temp)
+                    except Exception as e:
+                        continue
+                
+                if fallback_temps:
+                    # 평균 온도 계산
+                    avg_temperature = sum(fallback_temps) / len(fallback_temps)
+                    logger.info(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} (roiNumber={roi_number}) - 최근 1시간 데이터 없음, 조회된 {len(fallback_temps)}개 데이터의 평균 온도 {avg_temperature:.2f}°C 사용")
+                    
+                    # 평균 온도를 roi_temps 형식으로 반환
+                    return [{
+                        'timestamp': datetime.now(),
+                        'average_temperature': avg_temperature,
+                        'zone_type': zone_info.get('zone_type', 'unknown'),
+                        'rect': rect
+                    }]
+                else:
+                    logger.warning(f"시나리오2: ROI {zone_info.get('zone_type', 'unknown')} (roiNumber={roi_number}) - 조회된 데이터에서 유효한 온도 값을 추출할 수 없습니다")
+                    return None
             
             roi_temps = []
             
@@ -4072,20 +4167,49 @@ class VideoAlertChecker:
                             # 온도 매트릭스 생성
                             temp_matrix = self.create_temperature_matrix(panorama_data_record['panoramaData'])
                             if temp_matrix is not None:
+                                # 매트릭스 크기 확인 및 로그
+                                if isinstance(temp_matrix, np.ndarray):
+                                    matrix_height, matrix_width = temp_matrix.shape
+                                    expected_width = 1920
+                                    expected_height = 480
+                                    if matrix_width == expected_width and matrix_height == expected_height:
+                                        logger.info(f"ROI 온도 데이터 추출: 온도 매트릭스 크기 확인 - {matrix_width}x{matrix_height}")
+                                    else:
+                                        logger.error(f"ROI 온도 데이터 추출: 온도 매트릭스 크기 불일치 - 예상={expected_width}x{expected_height}, 실제={matrix_width}x{matrix_height}")
+                                        logger.error("매트릭스 크기 불일치로 인해 ROI 온도 데이터 추출을 건너뜁니다")
+                                        temp_matrix = None
+                                else:
+                                    logger.error(f"ROI 온도 데이터 추출: 온도 매트릭스가 numpy 배열이 아닙니다: {type(temp_matrix)}")
+                                    temp_matrix = None
+                            
+                            if temp_matrix is not None:
                                 # ROI가 있는 경우에만 온도 데이터 추출 및 DB 삽입
                                 if self.zone_list:
+                                    logger.info(f"ROI 온도 데이터 DB 삽입 시작: 총 {len(self.zone_list)}개 ROI")
                                     # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입
                                     # zone_type이 0인 ROI는 제외 (scenario1_judge와 동일한 필터링)
+                                    inserted_count = 0
+                                    skipped_count = 0
                                     for zone_info in self.zone_list:
                                         zone_type = zone_info.get('zone_type')
-                                        # zone_type = 0 또는 '0'인 경우 제외 (번호가 없는 경우)
-                                        if zone_type == 0 or zone_type == '0':
-                                            logger.debug(f"zone_type={zone_type}인 ROI는 온도 데이터 저장을 건너뜁니다")
-                                            continue
                                         
+                                        # zone_type이 0인 경우 제외
+                                        if zone_type == 0 or zone_type == '0':
+                                            logger.debug(f"ROI 온도 데이터 DB 삽입 건너뜀: zone_type={zone_type} (0은 제외)")
+                                            skipped_count += 1
+                                            continue
+                                   
                                         roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
                                         if roi_data:
-                                            self.insert_roi_temperature_data(roi_data, zone_info)
+                                            success = self.insert_roi_temperature_data(roi_data, zone_info)
+                                            if success:
+                                                inserted_count += 1
+                                            else:
+                                                logger.warning(f"ROI 온도 데이터 DB 삽입 실패: zone_type={zone_type}")
+                                        else:
+                                            logger.warning(f"ROI 온도 데이터 추출 실패: zone_type={zone_type}")
+                                    
+                                    logger.info(f"ROI 온도 데이터 DB 삽입 완료: 성공={inserted_count}개, 건너뜀={skipped_count}개, 총={len(self.zone_list)}개")
                                 else:
                                     logger.warning("DB에 ROI가 없어 ROI 온도 데이터 추출을 건너뜁니다")
                         except Exception as e:

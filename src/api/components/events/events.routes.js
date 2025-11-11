@@ -381,23 +381,30 @@ router.post('/ptz/move', async (req, res) => {
       });
     }
 
-    log.info(`PTZ Move command: ${direction}, speed: ${speed}, target: ${ip}:${port}`);
+    // 속도 값 유효성 검사 및 변환 (1-63 범위)
+    let validSpeed = parseInt(speed);
+    if (isNaN(validSpeed) || validSpeed < 1 || validSpeed > 63) {
+      log.warn(`유효하지 않은 속도 값: ${speed}, 기본값 32 사용`);
+      validSpeed = 32;
+    }
+
+    log.info(`PTZ Move command: ${direction}, speed: ${validSpeed}, target: ${ip}:${port}`);
 
     let command1, command2, data1, data2;
 
     // Pelco-D 명령어 매핑
     switch (direction) {
       case 'up':
-        command1 = 0x00; command2 = 0x08; data1 = 0x00; data2 = speed || 32;
+        command1 = 0x00; command2 = 0x08; data1 = 0x00; data2 = validSpeed;
         break;
       case 'down':
-        command1 = 0x00; command2 = 0x10; data1 = 0x00; data2 = speed || 32;
+        command1 = 0x00; command2 = 0x10; data1 = 0x00; data2 = validSpeed;
         break;
       case 'left':
-        command1 = 0x00; command2 = 0x04; data1 = speed || 32; data2 = 0x00;
+        command1 = 0x00; command2 = 0x04; data1 = validSpeed; data2 = 0x00;
         break;
       case 'right':
-        command1 = 0x00; command2 = 0x02; data1 = speed || 32; data2 = 0x00;
+        command1 = 0x00; command2 = 0x02; data1 = validSpeed; data2 = 0x00;
         break;
       default:
         return res.status(400).json({
@@ -407,7 +414,7 @@ router.post('/ptz/move', async (req, res) => {
     }
 
     const packet = createPelcoDPacket(0x01, command1, command2, data1, data2);
-    log.info(`PTZ Move packet: ${direction}, speed: ${speed || 32}, packet: ${packet.toString('hex')}`);
+    log.info(`PTZ Move packet: ${direction}, speed: ${validSpeed}, packet: ${packet.toString('hex')}`);
 
     await sendTCPPacket(ip, port, packet);
 
@@ -416,7 +423,7 @@ router.post('/ptz/move', async (req, res) => {
       message: 'PTZ 이동 명령 전송 완료',
       data: {
         direction,
-        speed: speed || 32,
+        speed: validSpeed,
         ip,
         port,
         packet: packet.toString('hex')
