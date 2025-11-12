@@ -4186,19 +4186,13 @@ class VideoAlertChecker:
                                 # ROI가 있는 경우에만 온도 데이터 추출 및 DB 삽입
                                 if self.zone_list:
                                     logger.info(f"ROI 온도 데이터 DB 삽입 시작: 총 {len(self.zone_list)}개 ROI")
-                                    # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입
-                                    # zone_type이 0인 ROI는 제외 (scenario1_judge와 동일한 필터링)
+                                    # 모든 ROI에 대해 온도 데이터 추출 및 DB 삽입 (ROI 0번 포함)
                                     inserted_count = 0
                                     skipped_count = 0
                                     for zone_info in self.zone_list:
                                         zone_type = zone_info.get('zone_type')
                                         
-                                        # zone_type이 0인 경우 제외
-                                        if zone_type == 0 or zone_type == '0':
-                                            logger.debug(f"ROI 온도 데이터 DB 삽입 건너뜀: zone_type={zone_type} (0은 제외)")
-                                            skipped_count += 1
-                                            continue
-                                   
+                                        # ROI 0번도 유효한 ROI 번호이므로 포함하여 처리
                                         roi_data = self.extract_roi_temperature_data(temp_matrix, zone_info)
                                         if roi_data:
                                             success = self.insert_roi_temperature_data(roi_data, zone_info)
@@ -4208,6 +4202,7 @@ class VideoAlertChecker:
                                                 logger.warning(f"ROI 온도 데이터 DB 삽입 실패: zone_type={zone_type}")
                                         else:
                                             logger.warning(f"ROI 온도 데이터 추출 실패: zone_type={zone_type}")
+                                            skipped_count += 1
                                     
                                     logger.info(f"ROI 온도 데이터 DB 삽입 완료: 성공={inserted_count}개, 건너뜀={skipped_count}개, 총={len(self.zone_list)}개")
                                 else:

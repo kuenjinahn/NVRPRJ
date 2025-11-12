@@ -129,6 +129,8 @@ def load_event_settings():
                 
                 # 분 단위를 초 단위로 변환
                 segment_mapping = {
+                    '1': 60,     # 1분 = 60초
+                    '2': 120,    # 2분 = 120초
                     '5': 300,    # 5분 = 300초
                     '10': 600,   # 10분 = 600초
                     '30': 1800,  # 30분 = 1800초
@@ -201,6 +203,7 @@ class RecorderConfig:
     reconnect_delay_sec: int = 5
     max_muxing_queue_size: int = 1024
     filename_pattern: str = "{name}/{date}/{time}.mp4"
+    video_type: int = 2  # 카메라 타입 (1: 열화상, 2: 실화상)
 
     # 🔧 타임아웃 옵션 (빌드에 따라 미지원일 수 있음)
     use_timeouts: bool = True            # 타임아웃 활성화
@@ -251,7 +254,7 @@ class RTSPRecorder:
             raise
 
     def _get_output_path(self) -> str:
-        """출력 파일 경로 생성 - segment 분할을 위한 패턴"""
+        """출력 파일 경로 생성 - segment 분할을 위한 패턴 (유니크 숫자 사용)"""
         # 현재 날짜로 날짜별 폴더 생성
         current_date = datetime.now().strftime("%Y-%m-%d")
         
@@ -261,13 +264,99 @@ class RTSPRecorder:
         
         print(f"[Recorder-{self.cfg.camera_name}] Created date directory: {camera_date_dir}")
         
-        # Python에서 동적으로 날짜 폴더를 포함한 패턴 생성
-        # FFmpeg의 strftime 처리 문제를 피하면서 날짜별 폴더 구조 유지
-        pattern = f"./outputs/nvr/recordings/{self.cfg.camera_name}/{current_date}/segment_%03d.mp4"
+        # 유니크 숫자 기반 파일명 패턴 (타임스탬프 사용)
+        # segment_유니크숫자.mp4 형식으로 변경
+        # FFmpeg의 strftime을 사용하여 타임스탬프 기반 파일명 생성
+        # %Y%m%d_%H%M%S 형식: 년월일_시분초 (유니크 보장, 초 단위)
+        # FFmpeg segment는 매 세그먼트마다 새로운 파일을 생성하므로 타임스탬프가 유니크함
+        pattern = f"./outputs/nvr/recordings/{self.cfg.camera_name}/{current_date}/segment_%Y%m%d_%H%M%S.mp4"
         
         print(f"[Recorder-{self.cfg.camera_name}] Generated pattern: {pattern}")
-        print(f"[Recorder-{self.cfg.camera_name}] Note: Using Python dynamic date folder creation")
+        print(f"[Recorder-{self.cfg.camera_name}] Note: Using unique timestamp-based segment naming")
         return pattern
+
+    def _cleanup_recording_status_records(self):
+        """DB에서 status가 'recording'인 항목들을 모두 삭제"""
+        try:
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            camera_name = self.original_camera_name or self.cfg.camera_name
+            
+            print(f"[Recorder-{self.cfg.camera_name}] 🗑️ Cleaning up 'recording' status records from DB...")
+            print(f"[Recorder-{self.cfg.camera_name}]   Camera: {camera_name}")
+            print(f"[Recorder-{self.cfg.camera_name}]   Date: {current_date}")
+            
+            db_connection = pymysql.connect(
+                host=DBSERVER_IP,
+                port=DBSERVER_PORT,
+                user=DBSERVER_USER,
+                password=DBSERVER_PASSWORD,
+                db=DBSERVER_DB,
+                charset=DBSERVER_CHARSET,
+                autocommit=True,
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=5
+            )
+            
+            cursor = db_connection.cursor()
+            
+            # status가 'recording'인 레코드 조회
+            select_query = """
+                SELECT id, file_path 
+                FROM tb_recording_history 
+                WHERE camera_name = %s 
+                  AND status = 'recording'
+                  AND DATE(create_date) = %s
+            """
+            
+            cursor.execute(select_query, (camera_name, current_date))
+            recording_records = cursor.fetchall()
+            
+            if recording_records:
+                print(f"[Recorder-{self.cfg.camera_name}]   Found {len(recording_records)} 'recording' status records to delete")
+                
+                # 삭제 쿼리 실행
+                delete_query = """
+                    DELETE FROM tb_recording_history 
+                    WHERE camera_name = %s 
+                      AND status = 'recording'
+                      AND DATE(create_date) = %s
+                """
+                
+                cursor.execute(delete_query, (camera_name, current_date))
+                deleted_count = cursor.rowcount
+                
+                db_connection.commit()
+                print(f"[Recorder-{self.cfg.camera_name}] ✅ Deleted {deleted_count} 'recording' status records from DB")
+                
+                # 삭제된 레코드 정보 출력
+                for record in recording_records:
+                    file_path = record.get('file_path', 'N/A')
+                    print(f"[Recorder-{self.cfg.camera_name}]   - Deleted: {file_path}")
+            else:
+                print(f"[Recorder-{self.cfg.camera_name}] ℹ️ No 'recording' status records found, nothing to delete")
+            
+            cursor.close()
+            db_connection.close()
+            
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Error cleaning up 'recording' status records: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _cleanup_existing_segments(self):
+        """유니크 숫자 기반 파일명은 매번 새로운 파일명이 생성되므로 cleanup 불필요"""
+        try:
+            # 유니크 숫자 기반 파일명 (segment_20240112_183045_123456.mp4)은
+            # FFmpeg가 자동으로 타임스탬프 기반으로 생성하므로
+            # 같은 이름의 파일이 생성될 가능성이 거의 없음
+            # 따라서 cleanup 로직은 불필요
+            print(f"[Recorder-{self.cfg.camera_name}] ℹ️ Unique timestamp-based naming: cleanup not needed (each segment has unique filename)")
+            return
+                
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Error during cleanup: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _wait_and_check_file(self, file_path: str):
         """파일 생성 대기 및 확인"""
@@ -305,16 +394,29 @@ class RTSPRecorder:
                     print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Already processed segment: {file_path}")
                     return
                 
-                # 세그먼트 번호 추출
-                segment_number = self._extract_segment_number(file_path)
-                if segment_number is not None:
-                    # 처리된 세그먼트 목록에 추가
-                    self._processed_segments.add(file_path)
-                    print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
-                    # 데이터베이스에 INSERT
-                    self._insert_recording_history(file_path, segment_number)
-                else:
-                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract segment number from: {file_path}")
+                # 파일 수정 시간 확인 - 녹화 시작 시간 이후에 생성된 파일만 처리
+                if self.recording_start_time:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if file_mtime < self.recording_start_time:
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 파일이 녹화 시작 전에 생성됨 - 건너뜀: {os.path.basename(file_path)} (생성: {file_mtime}, 녹화 시작: {self.recording_start_time})")
+                        # 처리된 목록에 추가하여 다시 체크하지 않도록 함
+                        self._processed_segments.add(file_path)
+                        return
+                
+                # 새 세그먼트 파일 감지 - 이전 세그먼트를 DB에 insert
+                print(f"[Recorder-{self.cfg.camera_name}] 🎯 New segment file detected: {os.path.basename(file_path)}")
+                
+                # 이전 세그먼트 파일 찾기
+                file_dir = os.path.dirname(file_path)
+                prev_segment_path = self._find_previous_segment_file(file_dir, file_path)
+                
+                if prev_segment_path and os.path.exists(prev_segment_path):
+                    # 이전 세그먼트를 'completed' 상태로 DB에 insert
+                    print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Inserting previous segment to DB: {os.path.basename(prev_segment_path)}")
+                    self._insert_recording_history(prev_segment_path, None, force_completed=True)
+                
+                # 현재 세그먼트는 처리 목록에만 추가 (다음 세그먼트 시작 시 insert됨)
+                self._processed_segments.add(file_path)
                 return
         
         print(f"[Recorder-{self.cfg.camera_name}] ⚠️ File not created after 10 seconds: {file_path}")
@@ -485,20 +587,20 @@ class RTSPRecorder:
                                 print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Already processed: {mp4_file.name}")
                                 continue
                             
-                            # 세그먼트 번호 추출
-                            segment_number = self._extract_segment_number(file_path)
-                            if segment_number is not None:
-                                print(f"[Recorder-{self.cfg.camera_name}] 🎯 Processing segment #{segment_number}: {mp4_file.name}")
-                                
-                                # 처리된 세그먼트 목록에 추가
-                                self._processed_segments.add(file_path)
-                                
-                                # 데이터베이스에 INSERT
-                                print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Manual database INSERT...")
-                                self._insert_recording_history(file_path, segment_number)
-                                total_processed += 1
-                            else:
-                                print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract segment number from: {mp4_file.name}")
+                            print(f"[Recorder-{self.cfg.camera_name}] 🎯 Processing segment: {mp4_file.name}")
+                            
+                            # 이전 세그먼트 파일 찾기
+                            file_dir = os.path.dirname(file_path)
+                            prev_segment_path = self._find_previous_segment_file(file_dir, file_path)
+                            
+                            if prev_segment_path and os.path.exists(prev_segment_path):
+                                # 이전 세그먼트를 'completed' 상태로 DB에 insert
+                                print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Inserting previous segment to DB: {os.path.basename(prev_segment_path)}")
+                                self._insert_recording_history(prev_segment_path, None, force_completed=True)
+                            
+                            # 현재 세그먼트는 처리 목록에만 추가
+                            self._processed_segments.add(file_path)
+                            total_processed += 1
             
             if total_processed > 0:
                 print(f"[Recorder-{self.cfg.camera_name}] ✅ Manual check completed: {total_processed} segments processed")
@@ -580,8 +682,12 @@ class RTSPRecorder:
             print(f"[Recorder-{self.cfg.camera_name}] ⏰ 전체 연결 체크 소요 시간: {check_elapsed:.2f}초")
 
     def _monitor_segment_files(self):
-        """파일 시스템을 직접 모니터링하여 세그먼트 파일 감지"""
+        """파일 시스템을 직접 모니터링하여 새 세그먼트 파일 감지 및 이전 세그먼트 DB insert"""
         try:
+            # 녹화 시작 시간이 없으면 처리하지 않음
+            if not self.recording_start_time:
+                return
+            
             # 현재 날짜 폴더 경로
             current_date = datetime.now().strftime("%Y-%m-%d")
             camera_date_dir = self.cfg.output_dir / self.cfg.camera_name / current_date
@@ -598,18 +704,26 @@ class RTSPRecorder:
             new_files = current_files - self._processed_segments
             
             if new_files:
-                print(f"[Recorder-{self.cfg.camera_name}] 🔍 Found {len(new_files)} new segment files")
-                
+                # 생성 시간 순으로 정렬 (오래된 것부터)
+                new_files_with_time = []
                 for file_path in new_files:
-                    # 파일 크기 확인 (0바이트 파일 체크)
-                    if not os.path.exists(file_path):
-                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 파일이 존재하지 않습니다: {file_path}")
-                        continue
-                    
+                    if os.path.exists(file_path):
+                        file_mtime = os.path.getmtime(file_path)
+                        # 녹화 시작 시간 이후에 생성된 파일만 처리
+                        if self.recording_start_time:
+                            file_mtime_dt = datetime.fromtimestamp(file_mtime)
+                            if file_mtime_dt < self.recording_start_time:
+                                continue
+                        new_files_with_time.append((file_path, file_mtime))
+                
+                # 생성 시간 순으로 정렬
+                new_files_with_time.sort(key=lambda x: x[1])
+                
+                for file_path, file_mtime in new_files_with_time:
+                    # 파일 크기 확인
                     file_size = os.path.getsize(file_path)
                     if file_size == 0:
                         print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ 0바이트 파일 발견: {os.path.basename(file_path)}")
-                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ RTSP 스트림 연결 실패로 인한 빈 파일 - 건너뜀")
                         try:
                             os.remove(file_path)
                             print(f"[Recorder-{self.cfg.camera_name}] ✅ 0바이트 파일 삭제 완료: {os.path.basename(file_path)}")
@@ -617,20 +731,26 @@ class RTSPRecorder:
                             print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
                         continue
                     
-                    # 세그먼트 번호 추출
-                    segment_number = self._extract_segment_number(file_path)
-                    if segment_number is not None:
-                        print(f"[Recorder-{self.cfg.camera_name}] 🎯 Processing new segment #{segment_number}: {os.path.basename(file_path)}")
-                        print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
-                        
-                        # 처리된 세그먼트 목록에 추가
-                        self._processed_segments.add(file_path)
-                        
-                        # 데이터베이스에 INSERT
-                        print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Database INSERT for new segment...")
-                        self._insert_recording_history(file_path, segment_number)
-                    else:
-                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract segment number from: {os.path.basename(file_path)}")
+                    # 새 세그먼트 파일 감지 - 이전 세그먼트를 DB에 insert
+                    print(f"[Recorder-{self.cfg.camera_name}] 🎯 New segment file detected: {os.path.basename(file_path)}")
+                    
+                    # 이전 세그먼트 파일 찾기
+                    file_dir = os.path.dirname(file_path)
+                    prev_segment_path = self._find_previous_segment_file(file_dir, file_path)
+                    
+                    if prev_segment_path and os.path.exists(prev_segment_path):
+                        # 이전 세그먼트 파일이 정상적인 동영상인지 확인
+                        if self._validate_video_file(prev_segment_path):
+                            # 이전 세그먼트를 'completed' 상태로 DB에 insert
+                            print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Inserting previous segment to DB: {os.path.basename(prev_segment_path)}")
+                            self._insert_recording_history(prev_segment_path, None, force_completed=True)
+                        else:
+                            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Skipping invalid video file: {os.path.basename(prev_segment_path)}")
+                            # 비정상 파일은 처리 목록에 추가하여 다시 체크하지 않도록 함
+                            self._processed_segments.add(prev_segment_path)
+                    
+                    # 현재 세그먼트는 처리 목록에만 추가 (다음 세그먼트 시작 시 insert됨)
+                    self._processed_segments.add(file_path)
                         
         except Exception as e:
             print(f"[Recorder-{self.cfg.camera_name}] Error monitoring segment files: {e}")
@@ -644,12 +764,12 @@ class RTSPRecorder:
             
             while not self._stop.is_set() and self.process and self.process.poll() is None:
                 try:
-                    # 세그먼트 파일 확인
+                    # 세그먼트 파일 확인 (새 파일 감지 및 이전 파일 DB insert)
                     self._monitor_segment_files()
                     
-                    # 지정된 간격만큼 대기
+                    # 짧은 간격으로 체크 (1초)
                     import time
-                    time.sleep(interval_seconds)
+                    time.sleep(1)
                     
                 except Exception as e:
                     print(f"[Recorder-{self.cfg.camera_name}] Error in continuous monitoring: {e}")
@@ -693,21 +813,29 @@ class RTSPRecorder:
                     print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Already processed segment: {file_path}")
                     return
                 
-                # 세그먼트 번호 추출 (segment_000.mp4 -> 0)
-                segment_number = self._extract_segment_number(file_path)
-                if segment_number is not None:
-                    print(f"[Recorder-{self.cfg.camera_name}] 🎯 New segment #{segment_number} detected: {file_path}")
-                    print(f"[Recorder-{self.cfg.camera_name}] ✅ 파일 크기 확인: {file_size} bytes")
-                    
-                    # 처리된 세그먼트 목록에 추가
-                    self._processed_segments.add(file_path)
-                    print(f"[Recorder-{self.cfg.camera_name}] ✅ Added to processed segments list")
-                    
-                    # 데이터베이스에 INSERT
-                    print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Attempting database INSERT...")
-                    self._insert_recording_history(file_path, segment_number)
-                else:
-                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract segment number from: {file_path}")
+                # 파일 수정 시간 확인 - 녹화 시작 시간 이후에 생성된 파일만 처리
+                if self.recording_start_time:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if file_mtime < self.recording_start_time:
+                        print(f"[Recorder-{self.cfg.camera_name}] ⚠️ 파일이 녹화 시작 전에 생성됨 - 건너뜀: {os.path.basename(file_path)} (생성: {file_mtime}, 녹화 시작: {self.recording_start_time})")
+                        # 처리된 목록에 추가하여 다시 체크하지 않도록 함
+                        self._processed_segments.add(file_path)
+                        return
+                
+                # 새 세그먼트 파일 감지 - 이전 세그먼트를 DB에 insert
+                print(f"[Recorder-{self.cfg.camera_name}] 🎯 New segment file detected: {os.path.basename(file_path)}")
+                
+                # 이전 세그먼트 파일 찾기
+                file_dir = os.path.dirname(file_path)
+                prev_segment_path = self._find_previous_segment_file(file_dir, file_path)
+                
+                if prev_segment_path and os.path.exists(prev_segment_path):
+                    # 이전 세그먼트를 'completed' 상태로 DB에 insert
+                    print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Inserting previous segment to DB: {os.path.basename(prev_segment_path)}")
+                    self._insert_recording_history(prev_segment_path, None, force_completed=True)
+                
+                # 현재 세그먼트는 처리 목록에만 추가 (다음 세그먼트 시작 시 insert됨)
+                self._processed_segments.add(file_path)
             else:
                 print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Could not extract file path from line: {line.rstrip()}")
                 
@@ -789,21 +917,123 @@ class RTSPRecorder:
             print(f"[Recorder-{self.cfg.camera_name}] Error extracting file path: {e}")
         return None
 
+    def _validate_video_file(self, file_path: str) -> bool:
+        """동영상 파일이 정상적으로 재생 가능한지 확인 (FFprobe 사용)"""
+        try:
+            import subprocess
+            
+            # FFprobe 경로 (FFmpeg와 같은 디렉토리에 있음)
+            ffprobe_path = self.cfg.ffmpeg_path.replace("ffmpeg", "ffprobe")
+            if not os.path.exists(ffprobe_path):
+                # Windows에서는 .exe 확장자 추가
+                if os.name == "nt":
+                    ffprobe_path = ffprobe_path + ".exe"
+                if not os.path.exists(ffprobe_path):
+                    # 경로를 찾을 수 없으면 ffprobe만 시도
+                    ffprobe_path = "ffprobe"
+            
+            # FFprobe로 파일 정보 확인
+            cmd = [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                # duration이 있고 0보다 크면 정상 파일
+                duration = result.stdout.strip()
+                if duration and float(duration) > 0:
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ Video file validated: {os.path.basename(file_path)} (duration: {float(duration):.2f}s)")
+                    return True
+                else:
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Invalid video file (duration=0): {os.path.basename(file_path)}")
+                    return False
+            else:
+                print(f"[Recorder-{self.cfg.camera_name}] ⚠️ FFprobe validation failed: {os.path.basename(file_path)}")
+                print(f"[Recorder-{self.cfg.camera_name}]   Error: {result.stderr[:200]}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Video validation timeout: {os.path.basename(file_path)}")
+            return False
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] ⚠️ Error validating video file: {e}")
+            return False
+
+    def _find_previous_segment_file(self, file_dir: str, current_file_path: str) -> Optional[str]:
+        """이전 세그먼트 파일 찾기 - 현재 파일보다 이전에 생성된 가장 최근 파일"""
+        try:
+            from pathlib import Path
+            
+            if not os.path.exists(current_file_path):
+                return None
+            
+            current_file_mtime = os.path.getmtime(current_file_path)
+            dir_path = Path(file_dir)
+            segment_files = list(dir_path.glob("segment_*.mp4"))
+            
+            prev_file = None
+            prev_file_mtime = 0
+            
+            for segment_file in segment_files:
+                file_path = str(segment_file.absolute())
+                if file_path == current_file_path:
+                    continue
+                    
+                if os.path.exists(file_path):
+                    file_mtime = os.path.getmtime(file_path)
+                    # 현재 파일보다 이전에 생성된 파일 중 가장 최근 파일
+                    if file_mtime < current_file_mtime and file_mtime > prev_file_mtime:
+                        prev_file = file_path
+                        prev_file_mtime = file_mtime
+            
+            if prev_file:
+                print(f"[Recorder-{self.cfg.camera_name}] ✅ Found previous segment: {os.path.basename(prev_file)}")
+            else:
+                print(f"[Recorder-{self.cfg.camera_name}] ℹ️ No previous segment found (first segment)")
+            
+            return prev_file
+            
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] ❌ Error finding previous segment: {e}")
+            return None
+
     def _extract_segment_number(self, file_path: str) -> Optional[int]:
-        """파일 경로에서 세그먼트 번호 추출"""
+        """파일 경로에서 세그먼트 번호 추출 (유니크 숫자 기반)"""
         try:
             # 파일명만 추출 (경로 제거)
             filename = os.path.basename(file_path)
             
-            # segment_000.mp4 패턴에서 000 추출 (0부터 시작)
+            # segment_유니크숫자.mp4 패턴에서 유니크 숫자 추출
+            # segment_20240112_183045_123456.mp4 형식 (년월일_시분초_마이크로초)
             if filename.startswith("segment_") and filename.endswith(".mp4"):
                 segment_part = filename[8:-4]  # "segment_" 제거하고 ".mp4" 제거
-                if segment_part.isdigit():
+                # 유니크 숫자 추출: 타임스탬프 문자열을 숫자로 변환
+                # segment_20240112_183045_123456 -> 숫자 부분만 추출하여 유니크 ID 생성
+                if "_" in segment_part:
+                    # 날짜+시간+마이크로초 형식: 숫자만 추출하여 하나의 숫자로 변환
+                    digits_only = ''.join(filter(str.isdigit, segment_part))
+                    if digits_only:
+                        segment_num = int(digits_only)
+                        print(f"[Recorder-{self.cfg.camera_name}] Extracted segment number (unique): {segment_num} from {filename}")
+                        return segment_num
+                elif segment_part.isdigit():
+                    # 단순 숫자 형식도 지원 (하위 호환성)
                     segment_num = int(segment_part)
-                    print(f"[Recorder-{self.cfg.camera_name}] Extracted segment number: {segment_num} from {filename}")
+                    print(f"[Recorder-{self.cfg.camera_name}] Extracted segment number (unique): {segment_num} from {filename}")
                     return segment_num
             
-            # 다른 패턴도 지원 (예: camera1_000.mp4)
+            # 기존 패턴도 지원 (segment_000.mp4 형식 - 하위 호환성)
             if "_" in filename and filename.endswith(".mp4"):
                 parts = filename[:-4].split("_")  # .mp4 제거하고 _로 분할
                 if len(parts) >= 2 and parts[-1].isdigit():
@@ -816,8 +1046,85 @@ class RTSPRecorder:
         
         return None
 
-    def _insert_recording_history(self, file_path: str, segment_number: int = None):
-        """tb_recording_history 테이블에 녹화 기록 insert"""
+    def _check_file_completed(self, file_path: str, segment_number: int = None) -> bool:
+        """파일이 완료되었는지 확인 (다음 segment 파일이 생성되면 이전 segment는 완료된 것으로 간주)"""
+        try:
+            if not os.path.exists(file_path):
+                return False
+            
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                return False
+            
+            # segment 번호가 없으면 완료 여부를 판단할 수 없음
+            if segment_number is None:
+                return False
+            
+            # 다음 segment 파일 경로 생성
+            # segment_000.mp4 -> segment_001.mp4
+            file_dir = os.path.dirname(file_path)
+            next_segment_number = segment_number + 1
+            next_segment_filename = f"segment_{next_segment_number:03d}.mp4"
+            next_segment_path = os.path.join(file_dir, next_segment_filename)
+            
+            # 다음 segment 파일이 존재하면 현재 segment는 완료된 것으로 간주
+            if os.path.exists(next_segment_path):
+                next_file_size = os.path.getsize(next_segment_path)
+                # 다음 segment 파일이 0바이트가 아니면 완료된 것으로 간주
+                if next_file_size > 0:
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ Segment #{segment_number} completed (next segment #{next_segment_number} exists)")
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] Error checking file completion: {e}")
+            return False
+
+    def _update_recording_status(self, file_path: str, status: str):
+        """레코딩 기록의 status를 업데이트"""
+        try:
+            relative_file_path = self._convert_to_relative_path(file_path)
+            
+            db_connection = pymysql.connect(
+                host=DBSERVER_IP,
+                port=DBSERVER_PORT,
+                user=DBSERVER_USER,
+                password=DBSERVER_PASSWORD,
+                db=DBSERVER_DB,
+                charset=DBSERVER_CHARSET,
+                autocommit=True,
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=5
+            )
+            
+            cursor = db_connection.cursor()
+            
+            # file_path로 레코딩 기록 찾아서 status 업데이트
+            query = """
+                UPDATE tb_recording_history 
+                SET status = %s, update_date = %s
+                WHERE file_path = %s
+            """
+            
+            cursor.execute(query, (status, datetime.now(), relative_file_path))
+            db_connection.commit()
+            
+            cursor.close()
+            db_connection.close()
+            
+            print(f"[Recorder-{self.cfg.camera_name}] ✅ Recording status updated to '{status}' for: {relative_file_path}")
+            
+        except Exception as e:
+            print(f"[Recorder-{self.cfg.camera_name}] Error updating recording status: {e}")
+
+    def _insert_recording_history(self, file_path: str, segment_number: int = None, force_completed: bool = False):
+        """tb_recording_history 테이블에 녹화 기록 insert
+        
+        Args:
+            file_path: 파일 경로
+            segment_number: 세그먼트 번호
+            force_completed: True이면 무조건 'completed' 상태로 insert
+        """
         try:
             print(f"[Recorder-{self.cfg.camera_name}] 🗄️ Starting database INSERT for: {file_path}")
             
@@ -844,24 +1151,16 @@ class RTSPRecorder:
                     print(f"[Recorder-{self.cfg.camera_name}] ❌ 0바이트 파일 삭제 실패: {e}")
                 return
             
-            # 세그먼트별 정확한 시작/종료 시간 계산
-            if segment_number is not None:
-                # 세그먼트 번호가 있는 경우: 정확한 시간 계산
-                # segment_000.mp4는 첫 번째 세그먼트 (0부터 시작)
-                segment_start_time = self.recording_start_time + timedelta(seconds=segment_number * self.cfg.segment_seconds)
-                segment_end_time = segment_start_time + timedelta(seconds=self.cfg.segment_seconds)
-                segment_duration = self.cfg.segment_seconds
-                
-                print(f"[Recorder-{self.cfg.camera_name}] Time calculation for segment #{segment_number}:")
-                print(f"  Recording start: {self.recording_start_time}")
-                print(f"  Segment start: {segment_start_time}")
-                print(f"  Segment end: {segment_end_time}")
-                print(f"  Expected duration: {segment_duration} seconds")
-            else:
-                # 세그먼트 번호가 없는 경우: 전체 녹화 시간 사용
-                segment_start_time = self.recording_start_time
-                segment_end_time = datetime.now()
-                segment_duration = int((segment_end_time - segment_start_time).total_seconds()) if segment_start_time else 0
+            # 세그먼트 시간 계산 - 파일 생성 시간 기준
+            file_mtime = os.path.getmtime(file_path)
+            segment_end_time = datetime.fromtimestamp(file_mtime)
+            segment_start_time = segment_end_time - timedelta(seconds=self.cfg.segment_seconds)
+            segment_duration = self.cfg.segment_seconds
+            
+            print(f"[Recorder-{self.cfg.camera_name}] Time calculation:")
+            print(f"  Segment start: {segment_start_time}")
+            print(f"  Segment end: {segment_end_time}")
+            print(f"  Duration: {segment_duration} seconds")
             
             # 절대경로를 상대경로로 변환
             relative_file_path = self._convert_to_relative_path(file_path)
@@ -883,6 +1182,39 @@ class RTSPRecorder:
             
             cursor = db_connection.cursor()
             
+            # DB 중복 체크: 같은 file_path가 이미 존재하는지 확인
+            check_query = "SELECT id, status FROM tb_recording_history WHERE file_path = %s LIMIT 1"
+            cursor.execute(check_query, (relative_file_path,))
+            existing_record = cursor.fetchone()
+            
+            if existing_record:
+                existing_id = existing_record.get('id')
+                existing_status = existing_record.get('status')
+                
+                # force_completed가 True이고 기존 레코드가 'recording' 상태이면 'completed'로 업데이트
+                if force_completed and existing_status == 'recording':
+                    update_query = """
+                        UPDATE tb_recording_history 
+                        SET status = 'completed', update_date = %s
+                        WHERE id = %s
+                    """
+                    cursor.execute(update_query, (datetime.now(), existing_id))
+                    db_connection.commit()
+                    print(f"[Recorder-{self.cfg.camera_name}] ✅ Updated existing record (ID: {existing_id}) from 'recording' to 'completed'")
+                    cursor.close()
+                    db_connection.close()
+                    return
+                else:
+                    print(f"[Recorder-{self.cfg.camera_name}] ⚠️⚠️⚠️ Duplicate record found in DB - skipping INSERT: {relative_file_path}")
+                    print(f"[Recorder-{self.cfg.camera_name}]   Existing record ID: {existing_id}, Status: {existing_status}")
+                    cursor.close()
+                    db_connection.close()
+                    return
+            
+            # force_completed가 True이면 무조건 'completed' 상태로 insert
+            initial_status = 'completed' if force_completed else 'recording'
+            print(f"[Recorder-{self.cfg.camera_name}] 📊 Status: {initial_status}")
+            
             # tb_recording_history에 insert
             query = """
                 INSERT INTO tb_recording_history 
@@ -902,7 +1234,7 @@ class RTSPRecorder:
                 relative_file_path,  # file_path (상대경로)
                 file_size,  # file_size
                 'continuous',  # record_type
-                'completed',  # status
+                initial_status,  # status (파일 완료 여부에 따라 결정)
                 None,  # resolution
                 None,  # bitrate
                 None,  # framerate
@@ -912,8 +1244,11 @@ class RTSPRecorder:
             )
             
             print(f"[Recorder-{self.cfg.camera_name}] 🔍 Executing INSERT query...")
+            print(f"[Recorder-{self.cfg.camera_name}]   Query: {query[:100]}...")
+            print(f"[Recorder-{self.cfg.camera_name}]   Values: fk_schedule_id={values[1]}, status={values[9]}, file_path={values[6][:50]}...")
             cursor.execute(query, values)
-            print(f"[Recorder-{self.cfg.camera_name}] ✅ INSERT query executed successfully")
+            inserted_id = cursor.lastrowid
+            print(f"[Recorder-{self.cfg.camera_name}] ✅ INSERT query executed successfully (ID: {inserted_id})")
             
             db_connection.commit()
             print(f"[Recorder-{self.cfg.camera_name}] ✅ Database commit successful")
@@ -923,30 +1258,29 @@ class RTSPRecorder:
             print(f"[Recorder-{self.cfg.camera_name}] ✅ Database connection closed")
             
             print(f"[Recorder-{self.cfg.camera_name}] 🎉 Recording history inserted successfully:")
-            print(f"  Segment #{segment_number if segment_number else 'N/A'}")
             print(f"  Start time: {segment_start_time}")
             print(f"  End time: {segment_end_time}")
-            print(f"  Duration: {segment_duration} seconds ({segment_duration/60:.1f} minutes)")
-            print(f"  Absolute path: {file_path}")
-            print(f"  Relative path: {relative_file_path}")
-            print(f"  File size: {file_size} bytes")
+            print(f"  Duration: {segment_duration} seconds")
+            print(f"  File: {os.path.basename(file_path)}")
+            print(f"  Status: {initial_status}")
             
         except Exception as e:
-            print(f"[Recorder-{self.cfg.camera_name}] Error inserting recording history: {e}")
+            print(f"[Recorder-{self.cfg.camera_name}] ❌❌❌ Error inserting recording history: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[Recorder-{self.cfg.camera_name}]   File path: {file_path}")
+            print(f"[Recorder-{self.cfg.camera_name}]   Segment number: {segment_number}")
+            print(f"[Recorder-{self.cfg.camera_name}]   Force completed: {force_completed}")
 
     def build_ffmpeg_cmd(self) -> List[str]:
         out_pattern = self._get_output_path()
 
         cmd = [
             self.cfg.ffmpeg_path,
-            "-hide_banner", "-loglevel", "error",  # error 레벨로 설정하여 Non-monotonic DTS 경고 숨김
+            "-hide_banner", "-loglevel", "error",  # error 레벨로 설정
             "-nostats",  # 진행 상황 통계 출력 완전 비활성화
             "-rtsp_transport", self.cfg.rtsp_transport,
         ]
-        
-        # 🔧 로그 레벨 설정 안내
-        print(f"[Recorder-{self.cfg.camera_name}] 🔧 FFmpeg log level: error (Non-monotonic DTS 경고 숨김)")
-        print(f"[Recorder-{self.cfg.camera_name}] 💡 필요시 -loglevel을 'warning' 또는 'info'로 변경 가능")
 
         # ❗ 타임아웃 옵션 추가
         if self.cfg.use_timeouts:
@@ -982,6 +1316,14 @@ class RTSPRecorder:
                 "-maxrate", self.cfg.video_bitrate, "-bufsize", self.cfg.video_bitrate,
                 "-force_key_frames", f"expr:gte(t,n_forced*{gop})",
             ]
+            
+            # 열화상 카메라(video_type=1)인 경우 해상도와 프레임레이트 강제
+            if self.cfg.video_type == 1:
+                cmd += [
+                    "-vf", "scale=640:480",  # 해상도 강제: 640x480
+                    "-r", "29.97",  # 프레임레이트 강제: 29.97fps
+                ]
+                print(f"[Recorder-{self.cfg.camera_name}] 🔧 열화상 카메라: 해상도 640x480, 프레임레이트 29.97fps로 강제 설정")
         else:
             # 스트림 복사 모드
             cmd += [
@@ -998,7 +1340,7 @@ class RTSPRecorder:
             "-segment_format", "mp4",
             "-movflags", "+faststart",
             "-max_muxing_queue_size", str(self.cfg.max_muxing_queue_size),
-            "-segment_start_number", "0",  # 세그먼트 번호 시작
+            "-strftime", "1",  # strftime 형식 사용 (유니크 숫자 기반 파일명)
             "-segment_list_size", "0",  # 세그먼트 리스트 파일 생성 안함
             "-segment_list_flags", "live",  # 라이브 스트리밍용 플래그
             # 출력 파일 처리 옵션 (세그먼트 파일의 타임스탬프 문제 해결)
@@ -1065,6 +1407,9 @@ class RTSPRecorder:
                 time.sleep(2)  # 카메라가 준비될 시간 제공
                 prep_elapsed = (datetime.now() - connection_prep_start).total_seconds()
                 print(f"[Recorder-{self.cfg.camera_name}] ⏰ 전체 준비 소요 시간: {prep_elapsed:.2f}초")
+                
+                # DB에서 status가 'recording'인 항목들을 모두 삭제
+                self._cleanup_recording_status_records()
                 
                 cmd = self.build_ffmpeg_cmd()
                 print(f"[Recorder-{self.cfg.camera_name}] 🚀 FFmpeg 명령어 실행 시작...")
@@ -1167,9 +1512,7 @@ class RTSPRecorder:
                 # 세그먼트 파일 확인
                 self._check_segment_files()
                 
-                # 수동으로 세그먼트 파일 확인 및 DB INSERT 시도
-                self._manual_segment_check()
-                
+               
                 # RTSP 연결 상태 확인
                 self._check_rtsp_connection()
                 
@@ -1347,11 +1690,20 @@ class MultiCameraRecorder:
                             # 순차적인 카메라 이름 생성 (camera1, camera2, ...)
                             camera_name = self._generate_camera_name(camera_index)
                             
+                            # videoType 추출 (열화상: 1, 실화상: 2)
+                            video_type = video_config.get('videoType', 2)  # 기본값: 실화상(2)
+                            if not isinstance(video_type, int):
+                                try:
+                                    video_type = int(video_type)
+                                except (ValueError, TypeError):
+                                    video_type = 2  # 기본값: 실화상
+                            
                             camera_info = {
                                 'name': row['name'],
                                 'camera_name': camera_name,
                                 'rtsp_url': rtsp_url,
-                                'video_config': video_config
+                                'video_config': video_config,
+                                'video_type': video_type
                             }
                             camera_list.append(camera_info)
                             
@@ -1396,17 +1748,22 @@ class MultiCameraRecorder:
         
         for camera_info in camera_list:
             try:
+                video_type = camera_info.get('video_type', 2)  # 기본값: 실화상(2)
+                # 열화상 카메라(video_type=1)인 경우 reencode_video를 True로 설정하여 해상도/프레임레이트 강제
+                is_thermal = (video_type == 1)
+                
                 config = RecorderConfig(
                     rtsp_url=camera_info['rtsp_url'],
                     camera_name=camera_info['camera_name'],  # 순차적인 이름 사용
                     output_dir=Path("./outputs/nvr/recordings"),
                     segment_seconds=SPLIT_SECONDS,  # DB에서 로드된 세그먼트 분할 시간
                     video_bitrate=DEFAULT_BITRATE,  # DB에서 로드된 비트레이트
-                    reencode_video=False,
+                    reencode_video=is_thermal,  # 열화상 카메라는 인코딩 필요 (해상도/프레임레이트 강제)
                     rtsp_transport="tcp",
                     use_timeouts=True,  # 타임아웃 활성화
                     timeout_mode="timeout",  # timeout 옵션 사용
-                    timeout_value_us=10_000_000  # 10초 타임아웃
+                    timeout_value_us=10_000_000,  # 10초 타임아웃
+                    video_type=video_type
                 )
                 
                 recorder = RTSPRecorder(config)

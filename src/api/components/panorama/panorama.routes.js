@@ -3,6 +3,7 @@ import { models } from '../../../models/index.js';
 import * as ValidationMiddleware from '../../middlewares/auth.validation.middleware.js';
 import * as PermissionMiddleware from '../../middlewares/auth.permission.middleware.js';
 import LoggerService from '../../../services/logger/logger.service.js';
+import { literal } from 'sequelize';
 
 const { VideoPanoramaData } = models;
 const { log } = LoggerService;
@@ -55,8 +56,14 @@ router.get('/data', [
       log.info(`파노라마 데이터 조회 요청: limit=${limitNum}`);
 
       const panoramaData = await VideoPanoramaData.findAll({
+        attributes: [
+          'id',
+          'panoramaData',
+          [literal('DATE_FORMAT(create_date, "%Y-%m-%d %H:%i:%s")'), 'create_date']
+        ],
         order: [['create_date', 'DESC']],
-        limit: limitNum
+        limit: limitNum,
+        raw: true
       });
 
       log.info(`파노라마 데이터 조회 완료: ${panoramaData.length}개`);
@@ -119,7 +126,14 @@ router.get('/data/:id', [
 
       log.info(`파노라마 데이터 조회 요청: id=${panoramaId}`);
 
-      const panoramaData = await VideoPanoramaData.findByPk(panoramaId);
+      const panoramaData = await VideoPanoramaData.findByPk(panoramaId, {
+        attributes: [
+          'id',
+          'panoramaData',
+          [literal('DATE_FORMAT(create_date, "%Y-%m-%d %H:%i:%s")'), 'create_date']
+        ],
+        raw: true
+      });
 
       if (!panoramaData) {
         return res.status(404).json({

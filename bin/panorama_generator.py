@@ -47,7 +47,9 @@ def analyze_colorbar(colorbar_image_path, temp_min, temp_max, num_steps=256):
         pixel_y = int(i * (h - 1) / (num_steps - 1))
         b, g, r = center_column[pixel_y]
         norm_pos = pixel_y / (h - 1)
-        temperature = temp_min + norm_pos * (temp_max - temp_min)
+        # 이미지 상단(pixel_y=0)이 최고 온도(temp_max), 하단(pixel_y=h-1)이 최저 온도(temp_min)
+        # 따라서 norm_pos를 반대로 계산: (1 - norm_pos)
+        temperature = temp_min + (1 - norm_pos) * (temp_max - temp_min)
         color_to_temp_map[tuple(map(int, (r, g, b)))] = temperature
     return color_to_temp_map
 
