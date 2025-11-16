@@ -14,6 +14,21 @@ import * as ValidationMiddleware from '../../middlewares/auth.validation.middlew
 export const routesConfig = (app) => {
   /**
    * @swagger
+   * /api/system/alive:
+   *   get:
+   *     tags: [System]
+   *     summary: Health check endpoint
+   *     description: Returns server status without authentication
+   *     responses:
+   *       200:
+   *         description: Server is alive
+   *       500:
+   *         description: Server error
+   */
+  app.get('/api/system/alive', SystemController.alive);
+
+  /**
+   * @swagger
    * /api/system/log:
    *   get:
    *     tags: [System]

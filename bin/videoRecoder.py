@@ -254,25 +254,26 @@ class RTSPRecorder:
             raise
 
     def _get_output_path(self) -> str:
-        """출력 파일 경로 생성 - segment 분할을 위한 패턴 (유니크 숫자 사용)"""
-        # 현재 날짜로 날짜별 폴더 생성
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        """출력 파일 경로 생성 - segment 분할을 위한 패턴 (유니크 숫자 사용)
         
-        # 카메라별 + 날짜별 디렉토리 생성
+        날짜가 변경되면 자동으로 새로운 날짜 폴더에 저장되도록 strftime 형식 사용
+        """
+        # 현재 날짜로 초기 날짜별 폴더 생성 (FFmpeg 시작 시)
+        current_date = datetime.now().strftime("%Y-%m-%d")
         camera_date_dir = self.cfg.output_dir / self.cfg.camera_name / current_date
         camera_date_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"[Recorder-{self.cfg.camera_name}] Created date directory: {camera_date_dir}")
+        print(f"[Recorder-{self.cfg.camera_name}] Created initial date directory: {camera_date_dir}")
         
         # 유니크 숫자 기반 파일명 패턴 (타임스탬프 사용)
-        # segment_유니크숫자.mp4 형식으로 변경
-        # FFmpeg의 strftime을 사용하여 타임스탬프 기반 파일명 생성
-        # %Y%m%d_%H%M%S 형식: 년월일_시분초 (유니크 보장, 초 단위)
-        # FFmpeg segment는 매 세그먼트마다 새로운 파일을 생성하므로 타임스탬프가 유니크함
-        pattern = f"./outputs/nvr/recordings/{self.cfg.camera_name}/{current_date}/segment_%Y%m%d_%H%M%S.mp4"
+        # 날짜 폴더도 strftime 형식으로 변경하여 날짜가 바뀌면 자동으로 새 폴더에 저장
+        # %Y-%m-%d 형식: 년-월-일 (날짜 변경 시 자동으로 새 폴더 생성)
+        # %Y%m%d_%H%M%S 형식: 년월일_시분초 (파일명에 타임스탬프 포함)
+        # FFmpeg의 -strftime 1 옵션과 함께 사용하면 날짜가 변경될 때 자동으로 새 날짜 폴더에 저장됨
+        pattern = f"./outputs/nvr/recordings/{self.cfg.camera_name}/%Y-%m-%d/segment_%Y%m%d_%H%M%S.mp4"
         
         print(f"[Recorder-{self.cfg.camera_name}] Generated pattern: {pattern}")
-        print(f"[Recorder-{self.cfg.camera_name}] Note: Using unique timestamp-based segment naming")
+        print(f"[Recorder-{self.cfg.camera_name}] Note: Using strftime-based date folder - will auto-create new folder when date changes")
         return pattern
 
     def _cleanup_recording_status_records(self):

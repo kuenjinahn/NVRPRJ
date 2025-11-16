@@ -259,6 +259,22 @@ export const getSmtpServerStatus = async (req, res) => {
   }
 };
 
+export const alive = async (req, res) => {
+  try {
+    res.status(200).json({
+      status: 'alive',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+    });
+  } catch (error) {
+    log.error(`Alive check error: ${error.message}`, 'System');
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+};
+
 export const getUptime = async (req, res) => {
   try {
     const humaniseDuration = (seconds) => {

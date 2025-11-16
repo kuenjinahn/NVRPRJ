@@ -7,11 +7,17 @@ import time
 import json
 import os
 import sys
+import subprocess
 from logging.handlers import RotatingFileHandler
 from configparser import ConfigParser
 from pathlib import Path
 import pymysql
 from datetime import datetime, timedelta
+try:
+    import urllib.request
+    import urllib.error
+except ImportError:
+    import urllib2 as urllib
 
 def load_config():
     config = ConfigParser()
@@ -46,10 +52,27 @@ DBSERVER_CHARSET = config.get('DATABASE', 'charset')
 nvrdb = None
 ########################
 
-# 로깅 설정
-log_dir = Path(config.get('LOGGING', 'log_dir'))
+### Health Check 설정 ####
+WEB_IP = config.get('WEB', 'ip', fallback='localhost')
+WEB_PORT = config.getint('WEB', 'port', fallback=9091)
+UI_PORT = 9092  # UI 서버 포트 (기본값)
+ALIVE_URL = "http://{}:{}/api/system/alive".format(WEB_IP, WEB_PORT)
+UI_PING_URL = "http://{}:{}/ping".format(WEB_IP, UI_PORT)
+HEALTH_CHECK_INTERVAL = 5  # 5초마다 체크
+HEALTH_CHECK_TIMEOUT = 3  # 3초 타임아웃
+MAX_FAIL_COUNT = 2  # 2회 연속 실패 시 재시작
+health_check_fail_count = 0
+ui_health_check_fail_count = 0  # UI 서버 실패 카운트
+last_health_check_log_time = 0  # 마지막 health check 로그 시간
+HEALTH_CHECK_LOG_INTERVAL = 60  # 성공 시 60초마다 한 번씩만 로그 기록
+########################
+
+# 로깅 설정 - 실행 파일의 현재 폴더에 로그 기록
+project_root = os.path.dirname(os.path.dirname(__file__))
+log_dir = Path(project_root)
 log_dir.mkdir(exist_ok=True)
-log_file = log_dir / config.get('LOGGING', 'log_file')
+log_file_name = config.get('LOGGING', 'log_file', fallback='video_data_receiver.log')
+log_file = log_dir / log_file_name
 
 handler = RotatingFileHandler(
     log_file,
@@ -76,6 +99,7 @@ logger.addHandler(console_handler)
 class VideoDataReceiver:
     def __init__(self):
         self.config = config
+        self.project_dir = os.path.dirname(os.path.dirname(__file__))
 
     def connect_to_msdb(self):
         """MSDB에 연결"""
@@ -333,18 +357,321 @@ class VideoDataReceiver:
             import traceback
             logger.error(traceback.format_exc())
 
+    def check_ui_server_health(self):
+        """UI 서버 health check"""
+        global ui_health_check_fail_count, last_health_check_log_time
+        start_time = time.time()
+        current_time = time.time()
+        try:
+            if sys.version_info[0] >= 3:
+                # Python 3
+                req = urllib.request.Request(UI_PING_URL)
+                req.add_header('User-Agent', 'HealthCheck/1.0')
+                try:
+                    response = urllib.request.urlopen(req, timeout=HEALTH_CHECK_TIMEOUT)
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    status_code = response.getcode()
+                    
+                    if status_code == 200:
+                        # 응답 본문 읽기
+                        try:
+                            response_data = response.read().decode('utf-8')
+                            response_json = json.loads(response_data)
+                            ui_port = response_json.get('port', 'N/A')
+                        except:
+                            ui_port = 'N/A'
+                        
+                        # 서버 정상
+                        if ui_health_check_fail_count > 0:
+                            logger.info("[UI Health Check] UI 서버 복구됨 (이전 실패 횟수: {}, 응답시간: {}ms, 포트: {})".format(
+                                ui_health_check_fail_count, response_time, ui_port))
+                            last_health_check_log_time = current_time
+                        elif current_time - last_health_check_log_time >= HEALTH_CHECK_LOG_INTERVAL:
+                            # 60초마다 한 번씩 성공 로그 기록
+                            logger.info("[UI Health Check] UI 서버 정상 (응답시간: {}ms, 포트: {}, URL: {})".format(
+                                response_time, ui_port, UI_PING_URL))
+                            last_health_check_log_time = current_time
+                        ui_health_check_fail_count = 0
+                        return True
+                    else:
+                        ui_health_check_fail_count += 1
+                        logger.warning("[UI Health Check] UI 서버 응답 오류 (HTTP {}, 응답시간: {}ms, 실패 횟수: {}/{}, URL: {})".format(
+                            status_code, response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL))
+                        return False
+                except urllib.error.URLError as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    ui_health_check_fail_count += 1
+                    logger.warning("[UI Health Check] UI 서버 연결 실패 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL, str(e)))
+                    return False
+                except Exception as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    ui_health_check_fail_count += 1
+                    logger.error("[UI Health Check] 예외 발생 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL, str(e)))
+                    return False
+            else:
+                # Python 2
+                try:
+                    response = urllib.urlopen(UI_PING_URL, timeout=HEALTH_CHECK_TIMEOUT)
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    status_code = response.getcode()
+                    
+                    if status_code == 200:
+                        try:
+                            response_data = response.read()
+                            response_json = json.loads(response_data)
+                            ui_port = response_json.get('port', 'N/A')
+                        except:
+                            ui_port = 'N/A'
+                        
+                        if ui_health_check_fail_count > 0:
+                            logger.info("[UI Health Check] UI 서버 복구됨 (이전 실패 횟수: {}, 응답시간: {}ms, 포트: {})".format(
+                                ui_health_check_fail_count, response_time, ui_port))
+                            last_health_check_log_time = current_time
+                        elif current_time - last_health_check_log_time >= HEALTH_CHECK_LOG_INTERVAL:
+                            logger.info("[UI Health Check] UI 서버 정상 (응답시간: {}ms, 포트: {}, URL: {})".format(
+                                response_time, ui_port, UI_PING_URL))
+                            last_health_check_log_time = current_time
+                        ui_health_check_fail_count = 0
+                        return True
+                    else:
+                        ui_health_check_fail_count += 1
+                        logger.warning("[UI Health Check] UI 서버 응답 오류 (HTTP {}, 응답시간: {}ms, 실패 횟수: {}/{}, URL: {})".format(
+                            status_code, response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL))
+                        return False
+                except Exception as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    ui_health_check_fail_count += 1
+                    logger.warning("[UI Health Check] UI 서버 연결 실패 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL, str(e)))
+                    return False
+        except Exception as e:
+            response_time = round((time.time() - start_time) * 1000, 2)  # ms
+            ui_health_check_fail_count += 1
+            logger.error("[UI Health Check] Health check 오류 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                response_time, ui_health_check_fail_count, MAX_FAIL_COUNT, UI_PING_URL, str(e)))
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def check_server_health(self):
+        """Node 서버 health check"""
+        global health_check_fail_count, last_health_check_log_time
+        start_time = time.time()
+        current_time = time.time()
+        try:
+            if sys.version_info[0] >= 3:
+                # Python 3
+                req = urllib.request.Request(ALIVE_URL)
+                req.add_header('User-Agent', 'HealthCheck/1.0')
+                try:
+                    response = urllib.request.urlopen(req, timeout=HEALTH_CHECK_TIMEOUT)
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    status_code = response.getcode()
+                    
+                    if status_code == 200:
+                        # 응답 본문 읽기 (선택적)
+                        try:
+                            response_data = response.read().decode('utf-8')
+                            response_json = json.loads(response_data)
+                            uptime = response_json.get('uptime', 'N/A')
+                        except:
+                            uptime = 'N/A'
+                        
+                        # 서버 정상
+                        if health_check_fail_count > 0:
+                            logger.info("[Health Check] 서버 복구됨 (이전 실패 횟수: {}, 응답시간: {}ms, uptime: {}초)".format(
+                                health_check_fail_count, response_time, uptime))
+                            last_health_check_log_time = current_time
+                        elif current_time - last_health_check_log_time >= HEALTH_CHECK_LOG_INTERVAL:
+                            # 60초마다 한 번씩 성공 로그 기록
+                            logger.info("[Health Check] 서버 정상 (응답시간: {}ms, uptime: {}초, URL: {})".format(
+                                response_time, uptime, ALIVE_URL))
+                            last_health_check_log_time = current_time
+                        health_check_fail_count = 0
+                        return True
+                    else:
+                        health_check_fail_count += 1
+                        logger.warning("[Health Check] 서버 응답 오류 (HTTP {}, 응답시간: {}ms, 실패 횟수: {}/{}, URL: {})".format(
+                            status_code, response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL))
+                        return False
+                except urllib.error.URLError as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    health_check_fail_count += 1
+                    logger.warning("[Health Check] 서버 연결 실패 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL, str(e)))
+                    return False
+                except Exception as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    health_check_fail_count += 1
+                    logger.error("[Health Check] 예외 발생 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL, str(e)))
+                    return False
+            else:
+                # Python 2
+                try:
+                    response = urllib.urlopen(ALIVE_URL, timeout=HEALTH_CHECK_TIMEOUT)
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    status_code = response.getcode()
+                    
+                    if status_code == 200:
+                        # 응답 본문 읽기 (선택적)
+                        try:
+                            response_data = response.read()
+                            response_json = json.loads(response_data)
+                            uptime = response_json.get('uptime', 'N/A')
+                        except:
+                            uptime = 'N/A'
+                        
+                        if health_check_fail_count > 0:
+                            logger.info("[Health Check] 서버 복구됨 (이전 실패 횟수: {}, 응답시간: {}ms, uptime: {}초)".format(
+                                health_check_fail_count, response_time, uptime))
+                            last_health_check_log_time = current_time
+                        elif current_time - last_health_check_log_time >= HEALTH_CHECK_LOG_INTERVAL:
+                            # 60초마다 한 번씩 성공 로그 기록
+                            logger.info("[Health Check] 서버 정상 (응답시간: {}ms, uptime: {}초, URL: {})".format(
+                                response_time, uptime, ALIVE_URL))
+                            last_health_check_log_time = current_time
+                        health_check_fail_count = 0
+                        return True
+                    else:
+                        health_check_fail_count += 1
+                        logger.warning("[Health Check] 서버 응답 오류 (HTTP {}, 응답시간: {}ms, 실패 횟수: {}/{}, URL: {})".format(
+                            status_code, response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL))
+                        return False
+                except Exception as e:
+                    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+                    health_check_fail_count += 1
+                    logger.warning("[Health Check] 서버 연결 실패 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                        response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL, str(e)))
+                    return False
+        except Exception as e:
+            response_time = round((time.time() - start_time) * 1000, 2)  # ms
+            health_check_fail_count += 1
+            logger.error("[Health Check] Health check 오류 (응답시간: {}ms, 실패 횟수: {}/{}, URL: {}, 오류: {})".format(
+                response_time, health_check_fail_count, MAX_FAIL_COUNT, ALIVE_URL, str(e)))
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def restart_nvr_services(self):
+        """NVR 서비스 재시작"""
+        global health_check_fail_count, ui_health_check_fail_count
+        try:
+            logger.info("=" * 50)
+            logger.info("NVR 서비스 재시작 시작")
+            logger.info("=" * 50)
+            
+            # start-nvr.sh 실행
+            logger.info("NVR 서버 시작 중...")
+            start_script = os.path.join(self.project_dir, 'start-nvr.sh')
+            if os.path.exists(start_script):
+                try:
+                    if hasattr(subprocess, 'run'):
+                        # Python 3.5+
+                        subprocess.run(['sudo', start_script], cwd=self.project_dir, check=False)
+                    else:
+                        # Python 2
+                        subprocess.call(['sudo', start_script], cwd=self.project_dir)
+                except Exception as e:
+                    logger.error("start-nvr.sh 실행 오류: {}".format(str(e)))
+                time.sleep(3)
+            else:
+                logger.warning("start-nvr.sh 파일을 찾을 수 없습니다: {}".format(start_script))
+            
+            # batch-nvr.sh 실행
+            logger.info("배치 프로세스 시작 중...")
+            batch_script = os.path.join(self.project_dir, 'batch-nvr.sh')
+            if os.path.exists(batch_script):
+                try:
+                    if hasattr(subprocess, 'run'):
+                        # Python 3.5+
+                        subprocess.run(['sudo', batch_script], cwd=self.project_dir, check=False)
+                    else:
+                        # Python 2
+                        subprocess.call(['sudo', batch_script], cwd=self.project_dir)
+                except Exception as e:
+                    logger.error("batch-nvr.sh 실행 오류: {}".format(str(e)))
+            else:
+                logger.warning("batch-nvr.sh 파일을 찾을 수 없습니다: {}".format(batch_script))
+            
+            logger.info("NVR 서비스 재시작 완료")
+            logger.info("=" * 50)
+            
+            # 실패 카운트 리셋
+            health_check_fail_count = 0
+            ui_health_check_fail_count = 0
+            
+        except Exception as e:
+            logger.error("NVR 서비스 재시작 오류: {}".format(str(e)))
+            import traceback
+            logger.error(traceback.format_exc())
+
     def run(self):
-        """메인 실행 루프 - 1분마다 댐 데이터 조회 및 업데이트"""
-        logger.info("VideoDataReceiver 시작 (1분 간격 댐 데이터 업데이트)")
+        """메인 실행 루프 - 1분마다 댐 데이터 조회 및 업데이트, 5초마다 health check"""
+        global health_check_fail_count, ui_health_check_fail_count
+        
+        logger.info("VideoDataReceiver 시작")
+        logger.info("  - 댐 데이터 업데이트: 1분 간격")
+        logger.info("  - Node 서버 Health check: {}초 간격 (URL: {})".format(HEALTH_CHECK_INTERVAL, ALIVE_URL))
+        logger.info("  - UI 서버 Health check: {}초 간격 (URL: {})".format(HEALTH_CHECK_INTERVAL, UI_PING_URL))
+        logger.info("  - Health check 타임아웃: {}초".format(HEALTH_CHECK_TIMEOUT))
+        logger.info("  - 최대 실패 횟수: {}회".format(MAX_FAIL_COUNT))
+        logger.info("  - Health check 시작 대기: 10초")
+        
+        last_dam_data_time = 0
+        dam_data_interval = 60  # 1분
+        health_check_start_time = time.time()
+        health_check_initial_delay = 10  # 처음 시작 시 10초 대기
+        health_check_enabled = False  # Health check 활성화 여부
         
         while True:
             try:
-                # 댐 데이터 조회 및 업데이트
-                self.process_dam_data()
+                current_time = time.time()
                 
-                # 1분 대기
-                logger.info("1분 대기 중...")
-                time.sleep(60)
+                # Health check 시작 여부 확인 (10초 후 시작)
+                if not health_check_enabled:
+                    if current_time - health_check_start_time >= health_check_initial_delay:
+                        health_check_enabled = True
+                        logger.info("[Health Check] Health check 시작 (10초 대기 완료)")
+                    else:
+                        # Health check 시작 전에는 댐 데이터만 처리
+                        if current_time - last_dam_data_time >= dam_data_interval:
+                            self.process_dam_data()
+                            last_dam_data_time = current_time
+                        time.sleep(HEALTH_CHECK_INTERVAL)
+                        continue
+                
+                # Health check (5초마다) - Node 서버와 UI 서버 모두 체크
+                node_health_ok = self.check_server_health()
+                ui_health_ok = self.check_ui_server_health()
+                
+                # Node 서버 또는 UI 서버 중 하나라도 실패하면 재시작
+                if not node_health_ok:
+                    if health_check_fail_count >= MAX_FAIL_COUNT:
+                        logger.error("Node 서버 응답 없음이 {}회 연속 발생. NVR 서비스 재시작 실행".format(MAX_FAIL_COUNT))
+                        self.restart_nvr_services()
+                        # 재시작 후 다시 10초 대기
+                        health_check_enabled = False
+                        health_check_start_time = time.time()
+                
+                if not ui_health_ok:
+                    if ui_health_check_fail_count >= MAX_FAIL_COUNT:
+                        logger.error("UI 서버 응답 없음이 {}회 연속 발생. NVR 서비스 재시작 실행".format(MAX_FAIL_COUNT))
+                        self.restart_nvr_services()
+                        # 재시작 후 다시 10초 대기
+                        health_check_enabled = False
+                        health_check_start_time = time.time()
+                        ui_health_check_fail_count = 0  # 재시작 후 카운트 리셋
+                
+                # 댐 데이터 조회 및 업데이트 (1분마다)
+                if current_time - last_dam_data_time >= dam_data_interval:
+                    self.process_dam_data()
+                    last_dam_data_time = current_time
+                
+                # 5초 대기
+                time.sleep(HEALTH_CHECK_INTERVAL)
                 
             except KeyboardInterrupt:
                 logger.info("사용자에 의해 중단됨")
@@ -353,11 +680,10 @@ class VideoDataReceiver:
                 logger.error(f"메인 루프 오류: {str(e)}")
                 import traceback
                 logger.error(traceback.format_exc())
-                time.sleep(60)  # 오류 발생 시 1분 대기 후 재시도
+                time.sleep(HEALTH_CHECK_INTERVAL)  # 오류 발생 시 5초 대기 후 재시도
             finally:
-                # 연결 종료
-                self.disconnect_msdb()
-                self.disconnect_nvrdb()
+                # 연결 종료 (주기적으로 정리)
+                pass
 
 
 if __name__ == "__main__":

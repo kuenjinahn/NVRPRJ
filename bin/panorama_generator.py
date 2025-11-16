@@ -1164,6 +1164,16 @@ class PanoramaGenerator:
                     logger.info("다음 프리셋 처리 전 잠시 대기...")
                     time.sleep(3)  # 2초 → 3초로 증가 (연결 안정화)
             
+            # 6. 파노라마 생성 완료 후 프리셋 1번으로 이동
+            if ENABLE_PRESET_MOVEMENT:
+                logger.info("파노라마 생성 완료 후 프리셋 1번으로 이동")
+                if not self.move_to_preset(1):
+                    logger.warning("프리셋 1번 이동 실패 (파노라마 생성은 완료됨)")
+                else:
+                    logger.info("프리셋 1번 이동 완료")
+            else:
+                logger.info("프리셋 이동이 비활성화되어 홈 위치 이동을 건너뜁니다")
+                            
             # 4. 3개 이미지를 수평으로 머지
             panorama_base64 = self.merge_images_horizontally(snapshots)
             if not panorama_base64:
@@ -1175,15 +1185,7 @@ class PanoramaGenerator:
                 logger.error("데이터베이스 저장 실패")
                 return False
             
-            # 6. 파노라마 생성 완료 후 프리셋 1번으로 이동
-            if ENABLE_PRESET_MOVEMENT:
-                logger.info("파노라마 생성 완료 후 프리셋 1번으로 이동")
-                if not self.move_to_preset(1):
-                    logger.warning("프리셋 1번 이동 실패 (파노라마 생성은 완료됨)")
-                else:
-                    logger.info("프리셋 1번 이동 완료")
-            else:
-                logger.info("프리셋 이동이 비활성화되어 홈 위치 이동을 건너뜁니다")
+
             
             logger.info("파노라마 생성 완료")
             return True

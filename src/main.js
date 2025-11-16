@@ -61,10 +61,6 @@ export default class Interface extends EventEmitter {
     this.log.debug('Configuring motion controller...');
     this.motionController = new (await import('./controller/motion/motion.controller.js')).default(this);
 
-    // configure recording cleanup service
-    this.log.debug('Configuring recording cleanup service...');
-    this.recordingCleanupService = (await import('./services/recording/recording.cleanup.service.js')).default;
-
     // configure camera controller
     this.log.debug('Configuring camera controller...');
     this.cameraController = new (await import('./controller/camera/camera.controller.js')).default(this);
@@ -91,10 +87,6 @@ export default class Interface extends EventEmitter {
       })
     );
 
-    // Start recording cleanup service
-    this.log.debug('Starting recording cleanup service...');
-    this.recordingCleanupService.startCleanup(24); // 24시간마다 실행
-
     this.log.debug('Starting interface...');
     this.#server.listen(this.config.ui.port);
   }
@@ -106,9 +98,6 @@ export default class Interface extends EventEmitter {
     await this.database?.interface.write();
 
     this.motionController?.close();
-
-    // Stop recording cleanup service
-    this.recordingCleanupService?.stopCleanup();
 
     if (this.cameraController) {
       for (const controller of this.cameraController.values()) {
