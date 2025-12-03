@@ -588,6 +588,8 @@ export default {
     storageTypes: ['local', 'cloud', 'hybrid'],
     backupSchedules: ['사용안함', '매일', '매주', '매월'],
     recordingSegmentOptions: [
+      { text: '1분', value: '1' },
+      { text: '2분', value: '2' },
       { text: '5분', value: '5' },
       { text: '10분', value: '10' },
       { text: '30분', value: '30' },
@@ -663,7 +665,11 @@ export default {
           address: system.address ?? '',
           map: system.map ?? null,
           backimages: system.backimages ?? [null, null, null], // 배경이미지 데이터 로드 (3개 슬롯)
-          slideshowImages: system.slideshowImages ?? [null, null, null] // slideshowImages 데이터 로드
+          slideshowImages: system.slideshowImages ?? [null, null, null], // slideshowImages 데이터 로드
+          // videoDataReceiver.py에서 업데이트되는 값들 보존
+          rwl: system.rwl ?? null,
+          dambasrf: system.dambasrf ?? null,
+          dqty: system.dqty ?? null
         },
 
         site: {
@@ -713,7 +719,11 @@ export default {
           address: '',
           map: null,
           backimages: [null, null, null],
-          slideshowImages: [null, null, null]
+          slideshowImages: [null, null, null],
+          // videoDataReceiver.py에서 업데이트되는 값들 보존
+          rwl: null,
+          dambasrf: null,
+          dqty: null
         },
         site: {
           name: '',
@@ -880,28 +890,91 @@ export default {
 
     async saveSettings() {
       try {
+        console.log('저장 시작 - 현재 설정:', this.settings);
+        
         // 1. 현재 DB에 설정이 있는지 확인
-        const data = await getEventSetting();
-        const id = data && data.id;
+        let data = null;
+        let id = null;
+        let existingSystemJson = null;
+        
+        try {
+          data = await getEventSetting();
+          id = data && data.id;
+          console.log('기존 설정 조회 성공, id:', id);
+          
+          // 기존 system_json에서 videoDataReceiver.py가 업데이트하는 값들 보존
+          if (data && data.system_json) {
+            try {
+              existingSystemJson = JSON.parse(data.system_json);
+              console.log('기존 system_json:', existingSystemJson);
+            } catch (parseError) {
+              console.warn('기존 system_json 파싱 실패:', parseError);
+            }
+          }
+        } catch (getError) {
+          // 404 등으로 데이터가 없을 수 있음 (정상적인 경우)
+          if (getError.response && getError.response.status === 404) {
+            console.log('기존 설정 없음, 새로 생성합니다.');
+            id = null;
+          } else {
+            // 다른 에러는 다시 throw
+            console.error('설정 조회 중 에러:', getError);
+            throw getError;
+          }
+        }
 
-        // 2. 각 메뉴별 JSON 항목을 문자열로 변환
+        // 2. system_json 저장 시 videoDataReceiver.py가 업데이트하는 값들 보존
+        const systemToSave = { ...this.settings.system };
+        
+        // 기존 DB에 있는 rwl, dambasrf, dqty 값이 있으면 보존
+        if (existingSystemJson) {
+          if (existingSystemJson.rwl !== undefined && existingSystemJson.rwl !== null) {
+            systemToSave.rwl = existingSystemJson.rwl;
+            console.log('rwl 값 보존:', systemToSave.rwl);
+          }
+          if (existingSystemJson.dambasrf !== undefined && existingSystemJson.dambasrf !== null) {
+            systemToSave.dambasrf = existingSystemJson.dambasrf;
+            console.log('dambasrf 값 보존:', systemToSave.dambasrf);
+          }
+          if (existingSystemJson.dqty !== undefined && existingSystemJson.dqty !== null) {
+            systemToSave.dqty = existingSystemJson.dqty;
+            console.log('dqty 값 보존:', systemToSave.dqty);
+          }
+        }
+
+        // 3. 각 메뉴별 JSON 항목을 문자열로 변환
         const payload = {
           temperature_json: JSON.stringify(this.settings.temperature),
           alert_json: JSON.stringify(this.settings.alert),
           object_json: JSON.stringify(this.settings.object),
-          system_json: JSON.stringify(this.settings.system)
+          system_json: JSON.stringify(systemToSave)
         };
+
+        console.log('저장할 데이터:', payload);
 
         // 3. 있으면 update, 없으면 create
         if (id) {
+          console.log('기존 설정 업데이트 중...');
           await updateEventSetting(id, payload);
+          console.log('업데이트 완료');
           this.$toast && this.$toast.success('설정이 수정되었습니다.');
         } else {
+          console.log('새 설정 생성 중...');
           await createEventSetting(payload);
+          console.log('생성 완료');
           this.$toast && this.$toast.success('설정이 저장되었습니다.');
         }
       } catch (e) {
-        this.$toast && this.$toast.error('설정 저장에 실패했습니다.');
+        console.error('설정 저장 실패:', e);
+        console.error('에러 상세:', {
+          message: e.message,
+          response: e.response,
+          status: e.response?.status,
+          data: e.response?.data
+        });
+        
+        const errorMessage = e.response?.data?.error || e.response?.data?.message || e.message || '설정 저장에 실패했습니다.';
+        this.$toast && this.$toast.error(`설정 저장에 실패했습니다: ${errorMessage}`);
       }
     }
   }

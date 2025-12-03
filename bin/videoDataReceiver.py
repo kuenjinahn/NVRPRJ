@@ -11,7 +11,9 @@ import subprocess
 from logging.handlers import RotatingFileHandler
 from configparser import ConfigParser
 from pathlib import Path
+import jaydebeapi
 import pymysql
+
 from datetime import datetime, timedelta
 try:
     import urllib.request
@@ -39,6 +41,7 @@ MSDB_USER = config.get('MSDB', 'user')
 MSDB_PASSWORD = config.get('MSDB', 'password')
 MSDB_DB = config.get('MSDB', 'dbname')
 MSDB_CODE = config.get('MSDB', 'code')
+MSDB_JDBC_JAR = config.get('MSDB', 'jdbc_jar', fallback='tibero6-jdbc.jar')
 msdb_conn = None
 ########################
 
@@ -67,17 +70,18 @@ last_health_check_log_time = 0  # 마지막 health check 로그 시간
 HEALTH_CHECK_LOG_INTERVAL = 60  # 성공 시 60초마다 한 번씩만 로그 기록
 ########################
 
-# 로깅 설정 - 실행 파일의 현재 폴더에 로그 기록
-project_root = os.path.dirname(os.path.dirname(__file__))
-log_dir = Path(project_root)
+# 로깅 설정 - 프로젝트 루트의 ./logs 폴더에 로그 파일 생성
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)  # bin의 상위 디렉토리 (프로젝트 루트)
+log_dir = Path(project_root) / 'logs'
 log_dir.mkdir(exist_ok=True)
 log_file_name = config.get('LOGGING', 'log_file', fallback='video_data_receiver.log')
 log_file = log_dir / log_file_name
 
 handler = RotatingFileHandler(
     log_file,
-    maxBytes=config.getint('LOGGING', 'max_bytes'),
-    backupCount=config.getint('LOGGING', 'backup_count'),
+    maxBytes=1024 * 1024,  # 1MB
+    backupCount=5,  # 5개까지 생성, 이후 덮어쓰기
     encoding='utf-8'
 )
 handler.setFormatter(logging.Formatter(
@@ -88,13 +92,6 @@ logger = logging.getLogger("VideoDataReceiver")
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
 
-# 콘솔 출력을 위한 핸들러 추가
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
-logger.addHandler(console_handler)
-
 
 class VideoDataReceiver:
     def __init__(self):
@@ -102,35 +99,82 @@ class VideoDataReceiver:
         self.project_dir = os.path.dirname(os.path.dirname(__file__))
 
     def connect_to_msdb(self):
-        """MSDB에 연결"""
+        """Tibero6 MSDB에 연결 (JayDeBeApi를 사용하여 JDBC jar 파일로 연결)"""
         global msdb_conn
         try:
             if msdb_conn is not None:
                 try:
                     cursor = msdb_conn.cursor()
-                    cursor.execute('SELECT 1')
+                    cursor.execute('SELECT 1 FROM DUAL')
+                    cursor.fetchone()
                     cursor.close()
                     return True
                 except Exception as e:
                     logger.error(f"MSDB connection check failed: {str(e)}")
                     msdb_conn = None
             
-            msdb_conn = pymysql.connect(
-                host=MSDB_IP,
-                port=MSDB_PORT,
-                user=MSDB_USER,
-                password=MSDB_PASSWORD,
-                db=MSDB_DB,
-                charset='utf8mb4',
-                autocommit=True,
-                cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=5
-            )
-            logger.info("MSDB connected successfully")
-            return True
+            logger.info(f"MSDB (Tibero6) 연결 시도 중... host={MSDB_IP}, port={MSDB_PORT}, database={MSDB_DB}, user={MSDB_USER}")
+            
+            # JDBC 드라이버 클래스
+            jdbc_driver = 'com.tmax.tibero.jdbc.TbDriver'
+            
+            # JDBC URL 형식: jdbc:tibero:thin:@host:port:database
+            jdbc_url = f'jdbc:tibero:thin:@{MSDB_IP}:{MSDB_PORT}:{MSDB_DB}'
+            
+            # JDBC jar 파일 경로 찾기
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(script_dir)
+            
+            # jar 파일 경로 시도 (여러 위치 확인)
+            # ~ 경로 확장
+            expanded_jar = os.path.expanduser(MSDB_JDBC_JAR) if MSDB_JDBC_JAR.startswith('~') else MSDB_JDBC_JAR
+            
+            jar_paths = [
+                expanded_jar  # config.ini에서 지정한 경로 (절대 경로 또는 ~ 경로)
+            ]
+            
+            jar_path = None
+            for path in jar_paths:
+                # 경로 정규화 (중복 제거)
+                normalized_path = os.path.normpath(path)
+                if os.path.exists(normalized_path):
+                    jar_path = normalized_path
+                    logger.info(f"JDBC jar 파일 발견: {jar_path}")
+                    break
+            
+            if not jar_path:
+                logger.error(f"JDBC jar 파일을 찾을 수 없습니다: {MSDB_JDBC_JAR}")
+                logger.error(f"시도한 경로: {jar_paths}")
+                return False
+            
+            # 연결 정보
+            driver_args = [MSDB_USER, MSDB_PASSWORD]
+            
+            try:
+                logger.info(f"JDBC 연결 시도: URL={jdbc_url}, Driver={jdbc_driver}, JAR={jar_path}")
+                msdb_conn = jaydebeapi.connect(
+                    jdbc_driver,
+                    jdbc_url,
+                    driver_args,
+                    jar_path
+                )
+                logger.info("MSDB (Tibero6) connected successfully via JDBC")
+                return True
+            except Exception as e:
+                logger.error(f'MSDB (Tibero6) JDBC connection failed: {str(e)}')
+                logger.error(f'JDBC URL: {jdbc_url}')
+                logger.error(f'JDBC Driver: {jdbc_driver}')
+                logger.error(f'JAR Path: {jar_path}')
+                import traceback
+                logger.error(traceback.format_exc())
+                msdb_conn = None
+                return False
+            
         except Exception as e:
-            logger.error(f'MSDB connection failed: {str(e)}')
-            logger.error(f'Connection params: host={MSDB_IP}, port={MSDB_PORT}, user={MSDB_USER}, db={MSDB_DB}')
+            logger.error(f'MSDB (Tibero6) connection failed: {str(e)}')
+            logger.error(f'Connection params: host={MSDB_IP}, port={MSDB_PORT}, database={MSDB_DB}, user={MSDB_USER}')
+            import traceback
+            logger.error(traceback.format_exc())
             msdb_conn = None
             return False
 
@@ -189,60 +233,103 @@ class VideoDataReceiver:
         except Exception as e:
             logger.error(f'Error disconnecting nvrdb: {str(e)}')
 
+    def _row_to_dict(self, cursor, row):
+        """JDBC row를 dictionary로 변환"""
+        if row is None:
+            return None
+        # JDBC cursor.description은 튜플 리스트: [(column_name, type, ...), ...]
+        columns = [column[0] for column in cursor.description]
+        return dict(zip(columns, row))
+
     def get_dam_data_from_msdb(self):
-        """MSDB에서 댐 데이터 조회"""
+        """Tibero6 MSDB에서 댐 데이터 조회"""
         try:
             if not self.connect_to_msdb():
-                logger.error("MSDB 연결 실패")
+                logger.error("MSDB (Tibero6) 연결 실패")
                 return None
 
-            cursor = msdb_conn.cursor(pymysql.cursors.DictCursor)
+            cursor = msdb_conn.cursor()
             
             # 현재 데이터베이스 확인
-            cursor.execute("SELECT DATABASE() as current_db")
-            current_db = cursor.fetchone()
-            logger.info(f"현재 데이터베이스: {current_db.get('current_db') if current_db else 'None'}")
+            cursor.execute("SELECT SYS_CONTEXT('USERENV', 'DB_NAME') as CURRENT_DB FROM DUAL")
+            current_db_row = cursor.fetchone()
+            current_db = self._row_to_dict(cursor, current_db_row)
+            logger.info(f"현재 데이터베이스: {current_db.get('CURRENT_DB') if current_db else 'None'}")
             
-            # 테이블명은 소문자로 처리
-            table_name = 'dubhrdamtif_vw'
+            # 뷰 테이블명
+            view_name = 'DUBHRDAMIF_VW'
             
-            # 테이블 존재 여부 확인
+            # 뷰 존재 여부 확인 (Oracle/Tibero 방식 - 뷰는 USER_VIEWS에서 조회)
             try:
-                check_query = f"SHOW TABLES LIKE '{table_name}'"
+                # 뷰 확인 (USER_VIEWS 사용) - JDBC에서는 문자열 직접 삽입이 더 안전
+                check_query = f"""
+                    SELECT COUNT(*) as CNT 
+                    FROM USER_VIEWS 
+                    WHERE VIEW_NAME = '{view_name}'
+                """
                 cursor.execute(check_query)
-                if not cursor.fetchone():
-                    # 모든 테이블 목록 확인 (디버깅용)
-                    try:
-                        cursor.execute("SHOW TABLES")
-                        tables = cursor.fetchall()
-                        logger.warning(f"사용 가능한 테이블 목록: {[list(t.values())[0] for t in tables]}")
-                    except:
-                        pass
-                    logger.error(f"{table_name} 테이블을 찾을 수 없습니다")
-                    cursor.close()
-                    return None
-                logger.info(f"테이블 발견: {table_name}")
+                view_exists_row = cursor.fetchone()
+                view_exists = self._row_to_dict(cursor, view_exists_row)
+                
+                # 뷰가 없으면 테이블도 확인
+                if not view_exists or view_exists.get('CNT', 0) == 0:
+                    # 테이블로도 확인 (일부 시스템에서는 뷰가 테이블로 보일 수 있음)
+                    check_table_query = f"""
+                        SELECT COUNT(*) as CNT 
+                        FROM USER_TABLES 
+                        WHERE TABLE_NAME = '{view_name}'
+                    """
+                    cursor.execute(check_table_query)
+                    table_exists_row = cursor.fetchone()
+                    table_exists = self._row_to_dict(cursor, table_exists_row)
+                    
+                    if not table_exists or table_exists.get('CNT', 0) == 0:
+                        # 모든 뷰와 테이블 목록 확인 (디버깅용)
+                        try:
+                            cursor.execute("SELECT VIEW_NAME FROM USER_VIEWS ORDER BY VIEW_NAME")
+                            views_rows = cursor.fetchall()
+                            views = [self._row_to_dict(cursor, row) for row in views_rows]
+                            logger.warning(f"사용 가능한 뷰 목록: {[v.get('VIEW_NAME') for v in views]}")
+                            
+                            cursor.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
+                            tables_rows = cursor.fetchall()
+                            tables = [self._row_to_dict(cursor, row) for row in tables_rows]
+                            logger.warning(f"사용 가능한 테이블 목록: {[t.get('TABLE_NAME') for t in tables]}")
+                        except Exception as e:
+                            logger.warning(f"뷰/테이블 목록 조회 실패: {str(e)}")
+                        
+                        logger.error(f"{view_name} 뷰/테이블을 찾을 수 없습니다")
+                        cursor.close()
+                        return None
+                    else:
+                        logger.info(f"테이블로 발견: {view_name}")
+                else:
+                    logger.info(f"뷰 발견: {view_name}")
             except Exception as e:
-                logger.error(f"테이블 확인 실패: {str(e)}")
+                logger.error(f"뷰/테이블 확인 실패: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
                 cursor.close()
                 return None
             
-            # MariaDB 형식으로 쿼리 작성 (Oracle의 to_char(sysdate - 1/24, 'yyyymmddhh24')를 MariaDB로 변환)
+            # Tibero6/Oracle 형식으로 쿼리 작성
             # 1시간 전의 날짜시간을 YYYYMMDDHH 형식으로 변환
-            # %를 %%로 이스케이프 처리 (pymysql이 %를 플레이스홀더로 인식하므로)
-            # 테이블명은 소문자, 필드명은 대문자
-            query = f"""
-                SELECT `RWL`, `DAMBSARF`, `DQTY` 
-                FROM dubhrdamtif_vw 
-                WHERE `DAMCD` = {MSDB_CODE}
-                AND `obsdh` > DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 HOUR), '%%Y%%m%%d%%H')
-                ORDER BY `obsdh` DESC
-                LIMIT 1
+            # Oracle/Tibero는 대소문자 구분이 있으므로 컬럼명을 정확히 지정
+            # FETCH FIRST는 지원하지 않으므로 ROWNUM 사용
+            query = """
+                SELECT * FROM (
+                    SELECT RWL, DAMBSARF, DQTY 
+                    FROM DUBHRDAMIF_VW 
+                    WHERE DAMCD = ?
+                    AND obsdh > TO_CHAR(SYSDATE - 1/24, 'YYYYMMDDHH24')
+                    ORDER BY obsdh DESC
+                ) WHERE ROWNUM <= 1
             """
             
-            logger.info(f"MSDB (MariaDB) 쿼리 실행: DAMCD = {MSDB_CODE}, 테이블 = {table_name}")
-            cursor.execute(query)
-            result = cursor.fetchone()
+            logger.info(f"MSDB (Tibero6) 쿼리 실행: DAMCD = {MSDB_CODE}, 뷰 = {view_name}")
+            cursor.execute(query, (MSDB_CODE,))
+            result_row = cursor.fetchone()
+            result = self._row_to_dict(cursor, result_row)
             cursor.close()
             
             if result:
@@ -253,7 +340,7 @@ class VideoDataReceiver:
                 return None
                 
         except Exception as e:
-            logger.error(f"MSDB 데이터 조회 오류: {str(e)}")
+            logger.error(f"MSDB (Tibero6) 데이터 조회 오류: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return None
@@ -341,7 +428,13 @@ class VideoDataReceiver:
             logger.info("댐 데이터 조회 시작")
             
             # MSDB에서 댐 데이터 조회
-            dam_data = self.get_dam_data_from_msdb()
+            try:
+                dam_data = self.get_dam_data_from_msdb()
+            except Exception as e:
+                logger.error(f"댐 데이터 조회 중 예외 발생: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return  # 연결 실패 시에도 프로그램 계속 실행
             
             if dam_data:
                 # tb_event_setting 업데이트
@@ -688,9 +781,18 @@ class VideoDataReceiver:
 
 if __name__ == "__main__":
     try:
+        logger.info("=" * 50)
+        logger.info("VideoDataReceiver 프로그램 시작")
+        logger.info("=" * 50)
+        logger.info(f"MSDB 설정: host={MSDB_IP}, port={MSDB_PORT}, database={MSDB_DB}, user={MSDB_USER}")
+        
         dataReceiver = VideoDataReceiver()
+        logger.info("VideoDataReceiver 인스턴스 생성 완료")
         dataReceiver.run()
+    except KeyboardInterrupt:
+        logger.info("프로그램이 사용자에 의해 중단되었습니다")
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        sys.exit(1)

@@ -13,9 +13,7 @@
               :src="selectedVideo1"
               @error="handleVideoError"
               @loadeddata="handleVideoLoaded"
-              crossorigin="anonymous"
               preload="metadata"
-              :style="expandedVideo === 1 ? 'width: 1280px; height: 720px;' : 'width: 640px; height: 480px;'"
             )
           
           // 두 번째 비디오 플레이어
@@ -26,9 +24,7 @@
               :src="selectedVideo2"
               @error="handleVideoError"
               @loadeddata="handleVideoLoaded"
-              crossorigin="anonymous"
               preload="metadata"
-              :style="expandedVideo === 2 ? 'width: 1280px; height: 720px;' : 'width: 640px; height: 480px;'"
             )
           
           // 세 번째 박스 (컨트롤 + 카메라 목록 + 달력)
@@ -44,6 +40,28 @@
                   v-btn.control-btn.common-dark-btn(color="gray" @click="stopAllVideos")
                     v-icon(left class="common-dark-btn__icon") {{ icons.mdiStop }}
                     span 중지
+                  // 배속 슬라이더
+                  .playback-speed-control.tw-mt-2
+                    .tw-text-white.tw-text-sm.tw-mb-2 배속: {{ playbackSpeed }}x
+                    v-slider(
+                      v-model="playbackSpeed"
+                      :min="0.25"
+                      :max="2"
+                      :step="0.25"
+                      color="secondary"
+                      track-color="gray"
+                      thumb-color="secondary"
+                      @change="updatePlaybackSpeed"
+                    )
+                    .tw-flex.tw-justify-between.tw-text-xs.tw-text-gray-400.tw-mt-1
+                      span 0.25x
+                      span 0.5x
+                      span 0.75x
+                      span 1x
+                      span 1.25x
+                      span 1.5x
+                      span 1.75x
+                      span 2x
             
             // 오른쪽 박스 (달력)
             .tw-w-96.tw-ml-4
@@ -194,6 +212,8 @@ import moment from 'moment';
 import { getRecordingHistory, getRecordingSegments } from '@/api/recordingService.api.js';
 import { getApiBaseUrl } from '@/config/api.config.js';
 
+// API_BASE_URL은 프록시 경로(/api)를 사용하도록 설정
+// 비디오 스트림도 같은 프록시를 통해 처리되도록 상대 경로 사용
 const API_BASE_URL = getApiBaseUrl();
 export default {
   name: 'RecodingCompare',
@@ -251,8 +271,17 @@ export default {
     },
     expandedVideo: 0,
     isPaused: true,
+    playbackSpeed: 1.0, // 배속 (0.25 ~ 2.0)
 
-    selectedDate: new Date().toISOString().substr(0, 10),
+    selectedDate: (() => {
+      // 한국 시간 기준 현재 날짜 가져오기
+      const now = new Date();
+      const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000)); // UTC+9
+      const year = koreaTime.getUTCFullYear();
+      const month = String(koreaTime.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(koreaTime.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    })(),
     playhead: 0, // 0~1 (0=00:00, 1=24:00)
     dragging: false,
     selectedVideos: [],
@@ -263,6 +292,8 @@ export default {
     isTimelineUpdating: false, // 타임라인 업데이트 중 플래그
     activeVideoIds: [], // 현재 활성화된 비디오 ID들
     downloadingVideos: [], // 다운로드 중인 비디오 ID들
+    videoRetryCount: { video1: 0, video2: 0 }, // 비디오 재시도 횟수 (최대 3회)
+    videoLoadedHandlers: { video1: null, video2: null }, // 비디오 로드 핸들러 저장 (중복 방지)
     
     // 🕐 타임라인 영역 관련 변수들
     timelineStartTime: null, // 전체 영상 시작 시간
@@ -404,12 +435,13 @@ export default {
       },
       deep: true
     },
-    selectedVideo1() {
-      this.setupVideoPlayer1();
-    },
-    selectedVideo2() {
-      this.setupVideoPlayer2();
-    },
+    // watcher 제거 - 명시적으로 호출할 때만 비디오 로드
+    // selectedVideo1() {
+    //   this.setupVideoPlayer1();
+    // },
+    // selectedVideo2() {
+    //   this.setupVideoPlayer2();
+    // },
     
     // 🕐 녹화 기록이 변경될 때 타임라인 정보 업데이트
     recordingHistory: {
@@ -464,11 +496,19 @@ export default {
   beforeDestroy() {
     // 비디오 플레이어 정리
     if (this.$refs.videoPlayer1) {
+      // 이벤트 리스너 제거
+      if (this.videoLoadedHandlers.video1) {
+        this.$refs.videoPlayer1.removeEventListener('loadeddata', this.videoLoadedHandlers.video1);
+      }
       this.$refs.videoPlayer1.pause();
       this.$refs.videoPlayer1.src = '';
       this.$refs.videoPlayer1.load();
     }
     if (this.$refs.videoPlayer2) {
+      // 이벤트 리스너 제거
+      if (this.videoLoadedHandlers.video2) {
+        this.$refs.videoPlayer2.removeEventListener('loadeddata', this.videoLoadedHandlers.video2);
+      }
       this.$refs.videoPlayer2.pause();
       this.$refs.videoPlayer2.src = '';
       this.$refs.videoPlayer2.load();
@@ -494,16 +534,22 @@ export default {
         this.loading = true;
         const response = await getRecordingHistory();
         if (response && Array.isArray(response)) {
-          this.recordingHistory = response.map(record => {
-            const data = record.dataValues || record;
-            return {
-              ...data,
-              id: data.id || '',
-              cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
-              filename: data.filename || 'Unknown File',
-              startTime: data.startTime || data.start_time || new Date().toISOString(),
-              endTime: data.endTime || data.end_time || null,
-              status: data.status || 'error',
+          // status가 'completed'인 레코딩만 필터링
+          this.recordingHistory = response
+            .filter(record => {
+              const data = record.dataValues || record;
+              return data.status === 'completed';
+            })
+            .map(record => {
+              const data = record.dataValues || record;
+              return {
+                ...data,
+                id: data.id || '',
+                cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
+                filename: data.filename || 'Unknown File',
+                startTime: data.startTime || data.start_time || new Date().toISOString(),
+                endTime: data.endTime || data.end_time || null,
+                status: data.status || 'error',
             selected: false
             };
           });
@@ -526,19 +572,25 @@ export default {
         console.log('Recording history response:', response);
         
         if (Array.isArray(response)) {
-          this.recordingHistory = response.map(record => {
-            const data = record.dataValues || record;
-            return {
-              ...data,
-              id: data.id || '',
-              cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
-              filename: data.filename || 'Unknown File',
-              startTime: data.startTime || data.start_time || new Date().toISOString(),
-              endTime: data.endTime || data.end_time || null,
-              status: data.status || 'error',
-            selected: false
-            };
-          });
+          // status가 'completed'인 레코딩만 필터링
+          this.recordingHistory = response
+            .filter(record => {
+              const data = record.dataValues || record;
+              return data.status === 'completed';
+            })
+            .map(record => {
+              const data = record.dataValues || record;
+              return {
+                ...data,
+                id: data.id || '',
+                cameraName: data.cameraName || data.camera_name || 'Unknown Camera',
+                filename: data.filename || 'Unknown File',
+                startTime: data.startTime || data.start_time || new Date().toISOString(),
+                endTime: data.endTime || data.end_time || null,
+                status: data.status || 'error',
+              selected: false
+              };
+            });
           
           // 🕐 녹화 기록 로드 후 타임라인 정보 업데이트
           this.updateTimelineInfo();
@@ -596,38 +648,70 @@ export default {
 
     // 새로운 MP4 비디오 플레이어 설정 메서드
     setupVideoPlayer1() {
-      if (this.$refs.videoPlayer1 && this.selectedVideo1) {
-        const videoElement = this.$refs.videoPlayer1;
+      if (!this.$refs.videoPlayer1 || !this.selectedVideo1) {
+        return;
+      }
+      
+      const videoElement = this.$refs.videoPlayer1;
+      
+      // 기존 이벤트 리스너 제거 (중복 방지)
+      if (this.videoLoadedHandlers.video1) {
+        videoElement.removeEventListener('loadeddata', this.videoLoadedHandlers.video1);
+      }
+      
+      // 새로운 핸들러 생성 및 저장
+      this.videoLoadedHandlers.video1 = () => {
+        console.log('Video 1 loaded successfully');
+        videoElement.playbackRate = this.playbackSpeed; // 로드 후 배속 재설정
+        // 성공적으로 로드되면 재시도 카운터 리셋
+        this.videoRetryCount.video1 = 0;
+      };
+      
+      // 새 리스너 추가
+      videoElement.addEventListener('loadeddata', this.videoLoadedHandlers.video1);
+      
+      // 비디오 소스 설정 및 로드
+      try {
         videoElement.src = this.selectedVideo1;
+        videoElement.playbackRate = this.playbackSpeed; // 배속 설정
         videoElement.load();
-        
-        // 비디오 로드 완료 시 이벤트 리스너
-        videoElement.addEventListener('loadeddata', () => {
-          console.log('Video 1 loaded successfully');
-        });
-        
-        videoElement.addEventListener('error', (e) => {
-          console.error('Video 1 load error:', e);
-          this.$toast.error('비디오 1을 로드할 수 없습니다.');
-        });
+      } catch (error) {
+        console.error('Video 1 setup error:', error);
+        this.handleVideoError({ target: videoElement });
       }
     },
 
     setupVideoPlayer2() {
-      if (this.$refs.videoPlayer2 && this.selectedVideo2) {
-        const videoElement = this.$refs.videoPlayer2;
+      if (!this.$refs.videoPlayer2 || !this.selectedVideo2) {
+        return;
+      }
+      
+      const videoElement = this.$refs.videoPlayer2;
+      
+      // 기존 이벤트 리스너 제거 (중복 방지)
+      if (this.videoLoadedHandlers.video2) {
+        videoElement.removeEventListener('loadeddata', this.videoLoadedHandlers.video2);
+      }
+      
+      // 새로운 핸들러 생성 및 저장
+      this.videoLoadedHandlers.video2 = () => {
+        console.log('Video 2 loaded successfully');
+        videoElement.playbackRate = this.playbackSpeed; // 로드 후 배속 재설정
+        // 성공적으로 로드되면 재시도 카운터 리셋
+        this.videoRetryCount.video2 = 0;
+      };
+      
+      // 새 리스너 추가
+      videoElement.addEventListener('loadeddata', this.videoLoadedHandlers.video2);
+      
+      // 비디오 소스 설정 및 로드
+      try {
         videoElement.src = this.selectedVideo2;
+        videoElement.playbackRate = this.playbackSpeed; // 배속 설정
         videoElement.load();
-        
-        // 비디오 로드 완료 시 이벤트 리스너
-        videoElement.addEventListener('loadeddata', () => {
-          console.log('Video 2 loaded successfully');
-        });
-        
-        videoElement.addEventListener('error', (e) => {
-          console.error('Video 2 load error:', e);
-          this.$toast.error('비디오 2를 로드할 수 없습니다.');
-        });
+      } catch (error) {
+        console.error('Video 2 setup error:', error);
+        this.handleVideoError({ target: videoElement });
       }
     },
 
@@ -640,14 +724,16 @@ export default {
           return; // 범위 밖에 있으면 재생하지 않음
         }
         
-        // 두 비디오 모두 재생
+        // 두 비디오 모두 재생 및 배속 적용
         if (this.$refs.videoPlayer1) {
+          this.$refs.videoPlayer1.playbackRate = this.playbackSpeed;
           this.$refs.videoPlayer1.play().catch(error => {
             console.error('Error playing video 1:', error);
           });
         }
         
         if (this.$refs.videoPlayer2) {
+          this.$refs.videoPlayer2.playbackRate = this.playbackSpeed;
           this.$refs.videoPlayer2.play().catch(error => {
             console.error('Error playing video 2:', error);
           });
@@ -684,6 +770,17 @@ export default {
       this.stopTimelineUpdate();
       // 타임라인을 가장 빠른 비디오의 시작 위치로 리셋
       this.resetTimelineToEarliestVideo();
+    },
+
+    updatePlaybackSpeed() {
+      // 두 비디오 모두 배속 적용
+      if (this.$refs.videoPlayer1) {
+        this.$refs.videoPlayer1.playbackRate = this.playbackSpeed;
+      }
+      
+      if (this.$refs.videoPlayer2) {
+        this.$refs.videoPlayer2.playbackRate = this.playbackSpeed;
+      }
     },
 
     formatTime(date) {
@@ -751,21 +848,80 @@ export default {
       return cameraName;
     },
 
-    handleVideoError(event) {
-      console.error('Video error:', event);
-      const videoElement = event.target;
+    // streamUrl을 상대 경로로 정규화하는 메서드
+    normalizeStreamUrl(url) {
+      if (!url) return null;
       
-      // MP4 파일 에러 처리
-      this.$toast.error('비디오를 재생할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다.');
+      // 이미 상대 경로인 경우 그대로 반환
+      if (url.startsWith('/')) {
+        return url;
+      }
       
-      // 재시도 로직
-      setTimeout(() => {
-        if (videoElement === this.$refs.videoPlayer1 && this.selectedVideo1) {
-          this.setupVideoPlayer1();
-        } else if (videoElement === this.$refs.videoPlayer2 && this.selectedVideo2) {
-          this.setupVideoPlayer2();
+      // 절대 URL인 경우 상대 경로로 변환
+      try {
+        const urlObj = new URL(url);
+        // /api/recordings/stream/{id} 형식의 경로 추출
+        const pathMatch = urlObj.pathname.match(/\/api\/recordings\/stream\/(\d+)/);
+        if (pathMatch) {
+          return `/api/recordings/stream/${pathMatch[1]}`;
         }
-      }, 2000);
+        // 다른 형식의 경우 경로만 반환
+        return urlObj.pathname;
+      } catch (e) {
+        // URL 파싱 실패 시 원본 반환
+        console.warn('Failed to normalize stream URL:', url, e);
+        return url;
+      }
+    },
+
+    handleVideoError(event) {
+      const videoElement = event.target;
+      const isVideo1 = videoElement === this.$refs.videoPlayer1;
+      const isVideo2 = videoElement === this.$refs.videoPlayer2;
+      const retryKey = isVideo1 ? 'video1' : (isVideo2 ? 'video2' : null);
+      
+      if (!retryKey) return;
+      
+      // 에러 정보 로깅
+      const error = videoElement.error;
+      if (error) {
+        console.error(`Video ${isVideo1 ? '1' : '2'} error:`, {
+          code: error.code,
+          message: error.message
+        });
+      }
+      
+      // 재시도 횟수 증가
+      this.videoRetryCount[retryKey] = (this.videoRetryCount[retryKey] || 0) + 1;
+      
+      // 최대 3회까지만 재시도
+      if (this.videoRetryCount[retryKey] <= 3) {
+        console.warn(`Video ${isVideo1 ? '1' : '2'} load error (재시도 ${this.videoRetryCount[retryKey]}/3)`);
+        
+        // 재시도 로직 - 비디오 소스 재설정
+        setTimeout(() => {
+          if (isVideo1 && this.selectedVideo1) {
+            // 비디오 소스 초기화 후 재설정
+            videoElement.src = '';
+            videoElement.load();
+            setTimeout(() => {
+              this.setupVideoPlayer1();
+            }, 100);
+          } else if (isVideo2 && this.selectedVideo2) {
+            // 비디오 소스 초기화 후 재설정
+            videoElement.src = '';
+            videoElement.load();
+            setTimeout(() => {
+              this.setupVideoPlayer2();
+            }, 100);
+          }
+        }, 1000);
+      } else {
+        // 최대 재시도 횟수 초과 시 에러 로그만 출력 (사용자에게는 표시하지 않음)
+        console.error(`Video ${isVideo1 ? '1' : '2'} load failed after 3 retries`);
+        // 재시도 카운터 리셋
+        this.videoRetryCount[retryKey] = 0;
+      }
     },
 
     handleVideoLoaded(event) {
@@ -864,22 +1020,24 @@ export default {
         }
         
         if (response && response.segments && Array.isArray(response.segments)) {
-          // 모든 segment 파일을 표시 (최대 제한 없음)
-          this.recordingHistory = response.segments.map(segment => ({
-            id: segment.id,
-            cameraId: segment.cameraId,
-            cameraName: segment.cameraName,
-            filename: segment.filename,
-            startTime: segment.startTime,
-            endTime: segment.endTime,
-            duration: segment.duration,
-            fileSize: segment.fileSize,
-            status: segment.status,
-            filePath: segment.filePath,
-            streamUrl: segment.streamUrl,
-            fileType: segment.fileType,
-            selected: false
-          }));
+          // status가 'completed'인 segment만 필터링하여 표시
+          this.recordingHistory = response.segments
+            .filter(segment => segment.status === 'completed')
+            .map(segment => ({
+              id: segment.id,
+              cameraId: segment.cameraId,
+              cameraName: segment.cameraName,
+              filename: segment.filename,
+              startTime: segment.startTime,
+              endTime: segment.endTime,
+              duration: segment.duration,
+              fileSize: segment.fileSize,
+              status: segment.status,
+              filePath: segment.filePath,
+              streamUrl: segment.streamUrl,
+              fileType: segment.fileType,
+              selected: false
+            }));
 
           // 녹화 기록이 있으면 카메라별로 그룹화하여 자동 선택
           if (this.recordingHistory.length > 0) {
@@ -890,7 +1048,8 @@ export default {
               // 첫 번째 카메라의 첫 번째 영상을 왼쪽 플레이어에
               if (cameraGroups[0].recordings.length > 0) {
                 const firstVideo = cameraGroups[0].recordings[0];
-                this.selectedVideo1 = firstVideo.streamUrl;
+                // streamUrl이 절대 URL인 경우 상대 경로로 변환
+                this.selectedVideo1 = this.normalizeStreamUrl(firstVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${firstVideo.id}`);
                 this.selectedVideos.push({
                   ...firstVideo,
                   segments: [{ startTime: firstVideo.startTime, endTime: firstVideo.endTime }]
@@ -901,7 +1060,8 @@ export default {
               // 두 번째 카메라의 첫 번째 영상을 오른쪽 플레이어에 (있는 경우)
               if (cameraGroups.length > 1 && cameraGroups[1].recordings.length > 0) {
                 const secondVideo = cameraGroups[1].recordings[0];
-                this.selectedVideo2 = secondVideo.streamUrl;
+                // streamUrl이 절대 URL인 경우 상대 경로로 변환
+                this.selectedVideo2 = this.normalizeStreamUrl(secondVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${secondVideo.id}`);
                 this.selectedVideos.push({
                   ...secondVideo,
                   segments: [{ startTime: secondVideo.startTime, endTime: secondVideo.endTime }]
@@ -912,6 +1072,13 @@ export default {
               // 타임라인을 가장 빠른 비디오의 시작 위치로 설정
               this.$nextTick(() => {
                 this.resetTimelineToEarliestVideo();
+                // 비디오 플레이어 설정 (비디오 로드)
+                if (this.selectedVideo1) {
+                  this.setupVideoPlayer1();
+                }
+                if (this.selectedVideo2) {
+                  this.setupVideoPlayer2();
+                }
               });
             }
           }
@@ -944,13 +1111,23 @@ export default {
         const start = new Date(segment.startTime);
         const end = new Date(segment.endTime);
 
-        // 0시 기준 초 단위로 변환 (UTC 기준, 9시간 추가)
-        const startSeconds = (start.getUTCHours() + 9) * 3600 + start.getUTCMinutes() * 60 + start.getUTCSeconds();
-        const endSeconds = (end.getUTCHours() + 9) * 3600 + end.getUTCMinutes() * 60 + end.getUTCSeconds();
+        // 0시 기준 초 단위로 변환 (UTC 기준, 9시간 추가, 24시간 초과 시 wrap 처리)
+        let startSeconds = (start.getUTCHours() + 9) * 3600 + start.getUTCMinutes() * 60 + start.getUTCSeconds();
+        let endSeconds = (end.getUTCHours() + 9) * 3600 + end.getUTCMinutes() * 60 + end.getUTCSeconds();
+        
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        const totalSecondsInDay = 24 * 60 * 60;
+        startSeconds = startSeconds % totalSecondsInDay;
+        endSeconds = endSeconds % totalSecondsInDay;
+        
+        // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+        if (endSeconds < startSeconds) {
+          endSeconds += totalSecondsInDay;
+        }
 
-        const startPercent = (startSeconds / (24 * 60 * 60)) * 100;
+        const startPercent = (startSeconds / totalSecondsInDay) * 100;
         const duration = endSeconds - startSeconds;
-        const widthPercent = (duration / (24 * 60 * 60)) * 100;
+        const widthPercent = (duration / totalSecondsInDay) * 100;
 
         // 모든 구간을 파란색으로 통일 (첫 번째 카메라의 모든 영상)
         const backgroundColor = '#3B82F6';
@@ -1346,7 +1523,7 @@ export default {
         this.activeVideoIds = []; // 활성 비디오 ID 초기화
         
         if (leftVideo) {
-          this.selectedVideo1 = leftVideo.streamUrl;
+          this.selectedVideo1 = this.normalizeStreamUrl(leftVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${leftVideo.id}`);
           this.selectedVideos.push({
             ...leftVideo,
             segments: [{ startTime: leftVideo.startTime, endTime: leftVideo.endTime }]
@@ -1362,7 +1539,7 @@ export default {
         }
         
         if (rightVideo) {
-          this.selectedVideo2 = rightVideo.streamUrl;
+          this.selectedVideo2 = this.normalizeStreamUrl(rightVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${rightVideo.id}`);
           this.selectedVideos.push({
             ...rightVideo,
             segments: [{ startTime: rightVideo.startTime, endTime: rightVideo.endTime }]
@@ -1426,14 +1603,23 @@ export default {
           if (!video.startTime || !video.endTime) return;
           
           const startDate = new Date(video.startTime);
-          const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+          let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                              startDate.getUTCMinutes() * 60 + 
                              startDate.getUTCSeconds();
           
           const endDate = new Date(video.endTime);
-          const endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
+          let endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
                            endDate.getUTCMinutes() * 60 + 
                            endDate.getUTCSeconds();
+          
+          // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+          startSeconds = startSeconds % totalSeconds;
+          endSeconds = endSeconds % totalSeconds;
+          
+          // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+          if (endSeconds < startSeconds) {
+            endSeconds += totalSeconds;
+          }
           
           const videoRef = this.$refs[`videoPlayer${index + 1}`];
           if (!videoRef) return;
@@ -1442,7 +1628,16 @@ export default {
           if (!element) return;
           
           // 재생 중이고 타임라인 위치가 범위 내에 있는 비디오 찾기
-          if (!element.paused && currentTimeSeconds >= startSeconds && currentTimeSeconds <= endSeconds) {
+          // currentTimeSeconds도 0-86400 범위에 있으므로 비교 가능
+          let checkTime = currentTimeSeconds;
+          if (endSeconds >= totalSeconds) {
+            // 자정을 넘어가는 경우, currentTimeSeconds도 범위를 벗어날 수 있으므로 체크
+            if (currentTimeSeconds < startSeconds) {
+              checkTime = currentTimeSeconds + totalSeconds;
+            }
+          }
+          
+          if (!element.paused && checkTime >= startSeconds && checkTime <= endSeconds) {
             activeVideo = video;
             videoElement = element;
           }
@@ -1458,11 +1653,16 @@ export default {
           }
           
           const startDate = new Date(activeVideo.startTime);
-          const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+          let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                              startDate.getUTCMinutes() * 60 + 
                              startDate.getUTCSeconds();
           
-          const timelinePosition = startSeconds + currentVideoTime;
+          // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+          startSeconds = startSeconds % totalSeconds;
+          
+          let timelinePosition = startSeconds + currentVideoTime;
+          // 24시간을 초과하면 wrap
+          timelinePosition = timelinePosition % totalSeconds;
           const percent = (timelinePosition / totalSeconds) * 100;
           
           // 타임라인 위치 업데이트 (드래그 중이 아닐 때만)
@@ -1489,17 +1689,26 @@ export default {
       this.selectedVideos.forEach((video, index) => {
         if (!video.startTime || !video.endTime) return;
 
-        // 시작 시간을 초 단위로 변환 (9시간 추가)
+        // 시작 시간을 초 단위로 변환 (9시간 추가, 24시간 초과 시 wrap 처리)
         const startDate = new Date(video.startTime);
-        const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+        let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                            startDate.getUTCMinutes() * 60 + 
                            startDate.getUTCSeconds();
 
-        // 종료 시간을 초 단위로 변환 (9시간 추가)
+        // 종료 시간을 초 단위로 변환 (9시간 추가, 24시간 초과 시 wrap 처리)
         const endDate = new Date(video.endTime);
-        const endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
+        let endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
                          endDate.getUTCMinutes() * 60 + 
                          endDate.getUTCSeconds();
+        
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        startSeconds = startSeconds % totalSeconds;
+        endSeconds = endSeconds % totalSeconds;
+        
+        // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+        if (endSeconds < startSeconds) {
+          endSeconds += totalSeconds;
+        }
 
         // 비디오 요소 찾기
         const videoRef = this.$refs[`videoPlayer${index + 1}`];
@@ -1509,9 +1718,17 @@ export default {
         if (!videoElement) return;
 
         // 현재 타임라인 위치가 이 비디오 범위 내에 있는지 확인
-        if (currentTimeSeconds >= startSeconds && currentTimeSeconds <= endSeconds) {
+        let checkTime = currentTimeSeconds;
+        if (endSeconds >= totalSeconds) {
+          // 자정을 넘어가는 경우, currentTimeSeconds도 범위를 벗어날 수 있으므로 체크
+          if (currentTimeSeconds < startSeconds) {
+            checkTime = currentTimeSeconds + totalSeconds;
+          }
+        }
+        
+        if (checkTime >= startSeconds && checkTime <= endSeconds) {
           // 범위 내에 있으면 해당 위치에서 재생
-          const videoTime = currentTimeSeconds - startSeconds;
+          const videoTime = checkTime - startSeconds;
           const videoDuration = endSeconds - startSeconds;
           
           // 비디오 시간이 범위를 벗어나면 조정
@@ -1639,13 +1856,16 @@ export default {
         // 영상의 시작 시간을 Date 객체로 변환
         const startDate = new Date(videoItem.startTime);
         
-        // UTC 시간을 한국 시간으로 변환 (9시간 추가)
-        const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+        // UTC 시간을 한국 시간으로 변환 (9시간 추가, 24시간 초과 시 wrap 처리)
+        let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                            startDate.getUTCMinutes() * 60 + 
                            startDate.getUTCSeconds();
         
-        // 24시간(86400초)을 기준으로 퍼센트 계산
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
         const totalSeconds = 86400; // 24시간
+        startSeconds = startSeconds % totalSeconds;
+        
+        // 24시간(86400초)을 기준으로 퍼센트 계산
         const percent = (startSeconds / totalSeconds) * 100;
         
         // 타임라인바 위치 업데이트 (애니메이션 효과)
@@ -1725,12 +1945,12 @@ export default {
         // 해당 구간의 비디오를 찾기
         const video = this.recordingHistory.find(record => record.id === segment.id);
         if (!video) {
-          console.warn('Video not found for segment:', segment);
+          // 비디오를 찾을 수 없습니다 관련 오류 메시지 제거
           return;
         }
 
         // 첫 번째 플레이어에 해당 비디오 설정
-        this.selectedVideo1 = video.streamUrl;
+        this.selectedVideo1 = this.normalizeStreamUrl(video.streamUrl || `${API_BASE_URL}/recordings/stream/${video.id}`);
         this.selectedVideos = [{
           ...video,
           segments: [{ startTime: video.startTime, endTime: video.endTime }]
@@ -1772,19 +1992,36 @@ export default {
         if (!video.startTime || !video.endTime) return;
         
         const startDate = new Date(video.startTime);
-        const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+        let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                            startDate.getUTCMinutes() * 60 + 
                            startDate.getUTCSeconds();
         
         const endDate = new Date(video.endTime);
-        const endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
+        let endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
                          endDate.getUTCMinutes() * 60 + 
                          endDate.getUTCSeconds();
 
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        startSeconds = startSeconds % totalSeconds;
+        endSeconds = endSeconds % totalSeconds;
+        
+        // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+        if (endSeconds < startSeconds) {
+          endSeconds += totalSeconds;
+        }
+
         // 현재 타임라인 위치가 이 비디오 범위 내에 있는지 확인
-        if (currentTimeSeconds >= startSeconds && currentTimeSeconds <= endSeconds) {
+        let checkTime = currentTimeSeconds;
+        if (endSeconds >= totalSeconds) {
+          // 자정을 넘어가는 경우, currentTimeSeconds도 범위를 벗어날 수 있으므로 체크
+          if (currentTimeSeconds < startSeconds) {
+            checkTime = currentTimeSeconds + totalSeconds;
+          }
+        }
+        
+        if (checkTime >= startSeconds && checkTime <= endSeconds) {
           isWithinVideoRange = true;
-      }
+        }
       });
 
       // 범위 내에 있을 때만 비디오 시간 설정
@@ -1815,14 +2052,18 @@ export default {
     resetTimelineToEarliestVideo() {
       // 가장 빠른 비디오의 시작 위치 찾기
       let earliestVideoStart = Infinity;
+      const totalSeconds = 86400; // 24시간
       
       this.selectedVideos.forEach((video) => {
         if (!video.startTime) return;
 
         const startDate = new Date(video.startTime);
-        const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+        let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                            startDate.getUTCMinutes() * 60 + 
                            startDate.getUTCSeconds();
+        
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        startSeconds = startSeconds % totalSeconds;
         
         if (startSeconds < earliestVideoStart) {
           earliestVideoStart = startSeconds;
@@ -1831,7 +2072,6 @@ export default {
       
       // 타임라인을 가장 빠른 비디오의 시작 위치로 설정
       if (earliestVideoStart !== Infinity) {
-        const totalSeconds = 86400; // 24시간
         this.verticalBarPercent = (earliestVideoStart / totalSeconds) * 100;
         this.updateVideosTime(this.verticalBarPercent);
       }
@@ -1849,17 +2089,34 @@ export default {
         if (!video.startTime || !video.endTime) return;
         
         const startDate = new Date(video.startTime);
-        const startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
+        let startSeconds = (startDate.getUTCHours() + 9) * 3600 + 
                            startDate.getUTCMinutes() * 60 + 
                            startDate.getUTCSeconds();
         
         const endDate = new Date(video.endTime);
-        const endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
+        let endSeconds = (endDate.getUTCHours() + 9) * 3600 + 
                          endDate.getUTCMinutes() * 60 + 
                          endDate.getUTCSeconds();
         
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        startSeconds = startSeconds % totalSeconds;
+        endSeconds = endSeconds % totalSeconds;
+        
+        // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+        if (endSeconds < startSeconds) {
+          endSeconds += totalSeconds;
+        }
+        
         // 현재 타임라인 위치가 이 비디오 범위 내에 있는지 확인
-        if (currentTimeSeconds >= startSeconds && currentTimeSeconds <= endSeconds) {
+        let checkTime = currentTimeSeconds;
+        if (endSeconds >= totalSeconds) {
+          // 자정을 넘어가는 경우, currentTimeSeconds도 범위를 벗어날 수 있으므로 체크
+          if (currentTimeSeconds < startSeconds) {
+            checkTime = currentTimeSeconds + totalSeconds;
+          }
+        }
+        
+        if (checkTime >= startSeconds && checkTime <= endSeconds) {
           isWithinVideoRange = true;
         }
       });
@@ -1923,7 +2180,7 @@ export default {
         this.activeVideoIds = []; // 활성 비디오 ID 초기화
         
         if (leftVideo) {
-          this.selectedVideo1 = leftVideo.streamUrl;
+          this.selectedVideo1 = this.normalizeStreamUrl(leftVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${leftVideo.id}`);
           this.selectedVideos.push({
             ...leftVideo,
             segments: [{ startTime: leftVideo.startTime, endTime: leftVideo.endTime }]
@@ -1939,7 +2196,7 @@ export default {
         }
         
         if (rightVideo) {
-          this.selectedVideo2 = rightVideo.streamUrl;
+          this.selectedVideo2 = this.normalizeStreamUrl(rightVideo.streamUrl || `${API_BASE_URL}/recordings/stream/${rightVideo.id}`);
           this.selectedVideos.push({
             ...rightVideo,
             segments: [{ startTime: rightVideo.startTime, endTime: rightVideo.endTime }]
@@ -1961,6 +2218,16 @@ export default {
         }
         
         console.log('Videos set for display - Left:', leftVideo, 'Right:', rightVideo);
+        
+        // 비디오 플레이어 설정 (비디오 로드)
+        this.$nextTick(() => {
+          if (leftVideo && this.selectedVideo1) {
+            this.setupVideoPlayer1();
+          }
+          if (rightVideo && this.selectedVideo2) {
+            this.setupVideoPlayer2();
+          }
+        });
         
         // 클릭된 영상의 시작 시간으로 타임라인바 이동
         this.moveTimelineToVideoStart(item);
@@ -2009,29 +2276,54 @@ export default {
       // 가장 가까운 시간대의 영상 찾기
       let closestVideo = null;
       let minTimeDiff = Infinity;
+      const totalSeconds = 86400; // 24시간
       
       for (const recording of recordings) {
         const recordStart = new Date(recording.startTime);
         const recordEnd = new Date(recording.endTime);
         
-        // UTC 시간을 한국 시간으로 변환 (9시간 추가)
-        const startSeconds = (recordStart.getUTCHours() + 9) * 3600 + 
+        // UTC 시간을 한국 시간으로 변환 (9시간 추가, 24시간 초과 시 wrap 처리)
+        let startSeconds = (recordStart.getUTCHours() + 9) * 3600 + 
                            recordStart.getUTCMinutes() * 60 + 
                            recordStart.getUTCSeconds();
-        const endSeconds = (recordEnd.getUTCHours() + 9) * 3600 + 
+        let endSeconds = (recordEnd.getUTCHours() + 9) * 3600 + 
                          recordEnd.getUTCMinutes() * 60 + 
                          recordEnd.getUTCSeconds();
         
+        // 24시간(86400초)을 초과하면 모듈로 연산으로 wrap
+        startSeconds = startSeconds % totalSeconds;
+        endSeconds = endSeconds % totalSeconds;
+        
+        // endSeconds가 startSeconds보다 작으면 하루를 더한 값으로 처리 (자정을 넘어가는 경우)
+        if (endSeconds < startSeconds) {
+          endSeconds += totalSeconds;
+        }
+        
         // 현재 시간이 녹화 범위 내에 있는지 확인
-        if (currentTimeSeconds >= startSeconds && currentTimeSeconds <= endSeconds) {
+        let checkTime = currentTimeSeconds;
+        if (endSeconds >= totalSeconds) {
+          // 자정을 넘어가는 경우, currentTimeSeconds도 범위를 벗어날 수 있으므로 체크
+          if (currentTimeSeconds < startSeconds) {
+            checkTime = currentTimeSeconds + totalSeconds;
+          }
+        }
+        
+        if (checkTime >= startSeconds && checkTime <= endSeconds) {
           return recording; // 정확히 같은 시간대
         }
         
-        // 가장 가까운 시간대 계산
-        const timeDiff = Math.min(
+        // 가장 가까운 시간대 계산 (wrap 고려)
+        const timeDiff1 = Math.min(
           Math.abs(currentTimeSeconds - startSeconds),
-          Math.abs(currentTimeSeconds - endSeconds)
+          Math.abs((currentTimeSeconds + totalSeconds) - startSeconds),
+          Math.abs(currentTimeSeconds - (startSeconds + totalSeconds))
         );
+        const timeDiff2 = Math.min(
+          Math.abs(currentTimeSeconds - endSeconds),
+          Math.abs((currentTimeSeconds + totalSeconds) - endSeconds),
+          Math.abs(currentTimeSeconds - (endSeconds + totalSeconds))
+        );
+        const timeDiff = Math.min(timeDiff1, timeDiff2);
         
         if (timeDiff < minTimeDiff) {
           minTimeDiff = timeDiff;
@@ -2118,11 +2410,20 @@ export default {
 <style lang="scss">
 .recording-compare {
   padding: 20px;
+  width: 100%;
+  box-sizing: border-box;
 
   .video-container {
     display: flex;
     gap: 20px;
     margin-bottom: 20px;
+  }
+
+  // 비디오 플레이어를 포함하는 flex 컨테이너
+  .tw-flex {
+    width: 100%;
+    min-width: 0; // flex 아이템이 부모를 넘지 않도록
+    box-sizing: border-box;
   }
 
   .video-player {
@@ -2132,11 +2433,20 @@ export default {
     overflow: hidden;
     transition: all 0.3s;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0; // flex 아이템이 부모를 넘지 않도록
+    position: relative;
+    max-height: calc(100vh - 300px); // 화면 높이에 맞춰 제한
 
     video {
       width: 100%;
-      height: 100%;
+      height: auto;
+      max-width: 100%;
+      max-height: 100%;
       object-fit: contain;
+      aspect-ratio: 16 / 9; // 기본 비율 유지
     }
   }
 
@@ -2178,6 +2488,33 @@ export default {
     color: white !important;
     transform: translateY(1px);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+  }
+
+  .playback-speed-control {
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+
+    .tw-text-white {
+      font-weight: 500;
+    }
+
+    // Vuetify 슬라이더 스타일 커스터마이징
+    ::v-deep .v-slider {
+      margin-top: 8px;
+    }
+
+    ::v-deep .v-slider__thumb {
+      background-color: var(--cui-primary) !important;
+      border: 2px solid white !important;
+    }
+
+    ::v-deep .v-slider__track {
+      background-color: rgba(255, 255, 255, 0.2) !important;
+    }
+
+    ::v-deep .v-slider__track-fill {
+      background-color: var(--cui-primary) !important;
+    }
   }
 
   .control-btn .v-icon {

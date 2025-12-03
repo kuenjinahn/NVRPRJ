@@ -22,6 +22,7 @@ from pathlib import Path
 from scipy import stats
 import argparse
 import pymysql
+import jaydebeapi
 import socket
 import atexit
 import cv2
@@ -77,6 +78,7 @@ MSDB_DB = config.get('MSDB', 'dbname')
 MSDB_DAMNAME = config.get('MSDB', 'damname', fallback='')
 MSDB_CODE = config.get('MSDB', 'code', fallback='1001210')
 MSDB_ROOT_PATH = config.get('MSDB', 'root_path', fallback='')
+MSDB_JDBC_JAR = config.get('MSDB', 'jdbc_jar', fallback='tibero6-jdbc.jar')
 msdb_conn = None
 ########################
 
@@ -89,35 +91,126 @@ SFTP_ROOT_PATH = config.get('SFTP', 'root_path', fallback='ftp_data')
 SFTP_CODE = config.get('SFTP', 'code', fallback='1001210')
 ########################
 
-# 로깅 설정
-log_dir = Path(config.get('LOGGING', 'log_dir'))
-log_dir.mkdir(exist_ok=True)
-log_file = log_dir / config.get('LOGGING', 'log_file')
+# 로깅 설정 - 프로젝트 루트의 ./logs 폴더에 로그 파일 생성
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)  # bin의 상위 디렉토리 (프로젝트 루트)
+log_dir = Path(project_root) / 'logs'
 
-handler = RotatingFileHandler(
-    log_file,
-    maxBytes=config.getint('LOGGING', 'max_bytes'),
-    backupCount=config.getint('LOGGING', 'backup_count'),
-    encoding='utf-8'
-)
-handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
+# 로그 디렉토리 생성 (상세한 오류 처리)
+try:
+    log_dir.mkdir(exist_ok=True)
+    if not log_dir.exists():
+        raise OSError(f"로그 디렉토리 생성 실패: {log_dir}")
+    if not os.access(log_dir, os.W_OK):
+        raise OSError(f"로그 디렉토리 쓰기 권한 없음: {log_dir}")
+except Exception as e:
+    # 로그 디렉토리 생성 실패 시 stderr에 출력
+    sys.stderr.write(f"ERROR: 로그 디렉토리 생성 실패: {e}\n")
+    sys.stderr.write(f"  project_root: {project_root}\n")
+    sys.stderr.write(f"  script_dir: {script_dir}\n")
+    sys.stderr.write(f"  log_dir: {log_dir}\n")
+    sys.stderr.flush()
+    # 기본 경로로 폴백 (프로젝트 루트)
+    log_dir = Path(project_root)
+    log_dir.mkdir(exist_ok=True)
+
+# videoAlertCheck.py는 자신만의 로그 파일 사용 (config.ini의 공유 설정 무시)
+log_file_name = config.get('LOGGING', 'video_alert_check_log_file', fallback='video_alert_check.log')
+log_file = log_dir / log_file_name
+log_file_str = str(log_file)
+
+# 로그 파일 핸들러 생성 (상세한 오류 처리)
+handler = None
+try:
+    handler = RotatingFileHandler(
+        log_file_str,
+        maxBytes=1024 * 1024,  # 1MB
+        backupCount=5,  # 5개까지 생성, 이후 덮어쓰기
+        encoding='utf-8'
+    )
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+except Exception as e:
+    sys.stderr.write(f"ERROR: RotatingFileHandler 생성 실패: {e}\n")
+    sys.stderr.write(f"  log_file_str: {log_file_str}\n")
+    sys.stderr.write(f"  log_dir 존재: {log_dir.exists()}\n")
+    sys.stderr.write(f"  log_dir 쓰기 가능: {os.access(log_dir, os.W_OK) if log_dir.exists() else False}\n")
+    sys.stderr.flush()
+    raise
 
 logger = logging.getLogger("VideoAlertChecker")
 logger.setLevel(logging.INFO)
+
+# 기존 핸들러 제거 (중복 방지)
+for h in logger.handlers[:]:
+    logger.removeHandler(h)
+
 logger.addHandler(handler)
+
+# 로그 파일 생성 확인을 위한 초기 메시지 기록 및 테스트
+try:
+    # 첫 로그 메시지 기록 (이 시점에 파일이 생성됨)
+    logger.info("=" * 80)
+    handler.flush()  # 버퍼 강제 플러시
+    
+    # 파일 생성 확인
+    time.sleep(0.1)  # 파일 시스템 동기화 대기
+    
+    if log_file.exists():
+        logger.info(f"VideoAlertChecker 로깅 시작 - 로그 파일: {log_file_str}")
+        logger.info(f"로그 디렉토리: {log_dir}")
+        logger.info(f"프로젝트 루트: {project_root}")
+        logger.info(f"스크립트 디렉토리: {script_dir}")
+        logger.info("=" * 80)
+        handler.flush()
+    else:
+        # 파일이 생성되지 않은 경우 강제 생성 시도
+        sys.stderr.write(f"WARNING: 로그 파일이 자동 생성되지 않음: {log_file_str}\n")
+        sys.stderr.write(f"  로그 디렉토리 존재: {log_dir.exists()}\n")
+        sys.stderr.write(f"  로그 디렉토리 쓰기 가능: {os.access(log_dir, os.W_OK) if log_dir.exists() else False}\n")
+        sys.stderr.flush()
+        
+        try:
+            # 강제로 파일 생성
+            with open(log_file_str, 'a', encoding='utf-8') as f:
+                f.write(f"# Log file created at {datetime.now().isoformat()}\n")
+            logger.info(f"VideoAlertChecker 로깅 시작 - 로그 파일 (강제 생성): {log_file_str}")
+            logger.info(f"로그 디렉토리: {log_dir}")
+            logger.info(f"프로젝트 루트: {project_root}")
+            logger.info(f"스크립트 디렉토리: {script_dir}")
+            logger.info("=" * 80)
+            handler.flush()
+        except Exception as create_error:
+            sys.stderr.write(f"ERROR: 로그 파일 강제 생성 실패: {create_error}\n")
+            sys.stderr.flush()
+except Exception as e:
+    sys.stderr.write(f"WARNING: 로그 파일 초기화 중 오류 발생: {e}\n")
+    sys.stderr.flush()
+
+# print() 출력을 로그 파일에도 기록하도록 래핑
+_original_print = print
+def print(*args, **kwargs):
+    """print() 함수를 래핑하여 콘솔과 로그 파일 모두에 기록"""
+    # file 파라미터가 sys.stdout이거나 지정되지 않은 경우에만 로그에 기록
+    output_file = kwargs.get('file', sys.stdout)
+    # 원본 print() 호출
+    _original_print(*args, **kwargs)
+    # sys.stdout으로 출력하는 경우에만 로그 파일에도 기록
+    if output_file == sys.stdout or output_file is None:
+        try:
+            # sep, end 파라미터 처리
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            message = sep.join(str(arg) for arg in args) + (end if end != '\n' else '')
+            if message.strip():  # 빈 메시지는 기록하지 않음
+                logger.info(message.rstrip())  # 끝의 개행 문자 제거
+        except Exception:
+            pass  # 로그 기록 실패해도 원본 print는 실행됨
 
 # colorbar_analyzer 모듈을 찾을 수 없는 경우 경고 메시지 출력
 if not COLORBAR_ANALYZER_AVAILABLE:
     logger.warning("colorbar_analyzer 모듈을 찾을 수 없습니다. 밝기 기반 온도 계산을 사용합니다.")
-
-# 콘솔 출력을 위한 핸들러 추가
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(levelname)s - %(message)s'
-))
-logger.addHandler(console_handler)
 
 
 class VideoAlertChecker:
@@ -130,7 +223,7 @@ class VideoAlertChecker:
         self.last_settings_check = 0
         self.last_data_check = 0
         self.settings_check_interval = 30  # 30 seconds
-        self.data_check_interval = 600  # 1 hour (3600 seconds)
+        self.data_check_interval = 600  # 10 minutes (600 seconds)
         self.running = True
         self.force_exit = False  # 강제 종료 플래그
         self.uploaded_panorama_filename = None  # SFTP 업로드된 파일명
@@ -142,6 +235,14 @@ class VideoAlertChecker:
         
         # 종료 시 정리 작업 등록
         atexit.register(self.cleanup)
+
+    def _row_to_dict(self, cursor, row):
+        """JDBC row를 dictionary로 변환"""
+        if row is None:
+            return None
+        # JDBC cursor.description은 튜플 리스트: [(column_name, type, ...), ...]
+        columns = [column[0] for column in cursor.description]
+        return dict(zip(columns, row))
 
     def signal_handler(self, signum, frame):
         """시그널 핸들러"""
@@ -226,52 +327,102 @@ class VideoAlertChecker:
             return None
 
     def connect_to_msdb(self):
-        """MSDB에 연결 (tic_data INSERT용)"""
+        """Tibero6 MSDB에 연결 (JayDeBeApi를 사용하여 JDBC jar 파일로 연결)"""
         global msdb_conn
         try:
             if msdb_conn is not None:
                 try:
                     cursor = msdb_conn.cursor()
-                    cursor.execute('SELECT 1')
+                    cursor.execute('SELECT 1 FROM DUAL')
+                    cursor.fetchone()
                     cursor.close()
                     return True
                 except Exception as e:
                     logger.error(f"MSDB connection check failed: {str(e)}")
                     msdb_conn = None
             
-            msdb_conn = pymysql.connect(
-                host=MSDB_IP,
-                port=MSDB_PORT,
-                user=MSDB_USER,
-                password=MSDB_PASSWORD,
-                db=MSDB_DB,
-                charset='utf8mb4',
-                autocommit=True,
-                cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=5
-            )
-            logger.info("MSDB connected successfully")
-            return True
+            logger.info(f"MSDB (Tibero6) 연결 시도 중... host={MSDB_IP}, port={MSDB_PORT}, database={MSDB_DB}, user={MSDB_USER}")
+            
+            # JDBC 드라이버 클래스
+            jdbc_driver = 'com.tmax.tibero.jdbc.TbDriver'
+            
+            # JDBC URL 형식: jdbc:tibero:thin:@host:port:database
+            jdbc_url = f'jdbc:tibero:thin:@{MSDB_IP}:{MSDB_PORT}:{MSDB_DB}'
+            
+            # JDBC jar 파일 경로 찾기
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(script_dir)
+            
+            # jar 파일 경로 시도 (여러 위치 확인)
+            # ~ 경로 확장
+            expanded_jar = os.path.expanduser(MSDB_JDBC_JAR) if MSDB_JDBC_JAR.startswith('~') else MSDB_JDBC_JAR
+            
+            jar_paths = [
+                expanded_jar  # config.ini에서 지정한 경로 (절대 경로 또는 ~ 경로)
+            ]
+            
+            jar_path = None
+            for path in jar_paths:
+                # 경로 정규화 (중복 제거)
+                normalized_path = os.path.normpath(path)
+                if os.path.exists(normalized_path):
+                    jar_path = normalized_path
+                    logger.info(f"JDBC jar 파일 발견: {jar_path}")
+                    break
+            
+            if not jar_path:
+                logger.error(f"JDBC jar 파일을 찾을 수 없습니다: {MSDB_JDBC_JAR}")
+                logger.error(f"시도한 경로: {jar_paths}")
+                return False
+            
+            # 연결 정보
+            driver_args = [MSDB_USER, MSDB_PASSWORD]
+            
+            try:
+                logger.info(f"JDBC 연결 시도: URL={jdbc_url}, Driver={jdbc_driver}, JAR={jar_path}")
+                msdb_conn = jaydebeapi.connect(
+                    jdbc_driver,
+                    jdbc_url,
+                    driver_args,
+                    jar_path
+                )
+                logger.info("MSDB (Tibero6) connected successfully via JDBC")
+                return True
+            except Exception as e:
+                logger.error(f'MSDB (Tibero6) JDBC connection failed: {str(e)}')
+                logger.error(f'JDBC URL: {jdbc_url}')
+                logger.error(f'JDBC Driver: {jdbc_driver}')
+                logger.error(f'JAR Path: {jar_path}')
+                import traceback
+                logger.error(traceback.format_exc())
+                msdb_conn = None
+                return False
+            
         except Exception as e:
-            logger.error(f'MSDB connection failed: {str(e)}')
-            logger.error(f'Connection params: host={MSDB_IP}, port={MSDB_PORT}, user={MSDB_USER}, db={MSDB_DB}')
+            logger.error(f'MSDB (Tibero6) connection failed: {str(e)}')
+            logger.error(f'Connection params: host={MSDB_IP}, port={MSDB_PORT}, database={MSDB_DB}, user={MSDB_USER}')
+            import traceback
+            logger.error(traceback.format_exc())
             msdb_conn = None
             return False
 
     def insert_tic_data(self, max_temp, min_temp, avg_temp, alert_level, file_path, file_name):
-        """MSDB의 tic_data 테이블에 데이터 INSERT"""
+        """Tibero6 MSDB의 tic_data 테이블에 데이터 INSERT (MERGE 사용)"""
         try:
             if not self.connect_to_msdb():
-                logger.error("MSDB 연결 실패 - tic_data INSERT 건너뜀")
+                logger.error("MSDB (Tibero6) 연결 실패 - tic_data INSERT 건너뜀")
                 return False
 
-            cursor = msdb_conn.cursor(pymysql.cursors.DictCursor)
+            cursor = msdb_conn.cursor()
             
-            # 현재 시간
+            # 현재 시간 (JDBC 호환을 위해 문자열로 변환)
             now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')  # JDBC 호환 형식
             
-            # Decimal 타입을 float로 변환
+            # Decimal 타입을 float로 변환 후 소수점 절삭
             from decimal import Decimal
+            import math
+            
             def convert_decimal(value):
                 if value is None:
                     return None
@@ -281,42 +432,68 @@ class VideoAlertChecker:
                     return float(value)
                 return value
             
+            # 소수점 절삭 (버림)
             max_temp_float = convert_decimal(max_temp)
             min_temp_float = convert_decimal(min_temp)
             avg_temp_float = convert_decimal(avg_temp)
             
-            # INSERT 쿼리 (ON DUPLICATE KEY UPDATE로 중복 방지)
-            query = """
-                INSERT INTO tic_data 
-                (DAMNAME, DAMCD, DATE_TIME, MAX_TEMP, MIN_TEMP, AVG_TEMP, ALERT_NUM, FILE_PATH, FILE_NAME, NUM_IMAGES)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                MAX_TEMP = VALUES(MAX_TEMP),
-                MIN_TEMP = VALUES(MIN_TEMP),
-                AVG_TEMP = VALUES(AVG_TEMP),
-                ALERT_NUM = VALUES(ALERT_NUM),
-                FILE_PATH = VALUES(FILE_PATH),
-                FILE_NAME = VALUES(FILE_NAME),
-                NUM_IMAGES = VALUES(NUM_IMAGES)
-            """
-            
             # FILE_PATH는 config.ini의 MSDB root_path 사용
             msdb_file_path = MSDB_ROOT_PATH if MSDB_ROOT_PATH else file_path
             
-            values = (
-                MSDB_DAMNAME,  # DAMNAME
-                int(MSDB_CODE),  # DAMCD
-                now,  # DATE_TIME
-                max_temp_float,  # MAX_TEMP
-                min_temp_float,  # MIN_TEMP
-                avg_temp_float,  # AVG_TEMP
-                int(alert_level),  # ALERT_NUM
-                msdb_file_path,  # FILE_PATH (config.ini의 root_path 사용)
-                file_name,  # FILE_NAME
-                3  # NUM_IMAGES (고정값)
-            )
+            # MERGE 쿼리 (Oracle/Tibero 방식 - 중복 시 UPDATE, 없으면 INSERT)
+            # JDBC에서는 ? 형식의 positional parameter 사용
+            query = """
+                MERGE INTO tic_data t
+                USING (
+                    SELECT ? as DAMNAME, ? as DAMCD, ? as DATE_TIME FROM DUAL
+                ) s
+                ON (t.DAMCD = s.DAMCD AND t.DATE_TIME = s.DATE_TIME)
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        MAX_TEMP = ?,
+                        MIN_TEMP = ?,
+                        AVG_TEMP = ?,
+                        ALERT_NUM = ?,
+                        FILE_PATH = ?,
+                        FILE_NAME = ?,
+                        NUM_IMAGES = ?
+                WHEN NOT MATCHED THEN
+                    INSERT (DAMNAME, DAMCD, DATE_TIME, MAX_TEMP, MIN_TEMP, AVG_TEMP, ALERT_NUM, FILE_PATH, FILE_NAME, NUM_IMAGES)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
             
-            cursor.execute(query, values)
+            # JDBC positional parameter 순서: USING 절 (3개) + UPDATE 절 (7개) + INSERT 절 (10개)
+            # USING: damname, damcd, date_time
+            # UPDATE: max_temp, min_temp, avg_temp, alert_num, file_path, file_name, num_images
+            # INSERT: damname, damcd, date_time, max_temp, min_temp, avg_temp, alert_num, file_path, file_name, num_images
+            # JDBC에서는 datetime 객체 대신 문자열 사용
+            cursor.execute(query, (
+                MSDB_DAMNAME,  # USING damname
+                int(MSDB_CODE),  # USING damcd
+                now_str,  # USING date_time (문자열)
+                max_temp_float,  # UPDATE max_temp
+                min_temp_float,  # UPDATE min_temp
+                avg_temp_float,  # UPDATE avg_temp
+                int(alert_level),  # UPDATE alert_num
+                msdb_file_path,  # UPDATE file_path
+                file_name,  # UPDATE file_name
+                3,  # UPDATE num_images
+                MSDB_DAMNAME,  # INSERT damname
+                int(MSDB_CODE),  # INSERT damcd
+                now_str,  # INSERT date_time (문자열)
+                max_temp_float,  # INSERT max_temp
+                min_temp_float,  # INSERT min_temp
+                avg_temp_float,  # INSERT avg_temp
+                int(alert_level),  # INSERT alert_num
+                msdb_file_path,  # INSERT file_path
+                file_name,  # INSERT file_name
+                3  # INSERT num_images
+            ))
+            # JDBC는 autocommit이 기본이지만, 명시적으로 commit
+            try:
+                msdb_conn.commit()
+            except:
+                pass  # autocommit 모드일 수 있음
             cursor.close()
             # logger.info(f"tic_data INSERT 성공: DAMCD={MSDB_CODE}, ALERT_NUM={alert_level}, FILE_NAME={file_name}")
             return True
@@ -784,6 +961,49 @@ class VideoAlertChecker:
 
         except Exception as e:
             logger.error(f"파노라마 데이터 조회 오류: {str(e)}")
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_last_insert_time(self):
+        """
+        tb_alert_history 테이블에서 마지막으로 insert된 레코드의 alert_accur_time 조회
+        프로그램 재시작 시 짧은 시간에 insert되는 현상 방지를 위해 사용
+        """
+        try:
+            cursor = self.get_db_cursor()
+            if not cursor:
+                return None
+
+            # 마지막 insert 시간 조회
+            query = """
+                SELECT MAX(alert_accur_time) as last_insert_time
+                FROM tb_alert_history
+            """
+            cursor.execute(query)
+            result = cursor.fetchone()
+            
+            if result and result.get('last_insert_time'):
+                last_insert_time = result['last_insert_time']
+                # datetime 객체인 경우 그대로 반환, 문자열인 경우 파싱
+                if isinstance(last_insert_time, str):
+                    try:
+                        last_insert_time = datetime.strptime(last_insert_time, '%Y-%m-%d %H:%M:%S')
+                    except:
+                        try:
+                            last_insert_time = datetime.fromisoformat(last_insert_time.replace('Z', '+00:00'))
+                        except:
+                            logger.warning(f"마지막 insert 시간 파싱 실패: {last_insert_time}")
+                            return None
+                logger.debug(f"마지막 insert 시간 조회 (tb_alert_history.alert_accur_time): {last_insert_time}")
+                return last_insert_time
+            else:
+                logger.debug("마지막 insert 시간이 없습니다 (첫 실행)")
+                return None
+
+        except Exception as e:
+            logger.error(f"마지막 insert 시간 조회 오류: {str(e)}")
             return None
         finally:
             if cursor:
@@ -4105,6 +4325,54 @@ class VideoAlertChecker:
         except Exception as e:
             logger.error(f"초기 데이터 로드 오류: {str(e)}")
         
+        # 프로그램 시작 시 마지막 insert 시간 확인 및 처리 간격 체크 (처음 한 번만)
+        try:
+            last_insert_time = self.get_last_insert_time()
+            current_datetime = datetime.now()
+            
+            if last_insert_time:
+                # 마지막 insert 시간과 현재 시간의 차이 계산 (초 단위)
+                time_diff = (current_datetime - last_insert_time).total_seconds()
+                
+                # data_check_interval보다 작으면 다음 시간에 처리하도록 대기
+                if time_diff < self.data_check_interval:
+                    wait_time = self.data_check_interval - time_diff
+                    logger.info(f"마지막 insert 시간({last_insert_time})이 {self.data_check_interval}초 이내입니다. "
+                              f"{wait_time:.1f}초 대기 후 다음 처리 시간에 실행합니다.")
+                    print(f"마지막 insert 시간({last_insert_time})이 {self.data_check_interval}초 이내입니다. "
+                              f"{wait_time:.1f}초 대기 후 다음 처리 시간에 실행합니다.")
+                    # 강제 종료 체크를 하면서 대기
+                    wait_start = time.time()
+                    while time.time() - wait_start < wait_time:
+                        if self.force_exit:
+                            logger.info("강제 종료 요청됨, 즉시 종료")
+                            return
+                        time.sleep(1)  # 1초마다 강제 종료 체크
+                    
+                    if self.force_exit:
+                        return
+                    
+                    # 대기 후 다시 마지막 insert 시간 확인
+                    last_insert_time = self.get_last_insert_time()
+                    if last_insert_time:
+                        time_diff = (datetime.now() - last_insert_time).total_seconds()
+                        if time_diff < self.data_check_interval:
+                            logger.info(f"대기 후에도 마지막 insert 시간이 {self.data_check_interval}초 이내입니다. "
+                                      f"추가로 {self.data_check_interval}초 대기합니다.")
+                            # 추가 대기
+                            wait_start = time.time()
+                            while time.time() - wait_start < self.data_check_interval:
+                                if self.force_exit:
+                                    logger.info("강제 종료 요청됨, 즉시 종료")
+                                    return
+                                time.sleep(1)
+                            
+                            if self.force_exit:
+                                return
+        except Exception as e:
+            logger.error(f"초기 마지막 insert 시간 체크 오류: {str(e)}")
+            # 오류가 발생해도 프로그램은 계속 실행
+        
         try:
             while self.running:
                 try:
@@ -4212,11 +4480,46 @@ class VideoAlertChecker:
                             import traceback
                             logger.error(traceback.format_exc())
                     
+                    
                     # ROI가 있는 경우에만 시나리오1과 시나리오2 실행
                     if self.zone_list:
                         # 시나리오1과 시나리오2 실행
-                        self.scenario1_judge()
-                        self.scenario2_judge()
+                        scenario1_alert = self.scenario1_judge()
+                        scenario2_alert = self.scenario2_judge()
+
+                        # 시나리오에 의한 경고가 발생하지 않는 경우 MSDB에 insert (alert level 0으로)
+                        if not scenario1_alert and not scenario2_alert:
+                            try:
+                                # 온도 데이터 추출 (panorama_data_record에서)
+                                if panorama_data_record:
+                                    temp_matrix = self.create_temperature_matrix(panorama_data_record['panoramaData'])
+                                    if temp_matrix is not None:
+                                        # 전체 온도 매트릭스에서 유효한 온도 값만 추출
+                                        valid_temps = temp_matrix[~np.isnan(temp_matrix)]
+                                        if len(valid_temps) > 0:
+                                            max_temp = float(np.max(valid_temps))
+                                            min_temp = float(np.min(valid_temps))
+                                            avg_temp = float(np.mean(valid_temps))
+                                            
+                                            # SFTP 업로드된 파일명 사용
+                                            file_name = self.uploaded_panorama_filename if self.uploaded_panorama_filename else None
+                                            
+                                            if file_name:
+                                                # insert_tic_data 호출 (alert level 0)
+                                                self.insert_tic_data(max_temp, min_temp, avg_temp, 0, None, file_name)
+                                                logger.info(f"경고 없음 - MSDB에 데이터 INSERT 완료: max={max_temp:.1f}°C, min={min_temp:.1f}°C, avg={avg_temp:.1f}°C, file={file_name}")
+                                            else:
+                                                logger.warning("경고 없음 - SFTP 업로드 파일명이 없어 MSDB INSERT 건너뜀")
+                                        else:
+                                            logger.warning("경고 없음 - 유효한 온도 데이터가 없어 MSDB INSERT 건너뜀")
+                                    else:
+                                        logger.warning("경고 없음 - 온도 매트릭스 생성 실패로 MSDB INSERT 건너뜀")
+                                else:
+                                    logger.warning("경고 없음 - 파노라마 데이터가 없어 MSDB INSERT 건너뜀")
+                            except Exception as e:
+                                logger.error(f"경고 없음 - MSDB INSERT 오류: {str(e)}")
+                                import traceback
+                                logger.error(traceback.format_exc())
                     else:
                         logger.warning("DB에 ROI가 없어 경고 발생 알고리즘을 수행하지 않습니다")
                    

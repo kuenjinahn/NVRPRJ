@@ -37,6 +37,8 @@ import subprocess
 import threading
 import time
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import pymysql
 from configparser import ConfigParser
 from dataclasses import dataclass
@@ -66,6 +68,132 @@ DBSERVER_PASSWORD = config.get('DATABASE', 'password')
 DBSERVER_DB = config.get('DATABASE', 'database')
 DBSERVER_CHARSET = config.get('DATABASE', 'charset')
 
+# 로깅 설정 - 프로젝트 루트의 ./logs 폴더에 로그 파일 생성
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)  # bin의 상위 디렉토리 (프로젝트 루트)
+log_dir = Path(project_root) / 'logs'
+
+# 로그 디렉토리 생성 (상세한 오류 처리)
+try:
+    log_dir.mkdir(exist_ok=True)
+    if not log_dir.exists():
+        raise OSError(f"로그 디렉토리 생성 실패: {log_dir}")
+    if not os.access(log_dir, os.W_OK):
+        raise OSError(f"로그 디렉토리 쓰기 권한 없음: {log_dir}")
+except Exception as e:
+    # 로그 디렉토리 생성 실패 시 stderr에 출력
+    import sys
+    sys.stderr.write(f"ERROR: 로그 디렉토리 생성 실패: {e}\n")
+    sys.stderr.write(f"  project_root: {project_root}\n")
+    sys.stderr.write(f"  script_dir: {script_dir}\n")
+    sys.stderr.write(f"  log_dir: {log_dir}\n")
+    sys.stderr.flush()
+    # 기본 경로로 폴백 (프로젝트 루트)
+    log_dir = Path(project_root)
+    log_dir.mkdir(exist_ok=True)
+
+log_file = log_dir / 'video_recorder.log'
+log_file_str = str(log_file)
+
+# 로그 파일 핸들러 생성 (상세한 오류 처리)
+handler = None
+try:
+    handler = RotatingFileHandler(
+        log_file_str,
+        maxBytes=1024 * 1024,  # 1MB
+        backupCount=5,  # 5개까지 생성, 이후 덮어쓰기
+        encoding='utf-8'
+    )
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+except Exception as e:
+    import sys
+    sys.stderr.write(f"ERROR: RotatingFileHandler 생성 실패: {e}\n")
+    sys.stderr.write(f"  log_file_str: {log_file_str}\n")
+    sys.stderr.flush()
+    raise
+
+logger = logging.getLogger("VideoRecorder")
+logger.setLevel(logging.INFO)
+
+# 기존 핸들러 제거 (중복 방지)
+for h in logger.handlers[:]:
+    logger.removeHandler(h)
+
+logger.addHandler(handler)
+
+# 로그 파일 생성 확인을 위한 초기 메시지 기록 및 테스트
+try:
+    # 첫 로그 메시지 기록 (이 시점에 파일이 생성됨)
+    logger.info("=" * 80)
+    handler.flush()  # 버퍼 강제 플러시
+    
+    # 파일 생성 확인
+    import time
+    time.sleep(0.1)  # 파일 시스템 동기화 대기
+    
+    if log_file.exists():
+        logger.info(f"VideoRecorder 로깅 시작 - 로그 파일: {log_file_str}")
+        logger.info(f"로그 디렉토리: {log_dir}")
+        logger.info(f"프로젝트 루트: {project_root}")
+        logger.info(f"스크립트 디렉토리: {script_dir}")
+        logger.info("=" * 80)
+        handler.flush()
+    else:
+        # 파일이 생성되지 않은 경우 강제 생성 시도
+        import sys
+        sys.stderr.write(f"WARNING: 로그 파일이 자동 생성되지 않음: {log_file_str}\n")
+        sys.stderr.write(f"  로그 디렉토리 존재: {log_dir.exists()}\n")
+        sys.stderr.write(f"  로그 디렉토리 쓰기 가능: {os.access(log_dir, os.W_OK) if log_dir.exists() else False}\n")
+        sys.stderr.flush()
+        
+        try:
+            # 강제로 파일 생성
+            with open(log_file_str, 'a', encoding='utf-8') as f:
+                f.write(f"# Log file created at {datetime.now().isoformat()}\n")
+            logger.info(f"VideoRecorder 로깅 시작 - 로그 파일 (강제 생성): {log_file_str}")
+            logger.info(f"로그 디렉토리: {log_dir}")
+            logger.info(f"프로젝트 루트: {project_root}")
+            logger.info(f"스크립트 디렉토리: {script_dir}")
+            logger.info("=" * 80)
+            handler.flush()
+        except Exception as create_error:
+            import sys
+            import traceback
+            sys.stderr.write(f"ERROR: 로그 파일 강제 생성 실패: {create_error}\n")
+            sys.stderr.write(traceback.format_exc())
+            sys.stderr.flush()
+            # 로그 기록은 계속 시도
+            logger.error(f"로그 파일 생성 실패, 하지만 로깅은 계속 시도: {create_error}")
+except Exception as e:
+    # 로그 기록 실패 시 stderr에 출력
+    import sys
+    import traceback
+    sys.stderr.write(f"ERROR: 로그 기록 실패: {e}\n")
+    sys.stderr.write(traceback.format_exc())
+    sys.stderr.flush()
+
+# print() 출력을 로그 파일에도 기록하도록 래핑
+_original_print = print
+def print(*args, **kwargs):
+    """print() 함수를 래핑하여 콘솔과 로그 파일 모두에 기록"""
+    # file 파라미터 확인
+    output_file = kwargs.get('file', None)
+    # 원본 print() 호출
+    _original_print(*args, **kwargs)
+    # sys.stdout으로 출력하는 경우에만 로그 파일에도 기록
+    # output_file이 None이거나 sys.stdout인 경우 로그에 기록
+    if output_file is None or output_file is sys.stdout or (hasattr(output_file, 'name') and output_file.name == '<stdout>'):
+        try:
+            # sep, end 파라미터 처리
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            message = sep.join(str(arg) for arg in args) + (end if end != '\n' else '')
+            if message.strip():  # 빈 메시지는 기록하지 않음
+                logger.info(message.rstrip())  # 끝의 개행 문자 제거
+        except Exception:
+            pass  # 로그 기록 실패해도 원본 print는 실행됨
 
 # 🔧 글로벌 설정 변수
 # 세그먼트 분할 시간 (초 단위) - DB에서 동적으로 로드됩니다

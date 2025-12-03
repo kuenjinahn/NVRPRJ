@@ -3,4 +3,4 @@
 @reboot sleep 10 && bash -lc '/home/user/NVRPRj/batch-nvr.sh >> /home/user/NVRPRj/batch-nvr.log 2>&1'
 0 0 * * * cd /home/user/NVRPRj && sudo ./kill-nvr.sh
 0 0 * * * cd /home/user/NVRPRj && sudo ./start-nvr.sh
-0 0 * * * cd /home/user/NVRPRj && sudo ./batch-nvr.sh
+1 0 * * * cd /home/user/NVRPRj && sudo ./batch-nvr.sh

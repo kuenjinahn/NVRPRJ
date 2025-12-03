@@ -254,15 +254,17 @@ DBSERVER_CHARSET = config.get('DATABASE', 'charset')
 nvrdb = None
 ########################
 
-# 로깅 설정
-log_dir = Path(config.get('LOGGING', 'log_dir'))
+# 로깅 설정 - 프로젝트 루트의 ./logs 폴더에 로그 파일 생성
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)  # bin의 상위 디렉토리 (프로젝트 루트)
+log_dir = Path(project_root) / 'logs'
 log_dir.mkdir(exist_ok=True)
 log_file = log_dir / 'panorama_generator.log'
 
 handler = RotatingFileHandler(
     log_file,
-    maxBytes=config.getint('LOGGING', 'max_bytes'),
-    backupCount=config.getint('LOGGING', 'backup_count'),
+    maxBytes=1024 * 1024,  # 1MB
+    backupCount=5,  # 5개까지 생성, 이후 덮어쓰기
     encoding='utf-8'
 )
 handler.setFormatter(logging.Formatter(
@@ -272,13 +274,6 @@ handler.setFormatter(logging.Formatter(
 logger = logging.getLogger("PanoramaGenerator")
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
-
-# 콘솔 출력을 위한 핸들러 추가
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
-logger.addHandler(console_handler)
 
 # 컬러바 분석 함수는 직접 구현되어 있음 (별도 확인 불필요)
 

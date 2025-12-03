@@ -297,6 +297,67 @@
               </div>
               <div class="content-bottom-line"></div>
               <div class="content-body">
+                <!-- 필터 섹션 (UI 숨김) -->
+                <div class="filter-section mb-4" style="display: none;">
+                  <v-row>
+                    <v-col cols="12" md="4">
+                      <v-menu
+                        ref="dateMenu"
+                        v-model="alarmDateMenu"
+                        :close-on-content-click="false"
+                        transition="scale-transition"
+                        offset-y
+                        min-width="290px"
+                      >
+                        <template v-slot:activator="{ on, attrs }">
+                          <v-text-field
+                            v-model="alarmDateFilter"
+                            label="경보발령 일자"
+                            prepend-inner-icon="mdi-calendar"
+                            readonly
+                            v-bind="attrs"
+                            v-on="on"
+                            clearable
+                            dense
+                            outlined
+                            hide-details
+                            class="standard-input"
+                            @click:clear="alarmDateFilter = null"
+                          ></v-text-field>
+                        </template>
+                        <v-date-picker
+                          v-model="alarmDateFilter"
+                          @input="alarmDateMenu = false; applyAlarmFilters()"
+                          no-title
+                          scrollable
+                        ></v-date-picker>
+                      </v-menu>
+                    </v-col>
+                    <v-col cols="12" md="4">
+                      <v-select
+                        v-model="alarmRoiFilter"
+                        :items="alarmRoiOptions"
+                        label="ROI"
+                        prepend-inner-icon="mdi-map-marker"
+                        clearable
+                        dense
+                        outlined
+                        hide-details
+                        class="standard-input"
+                        @change="applyAlarmFilters()"
+                      ></v-select>
+                    </v-col>
+                    <v-col cols="12" md="4" class="d-flex align-center">
+                      <v-btn
+                        color="secondary"
+                        @click="resetAlarmFilters()"
+                        class="ml-auto"
+                      >
+                        필터 초기화
+                      </v-btn>
+                    </v-col>
+                  </v-row>
+                </div>
                 <!-- 경보이력 테이블 -->
                 <v-data-table
                   :headers="alarmTableHeaders"
@@ -312,14 +373,7 @@
                   <template v-slot:item="{ item }">
                     <tr>
                       <td>{{ item.no }}</td>
-                      <td 
-                        class="location-cell"
-                        @mouseenter="showRoiTooltip($event, item)"
-                        @mousemove="updateTooltipPosition($event)"
-                        @mouseleave="hideRoiTooltip"
-                      >
-                        {{ item.locationInfo }}
-                      </td>
+                      <td>{{ item.locationInfo }}</td>
                       <td>
                         <v-chip
                           :color="getAlarmLevelColor(item.alarmLevel)"
@@ -331,6 +385,10 @@
                           {{ getAlarmLevelText(item.alarmLevel) }}
                         </v-chip>
                       </td>
+                      <td>{{ item.roi }}</td>
+                      <td>{{ item.maxTemp }}°C</td>
+                      <td>{{ item.minTemp }}°C</td>
+                      <td>{{ item.avgTemp }}°C</td>
                       <td>{{ formatDateTime(item.alarmTime) }}</td>
                     </tr>
                   </template>
@@ -341,23 +399,6 @@
                     </div>
                   </template>
                 </v-data-table>
-
-                <!-- ROI 툴팁 팝업 -->
-                <div 
-                  v-if="showTooltip"
-                  class="roi-tooltip"
-                  :style="tooltipStyle"
-                >
-                  <div class="tooltip-content">
-                    <div class="tooltip-title">ROI 영역 정보</div>
-                    <div class="tooltip-body">
-                      <div class="tooltip-item">
-                        <span class="tooltip-label">ROI 번호:</span>
-                        <span class="tooltip-value">{{ tooltipData.roiNumber || '정보 없음' }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
 
                 <!-- 페이지네이션 -->
                 <div class="pagination-section">
@@ -490,7 +531,16 @@
                   
                   <!-- 담당자 문자 전송 번호 입력 -->
                   <div class="phone-input-section">
-                    <label class="phone-label">담당자 문자 전송 번호 입력</label>
+                    <div class="phone-input-header">
+                      <label class="phone-label">담당자 문자 전송 번호 입력</label>
+                      <div style="flex: 1;"></div>
+                      <v-btn 
+                        class="message-input-btn-save"
+                        @click="openMessageDialog"
+                      >
+                        문자 직접 입력하기
+                      </v-btn>
+                    </div>
                     <v-text-field
                       v-model="notificationSettings.phoneNumber"
                       placeholder="전화번호를 입력하세요 (예: 010-1234-5678)"
@@ -498,7 +548,11 @@
                       dense
                       hide-details
                       class="phone-input standard-input"
+                      :disabled="useSameNumber"
                     ></v-text-field>
+                    <p v-if="useSameNumber" class="instruction-text">
+                      같은 번호로 보내기 토글 버튼이 on이면 해당 번호 입력 칸 비활성화
+                    </p>
                   </div>
                 </div>
 
@@ -556,6 +610,7 @@
       :is-edit-mode="isEditMode"
       :roi-table-data="roiTableData"
       :check-duplicate="checkDuplicateRoiNumber"
+      max-width="2000px"
       @saved="onRoiSaved"
     />
 
@@ -571,6 +626,80 @@
         </div>
       </div>
     </div>
+
+    <!-- 문자 직접 입력 다이얼로그 -->
+    <v-dialog v-model="showMessageDialog" max-width="600px" width="600px" persistent class="message-dialog">
+      <v-card class="message-dialog-card">
+        <v-card-title class="message-dialog-title">
+          <span>문자 직접 입력</span>
+          <v-spacer></v-spacer>
+          <v-btn icon @click="closeMessageDialog" class="close-btn">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-card-text class="message-dialog-content">
+          <v-container fluid>
+            <!-- 담당자 번호와 같은 번호로 보내기 -->
+            <v-row class="input-row">
+              <v-col cols="12">
+                <div class="custom-input-group-switch">
+                  <label class="custom-label">담당자 번호와 같은 번호로 보내기</label>
+                  <v-switch
+                    v-model="useSameNumber"
+                    color="red"
+                    hide-details
+                    class="custom-switch"
+                  ></v-switch>
+                </div>
+              </v-col>
+            </v-row>
+
+            <!-- 담당자 문자 전송 번호 입력 -->
+            <v-row class="input-row" v-if="!useSameNumber">
+              <v-col cols="12">
+                <div class="custom-input-group">
+                  <label class="custom-label">담당자 문자 전송 번호 입력</label>
+                  <input
+                    v-model="messagePhoneNumber"
+                    type="text"
+                    class="custom-input"
+                    placeholder="전화번호를 입력하세요 (예: 010-1234-5678)"
+                  />
+                </div>
+              </v-col>
+            </v-row>
+
+            <!-- 안내 문구 -->
+            <v-row class="input-row" v-if="useSameNumber">
+              <v-col cols="12">
+                <p class="instruction-text-red">
+                  같은 번호로 보내기 토글 버튼이 on이면 해당 번호 입력 칸 비활성화
+                </p>
+              </v-col>
+            </v-row>
+
+            <!-- 문자 내용 입력 -->
+            <v-row class="input-row">
+              <v-col cols="12">
+                <div class="custom-input-group">
+                  <label class="custom-label">문자 내용 입력</label>
+                  <textarea
+                    v-model="messageContent"
+                    class="custom-textarea"
+                    placeholder="메시지를 입력하세요"
+                    rows="8"
+                  ></textarea>
+                </div>
+              </v-col>
+            </v-row>
+          </v-container>
+        </v-card-text>
+        <v-card-actions class="message-dialog-actions">
+          <v-btn text @click="closeMessageDialog" class="cancel-btn">취소</v-btn>
+          <v-btn text @click="sendMessage" class="save-btn">전송</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -696,8 +825,12 @@ export default {
       ],
       alarmTableHeaders: [
         { text: 'No', value: 'no', width: '80px' },
-        { text: '위치정보', value: 'locationInfo', width: '300px' },
-        { text: '경보발령단계', value: 'alarmLevel', width: '200px' },
+        { text: '위치정보', value: 'locationInfo', width: '200px' },
+        { text: '경보발령단계', value: 'alarmLevel', width: '150px' },
+        { text: 'ROI', value: 'roi', width: '100px' },
+        { text: '최대온도', value: 'maxTemp', width: '120px' },
+        { text: '최소온도', value: 'minTemp', width: '120px' },
+        { text: '평균온도', value: 'avgTemp', width: '120px' },
         { text: '경보발령시간', value: 'alarmTime', width: '200px' }
       ],
       alarmTableData: [],
@@ -705,6 +838,11 @@ export default {
       alarmTotalItems: 0,
       alarmTotalPages: 1,
       alarmLoading: false,
+      // 경보이력 필터
+      alarmDateFilter: null,
+      alarmDateMenu: false,
+      alarmRoiFilter: null,
+      alarmRoiOptions: [],
       jumpPage: null,
       sidebarDrawer: true,
       userName: 'system',
@@ -739,7 +877,12 @@ export default {
           { count: 4 }
         ]
       },
-      savingNotification: false
+      savingNotification: false,
+      // 문자 직접 입력 다이얼로그 관련 데이터
+      showMessageDialog: false,
+      useSameNumber: false,
+      messagePhoneNumber: '',
+      messageContent: ''
     };
   },
 
@@ -750,6 +893,8 @@ export default {
     this.loadSettings();
     // ROI 데이터 로드
     this.loadRoiData();
+    // 경보이력 ROI 옵션 로드
+    this.loadAlarmRoiOptions();
     this.loadAlarmHistory();
     // 알림 설정 로드
     this.loadNotificationSettings();
@@ -971,6 +1116,9 @@ export default {
       try {
         this.isLoading = true
         
+        // 현재 선택한 시나리오 값 저장 (나중에 복원하기 위해)
+        const currentScenario = this.selectedScenario
+        
         const settings = {
           alert: {
             scenario: this.selectedScenario
@@ -978,7 +1126,7 @@ export default {
           alarmLevels: {
             scenario1: [
               Number(this.tableData[0].stage1),
-              Number(this.tableData[0].stage1),
+              Number(this.tableData[0].stage2),
               Number(this.tableData[0].stage3),
               Number(this.tableData[0].stage4)
             ],
@@ -996,6 +1144,9 @@ export default {
           alert_setting_json: settingsJSON,
           fk_user_id: this.$store.state.auth.user?.id || 1
         })
+        
+        // 저장 후 현재 선택한 시나리오 값 유지
+        this.selectedScenario = currentScenario
         
         this.$toast.success('설정이 성공적으로 저장되었습니다.')
       } catch (error) {
@@ -1213,28 +1364,248 @@ export default {
           console.error('위치정보 로딩 오류:', e);
         }
         
-        const res = await getAlerts(`?page=${this.alarmPage}&pageSize=10`);
+        // 필터 파라미터 구성
+        let params = `?page=${this.alarmPage}&pageSize=10&includeClosed=true`;
         
-        console.log('경보이력 API 응답:', res);
+        // 경보발령 일자 필터
+        if (this.alarmDateFilter) {
+          const startDate = `${this.alarmDateFilter}T00:00:00`;
+          const endDate = `${this.alarmDateFilter}T23:59:59`;
+          params += `&startDate=${startDate}&endDate=${endDate}`;
+        }
         
-        if (res && res.data && res.data.result) {
-          this.alarmTableData = res.data.result.map((alert, idx) => {
+        // ROI 필터는 클라이언트 측에서 필터링 (API에 ROI 필터가 없을 수 있음)
+        
+        // 모든 경보이력 조회 (popup_close 조건 제거)
+        const res = await getAlerts(params);
+        
+        console.log('경보이력 API 응답 전체:', res);
+        console.log('경보이력 API 응답 data:', res?.data);
+        console.log('경보이력 API 응답 data.result:', res?.data?.result);
+        console.log('경보이력 API 응답 data.pagination:', res?.data?.pagination);
+        
+        // 응답 구조 확인: res.data.result 또는 res.data.items 또는 res.data
+        let alerts = [];
+        let pagination = null;
+        
+        if (res && res.data) {
+          // PaginationMiddleware를 거친 경우
+          if (res.data.result) {
+            alerts = res.data.result;
+            pagination = res.data.pagination;
+          } else if (res.data.items) {
+            alerts = res.data.items;
+            pagination = res.data.pagination;
+          } else if (Array.isArray(res.data)) {
+            alerts = res.data;
+          }
+        }
+        
+        console.log('경보이력 추출된 데이터:', alerts);
+        console.log('경보이력 페이지네이션:', pagination);
+        
+        // ROI 필터 적용 (클라이언트 측 필터링)
+        let filteredAlerts = alerts;
+        if (this.alarmRoiFilter && alerts && alerts.length > 0) {
+          filteredAlerts = alerts.filter(alert => {
+            try {
+              if (alert.alert_info_json) {
+                let alertInfo = {};
+                if (typeof alert.alert_info_json === 'string') {
+                  const jsonStr = alert.alert_info_json.trim();
+                  if (jsonStr.endsWith('}') || jsonStr.endsWith(']')) {
+                    alertInfo = JSON.parse(jsonStr);
+                  } else {
+                    const lastBrace = jsonStr.lastIndexOf('}');
+                    if (lastBrace > 0) {
+                      alertInfo = JSON.parse(jsonStr.substring(0, lastBrace + 1));
+                    }
+                  }
+                } else if (typeof alert.alert_info_json === 'object') {
+                  alertInfo = alert.alert_info_json;
+                }
+                
+                // ROI 번호 추출
+                let roi = null;
+                if (alertInfo.roi_polygon && alertInfo.roi_polygon.main_roi) {
+                  const zoneType = alertInfo.roi_polygon.main_roi.zone_type;
+                  if (zoneType !== null && zoneType !== undefined && zoneType !== '') {
+                    const match = zoneType.toString().match(/Z?0*(\d+)/);
+                    if (match) {
+                      roi = parseInt(match[1]);
+                    } else {
+                      // 매치되지 않으면 숫자로 직접 변환 시도
+                      const num = parseInt(zoneType);
+                      if (!isNaN(num)) {
+                        roi = num;
+                      }
+                    }
+                  }
+                } else if (alertInfo.zone_type !== null && alertInfo.zone_type !== undefined && alertInfo.zone_type !== '') {
+                  const match = alertInfo.zone_type.toString().match(/Z?0*(\d+)/);
+                  if (match) {
+                    roi = parseInt(match[1]);
+                  } else {
+                    // 매치되지 않으면 숫자로 직접 변환 시도
+                    const num = parseInt(alertInfo.zone_type);
+                    if (!isNaN(num)) {
+                      roi = num;
+                    }
+                  }
+                } else if (alert.alert_type) {
+                  const match = alert.alert_type.toString().match(/S?0*(\d+)/);
+                  if (match) {
+                    roi = parseInt(match[1]) - 1;
+                  }
+                }
+                
+                // 필터와 비교
+                const filterRoi = parseInt(this.alarmRoiFilter);
+                return roi !== null && roi === filterRoi;
+              }
+            } catch (e) {
+              console.error('ROI 필터링 오류:', e);
+            }
+            return false;
+          });
+        }
+        
+        if (filteredAlerts && filteredAlerts.length > 0) {
+          this.alarmTableData = filteredAlerts.map((alert, idx) => {
+            // alert_info_json 파싱하여 ROI 및 온도 정보 추출
+            let roi = '정보 없음';
+            let maxTemp = '--';
+            let minTemp = '--';
+            let avgTemp = '--';
+            
+            try {
+              if (alert.alert_info_json) {
+                let alertInfo = {};
+                if (typeof alert.alert_info_json === 'string') {
+                  const jsonStr = alert.alert_info_json.trim();
+                  if (jsonStr.endsWith('}') || jsonStr.endsWith(']')) {
+                    alertInfo = JSON.parse(jsonStr);
+                  } else {
+                    // JSON이 잘린 경우 처리
+                    const lastBrace = jsonStr.lastIndexOf('}');
+                    if (lastBrace > 0) {
+                      alertInfo = JSON.parse(jsonStr.substring(0, lastBrace + 1));
+                    }
+                  }
+                } else if (typeof alert.alert_info_json === 'object') {
+                  alertInfo = alert.alert_info_json;
+                }
+                
+                // ROI 번호 추출
+                if (alertInfo.roi_polygon && alertInfo.roi_polygon.main_roi) {
+                  const zoneType = alertInfo.roi_polygon.main_roi.zone_type;
+                  if (zoneType !== null && zoneType !== undefined && zoneType !== '') {
+                    // "Z1" -> "ROI 1", "Z001" -> "ROI 1", 0 -> "ROI 0" 형식으로 변환
+                    const match = zoneType.toString().match(/Z?0*(\d+)/);
+                    if (match) {
+                      roi = `ROI ${parseInt(match[1])}`;
+                    } else {
+                      // 매치되지 않으면 숫자로 직접 변환 시도
+                      const num = parseInt(zoneType);
+                      if (!isNaN(num)) {
+                        roi = `ROI ${num}`;
+                      } else {
+                        roi = zoneType;
+                      }
+                    }
+                  }
+                } else if (alertInfo.zone_type !== null && alertInfo.zone_type !== undefined && alertInfo.zone_type !== '') {
+                  const match = alertInfo.zone_type.toString().match(/Z?0*(\d+)/);
+                  if (match) {
+                    roi = `ROI ${parseInt(match[1])}`;
+                  } else {
+                    // 매치되지 않으면 숫자로 직접 변환 시도
+                    const num = parseInt(alertInfo.zone_type);
+                    if (!isNaN(num)) {
+                      roi = `ROI ${num}`;
+                    } else {
+                      roi = alertInfo.zone_type;
+                    }
+                  }
+                } else if (alert.alert_type) {
+                  // alert_type에서 추출 (예: "S001" -> "ROI 0")
+                  const match = alert.alert_type.toString().match(/S?0*(\d+)/);
+                  if (match) {
+                    const roiNum = parseInt(match[1]) - 1;
+                    roi = `ROI ${roiNum}`;
+                  } else {
+                    roi = alert.alert_type;
+                  }
+                }
+                
+                // 온도 정보 추출
+                if (alertInfo.temperature_stats) {
+                  maxTemp = typeof alertInfo.temperature_stats.max === 'number' 
+                    ? alertInfo.temperature_stats.max.toFixed(1) 
+                    : '--';
+                  minTemp = typeof alertInfo.temperature_stats.min === 'number' 
+                    ? alertInfo.temperature_stats.min.toFixed(1) 
+                    : '--';
+                  avgTemp = typeof alertInfo.temperature_stats.average === 'number' 
+                    ? alertInfo.temperature_stats.average.toFixed(1) 
+                    : '--';
+                } else if (alertInfo.max_temp !== undefined || alertInfo.min_temp !== undefined || alertInfo.avg_temp !== undefined) {
+                  maxTemp = typeof alertInfo.max_temp === 'number' 
+                    ? alertInfo.max_temp.toFixed(1) 
+                    : '--';
+                  minTemp = typeof alertInfo.min_temp === 'number' 
+                    ? alertInfo.min_temp.toFixed(1) 
+                    : '--';
+                  avgTemp = typeof alertInfo.avg_temp === 'number' 
+                    ? alertInfo.avg_temp.toFixed(1) 
+                    : '--';
+                }
+              }
+            } catch (e) {
+              console.error('alert_info_json 파싱 오류:', e, 'alert:', alert);
+            }
+            
+            // level4인 경우 정보 없음 -> ROI 0으로 표현
+            const alarmLevel = parseInt(alert.alert_level) || 1;
+            // roi가 '정보 없음' 또는 '정보없음'인 경우 모두 처리
+            if (alarmLevel === 4 && (roi === '정보 없음' || roi === '정보없음' || !roi || roi.trim() === '')) {
+              const originalRoi = roi; // 원본 값 저장
+              roi = 'ROI 0';
+              console.log('level4 ROI 변환:', {
+                alert_level: alert.alert_level,
+                alarmLevel: alarmLevel,
+                originalRoi: originalRoi,
+                convertedRoi: 'ROI 0',
+                alert_id: alert.id || alert.alert_id
+              });
+            }
+            
             return {
               no: (this.alarmPage - 1) * 10 + idx + 1,
               locationInfo: locationInfo,
-              alarmLevel: alert.alert_level || 1,
+              alarmLevel: alarmLevel,
+              roi: roi,
+              maxTemp: maxTemp,
+              minTemp: minTemp,
+              avgTemp: avgTemp,
               alarmTime: alert.alert_accur_time || alert.created_at || '',
               alert_info_json: alert.alert_info_json || null
             };
           });
           
-          // 페이지네이션 정보 업데이트
-          if (res.data.pagination) {
-            this.alarmTotalItems = res.data.pagination.totalItems || 0;
-            this.alarmTotalPages = res.data.pagination.totalPages || 1;
-            this.alarmPage = res.data.pagination.currentPage || 1;
+          // 페이지네이션 정보 업데이트 (필터링된 결과 기준)
+          if (pagination) {
+            // ROI 필터가 적용된 경우 필터링된 개수 사용
+            if (this.alarmRoiFilter) {
+              this.alarmTotalItems = filteredAlerts.length;
+              this.alarmTotalPages = Math.ceil(this.alarmTotalItems / 10);
+            } else {
+              this.alarmTotalItems = pagination.totalItems || 0;
+              this.alarmTotalPages = pagination.totalPages || 1;
+              this.alarmPage = pagination.currentPage || this.alarmPage;
+            }
           } else {
-            this.alarmTotalItems = res.data.total || res.data.result.length;
+            this.alarmTotalItems = filteredAlerts.length;
             this.alarmTotalPages = Math.ceil(this.alarmTotalItems / 10);
           }
           
@@ -1261,6 +1632,70 @@ export default {
       }
     },
 
+    applyAlarmFilters() {
+      // 필터 적용 시 첫 페이지로 이동하고 데이터 다시 로드
+      this.alarmPage = 1;
+      this.loadAlarmHistory();
+    },
+
+    resetAlarmFilters() {
+      // 필터 초기화
+      this.alarmDateFilter = null;
+      this.alarmRoiFilter = null;
+      this.alarmPage = 1;
+      this.loadAlarmHistory();
+    },
+
+    async loadAlarmRoiOptions() {
+      // ROI 옵션 로드 (getRoiDataList API 사용)
+      try {
+        const { getRoiDataList } = await import('@/api/statistic.api');
+        const response = await getRoiDataList();
+        
+        if (response && response.data && response.data.success && response.data.result) {
+          this.alarmRoiOptions = response.data.result
+            .map(zone => {
+              // zone_type에서 ROI 번호 추출
+              let roiNumber = null;
+              if (zone.zone_type !== null && zone.zone_type !== undefined && zone.zone_type !== '') {
+                const match = zone.zone_type.toString().match(/Z?0*(\d+)/);
+                if (match) {
+                  roiNumber = parseInt(match[1]);
+                } else {
+                  // 매치되지 않으면 숫자로 직접 변환 시도
+                  const num = parseInt(zone.zone_type);
+                  if (!isNaN(num)) {
+                    roiNumber = num;
+                  }
+                }
+              } else if (zone.zone_desc) {
+                const match = zone.zone_desc.toString().match(/ROI[-\s]?(\d+)/i);
+                if (match) {
+                  roiNumber = parseInt(match[1]);
+                }
+              }
+              
+              if (roiNumber !== null) {
+                return {
+                  text: `ROI ${roiNumber}`,
+                  value: roiNumber
+                };
+              }
+              return null;
+            })
+            .filter(option => option !== null)
+            .sort((a, b) => a.value - b.value);
+        }
+      } catch (error) {
+        console.error('ROI 옵션 로드 오류:', error);
+        // 기본 ROI 옵션 설정 (0-9)
+        this.alarmRoiOptions = Array.from({ length: 10 }, (_, i) => ({
+          text: `ROI ${i}`,
+          value: i
+        }));
+      }
+    },
+
     // 툴팁 관련 메서드
     showRoiTooltip(event, item) {
       // ROI 번호 추출 (alert_info_json에서 zone_type 가져오기)
@@ -1268,7 +1703,36 @@ export default {
       try {
         if (item.alert_info_json) {
           const alertInfo = JSON.parse(item.alert_info_json);
-          roiNumber = alertInfo.zone_type || '정보 없음';
+          // zone_type이 0이어도 유효한 값이므로 처리
+          if (alertInfo.zone_type !== null && alertInfo.zone_type !== undefined && alertInfo.zone_type !== '') {
+            const match = alertInfo.zone_type.toString().match(/Z?0*(\d+)/);
+            if (match) {
+              roiNumber = `ROI ${parseInt(match[1])}`;
+            } else {
+              // 매치되지 않으면 숫자로 직접 변환 시도
+              const num = parseInt(alertInfo.zone_type);
+              if (!isNaN(num)) {
+                roiNumber = `ROI ${num}`;
+              } else {
+                roiNumber = alertInfo.zone_type.toString();
+              }
+            }
+          } else if (alertInfo.roi_polygon && alertInfo.roi_polygon.main_roi) {
+            const zoneType = alertInfo.roi_polygon.main_roi.zone_type;
+            if (zoneType !== null && zoneType !== undefined && zoneType !== '') {
+              const match = zoneType.toString().match(/Z?0*(\d+)/);
+              if (match) {
+                roiNumber = `ROI ${parseInt(match[1])}`;
+              } else {
+                const num = parseInt(zoneType);
+                if (!isNaN(num)) {
+                  roiNumber = `ROI ${num}`;
+                } else {
+                  roiNumber = zoneType.toString();
+                }
+              }
+            }
+          }
         }
       } catch (e) {
         console.error('ROI 정보 파싱 오류:', e);
@@ -1657,6 +2121,33 @@ export default {
         };
       }
       return { connected: false, hasToken: false, username: 'unknown' };
+    },
+    
+    // 문자 직접 입력 다이얼로그 관련 메서드
+    openMessageDialog() {
+      this.showMessageDialog = true;
+      this.useSameNumber = false;
+      this.messagePhoneNumber = '';
+      this.messageContent = '';
+    },
+    
+    closeMessageDialog() {
+      this.showMessageDialog = false;
+      this.messagePhoneNumber = '';
+      this.messageContent = '';
+    },
+    
+    sendMessage() {
+      // TODO: 실제 메시지 전송 로직 구현
+      console.log('메시지 전송:', {
+        useSameNumber: this.useSameNumber,
+        phoneNumber: this.messagePhoneNumber,
+        content: this.messageContent
+      });
+      
+      // 전송 성공 후 다이얼로그 닫기
+      this.$toast.success('메시지가 전송되었습니다.');
+      this.closeMessageDialog();
     }
   }
 };
@@ -1917,6 +2408,128 @@ export default {
   max-width: 100px;
   background: white !important;
   text-align: center !important;
+}
+
+/* 필터 섹션의 standard-input은 max-width 제한 없음 */
+.filter-section .standard-input {
+  max-width: none;
+  text-align: left !important;
+  background: white !important;
+}
+
+/* 필터 섹션의 v-select 스타일 */
+.filter-section .standard-input ::v-deep .v-select__selection {
+  background: white !important;
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__slot {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__slot {
+  background: white !important;
+  border: 1px solid #d0d0d0 !important;
+  border-radius: 2px !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__control {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__prepend-inner {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__prepend-outer {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__append-inner {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__append-outer {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-text-field__slot {
+  background: white !important;
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-text-field__slot input {
+  background: white !important;
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__selections {
+  background: white !important;
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__selection--comma {
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-label {
+  color: rgba(0, 0, 0, 0.6) !important;
+}
+
+.filter-section .standard-input ::v-deep .v-label--active {
+  color: rgba(0, 0, 0, 0.87) !important;
+}
+
+.filter-section .standard-input ::v-deep * {
+  background-color: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input {
+  background: white !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon {
+  background: transparent !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon--prepend-inner {
+  background: transparent !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon--prepend-outer {
+  background: transparent !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon--append-inner {
+  background: transparent !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon--append-outer {
+  background: transparent !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__icon i {
+  color: rgba(0, 0, 0, 0.54) !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__selection--placeholder {
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-input__slot input::placeholder {
+  color: rgba(0, 0, 0, 0.38) !important;
+}
+
+.filter-section .standard-input ::v-deep .v-text-field__slot input::placeholder {
+  color: rgba(0, 0, 0, 0.38) !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__selection {
+  color: #333 !important;
+}
+
+.filter-section .standard-input ::v-deep .v-select__selection--comma {
+  color: #333 !important;
 }
 
 .standard-input ::v-deep .v-input__control {
@@ -2899,5 +3512,312 @@ export default {
 
 .content-header {
   position: relative;
+}
+
+/* phone-input-header 스타일 */
+.phone-input-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 15px;
+}
+
+.phone-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+/* 문자 직접 입력 다이얼로그 스타일 */
+.message-dialog-title {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-bottom: 1px solid #e0e0e0;
+  font-weight: bold;
+}
+
+.close-btn {
+  color: white !important;
+}
+
+.message-dialog-content {
+  padding: 20px;
+  background-color: white;
+  overflow-x: hidden !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.message-dialog-content .container {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+.input-row {
+  margin-bottom: 0;
+  padding: 0;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+::v-deep .message-dialog .v-input {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+::v-deep .message-dialog .row {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+::v-deep .message-dialog .col {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+  box-sizing: border-box !important;
+}
+
+.custom-input-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding: 0;
+  width: 100%;
+}
+
+.custom-input-group-switch {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 0;
+  width: 100%;
+}
+
+.custom-label {
+  font-size: 14px;
+  color: black;
+  margin-right: 0;
+  margin-bottom: 8px;
+  font-weight: 500;
+  width: 100%;
+}
+
+.custom-input-group-switch .custom-label {
+  margin-bottom: 0;
+}
+
+.custom-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 4px;
+  background-color: white;
+  color: black;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.3s ease;
+  box-sizing: border-box;
+  min-height: 36px;
+  line-height: 1.5;
+}
+
+.custom-input:focus {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+}
+
+.custom-input::placeholder {
+  color: #999;
+}
+
+.custom-textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 4px;
+  background-color: white;
+  color: black;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.3s ease;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.custom-textarea:focus {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+}
+
+.custom-textarea::placeholder {
+  color: #999;
+}
+
+.custom-switch {
+  flex-shrink: 0;
+}
+
+.instruction-text-red {
+  color: red;
+  font-size: 12px;
+  margin: 5px 0;
+}
+
+.message-dialog-actions {
+  padding: 0 24px 20px 24px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.cancel-btn {
+  background-color: #9e9e9e;
+  color: white;
+  min-width: 80px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.save-btn {
+  background-color: #ff9800;
+  color: white;
+  min-width: 80px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+/* v-card 스타일 */
+::v-deep .message-dialog-card {
+  background-color: white !important;
+  overflow-x: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+::v-deep .message-dialog .v-card {
+  background-color: white !important;
+  overflow-x: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+::v-deep .message-dialog .v-card__text {
+  background-color: white !important;
+  overflow-x: hidden !important;
+  padding: 20px !important;
+}
+
+::v-deep .message-dialog {
+  overflow-x: hidden !important;
+}
+
+::v-deep .message-dialog .v-dialog {
+  overflow-x: hidden !important;
+  overflow-y: hidden !important;
+}
+
+/* v-dialog overlay 숨기기 */
+::v-deep .message-dialog .v-dialog__container {
+  overflow: hidden !important;
+}
+
+::v-deep .message-dialog .v-overlay__content {
+  overflow: hidden !important;
+  max-width: 100% !important;
+}
+
+/* v-menu와 overlay 관련 */
+::v-deep .v-menu__content {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+::v-deep .v-overlay {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+/* v-overlay__content 너비 제한 */
+::v-deep .message-dialog .v-overlay__content {
+  max-width: 600px !important;
+  width: 600px !important;
+  overflow: hidden !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+}
+
+/* v-dialog 전체 컨테이너 */
+::v-deep .v-dialog__container {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* v-overlay 스크린 */
+::v-deep .v-overlay__scrim {
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+/* message-dialog 관련 요소들의 overflow 숨기기 */
+.message-dialog,
+.message-dialog *,
+.message-dialog .v-overlay__content,
+.message-dialog .v-dialog__container,
+.message-dialog .v-overlay__scrim {
+  overflow-x: hidden !important;
+}
+
+/* v-dialog 관련 요소 */
+::v-deep .v-dialog.v-dialog--active,
+::v-deep .v-dialog__container {
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* message-dialog의 v-dialog */
+::v-deep .message-dialog.v-dialog {
+  max-width: 600px !important;
+  width: 600px !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+/* v-overlay 관련 */
+::v-deep .v-overlay.v-overlay--active {
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
+}
+
+/* v-card 내용 */
+::v-deep .message-dialog-card * {
+  max-width: 100% !important;
+}
+
+/* 제목 영역 패딩 최소화 */
+::v-deep .message-dialog .v-card__title {
+  padding: 12px 16px !important;
+}
+
+/* 액션 버튼 영역 패딩 최소화 */
+::v-deep .message-dialog .v-card__actions {
+  padding: 8px 16px 12px 16px !important;
+}
+
+/* 모든 여백과 패딩 최소화 */
+::v-deep .message-dialog-card > * {
+  margin: 0 !important;
+}
+
+/* 오버레이 여백 최소화 */
+::v-deep .message-dialog .v-overlay__content {
+  margin: 24px auto !important;
 }
 </style>

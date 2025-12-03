@@ -9,6 +9,18 @@
           .layer-title 실증현장 정보
           .site-info-content
             .site-name(v-if="location_info") {{ location_info }}
+        .dam-data-layer
+          .layer-title 실시간 댐 데이터
+          .dam-data-content
+            .dam-data-item
+              .dam-data-label 댐 수위
+              .dam-data-value {{ damData.rwl != null ? damData.rwl : '-' }}
+            .dam-data-item
+              .dam-data-label 우량
+              .dam-data-value {{ damData.dambasrf != null ? damData.dambasrf : '-' }}
+            .dam-data-item
+              .dam-data-label 방류량
+              .dam-data-value {{ damData.dqty != null ? damData.dqty : '-' }}
         .leak-status-layer
           .layer-title 실시간누수감지상태
           .status-buttons
@@ -112,7 +124,7 @@
             .panorama-info
               span {{ currentPanoramaIndex + 1 }} / {{ panoramaDataList.length }}
               .panorama-date(v-if="currentPanoramaData")
-                | {{ formatDate(currentPanoramaData.create_date) }}
+                | {{ formatPanoramaDate(currentPanoramaData.create_date) }}
             v-btn(
               :disabled="currentPanoramaIndex >= panoramaDataList.length - 1"
               @click="nextPanorama"
@@ -466,29 +478,28 @@
             thead
               tr
                 th ROI
-                th Max Temp
-                th Min Temp
-                th Avg Temp
-                th Graph
-                th Download
+                th 최대온도
+                th 최소온도
+                th 평균온도
+                th 그래프
+                th 다운로드
             tbody
               tr(
                 v-for="(zone, idx) in zones"
-                :key="zone.name"
-                :class="{selected: selectedZoneIdx === idx}"
-                @click="showChart(zone)"
+                :key="`zone-${idx}-${zone.zone_desc}`"
+                :class="{selected: selectedZoneIdx === idx, clicking: clickingZoneIdx === idx}"
+                @click="showChart(zone, idx)"
               )
                 td {{ zone.zone_desc }}
-                td 최대온도: {{ zone.minTemp }}
-                td 최소온도: {{ zone.maxTemp }}
-                td 평균온도: {{ zone.avgTemp }} 
-                td 경보단계: {{ zone.alertLevel }}
+                td {{ getMaxTemp(zone) }}
+                td {{ getMinTemp(zone) }}
+                td {{ zone.avgTemp && zone.avgTemp !== '--' ? (typeof zone.avgTemp === 'string' ? zone.avgTemp : zone.avgTemp.toFixed(1)) : '--' }}
                 td
                   span.icon-chart 📈
                 td
-                  span.icon-excel(@click.stop="downloadExcel(zone)") 📊
+                  span.icon-excel(@click.stop.prevent="downloadExcel(zone)") 📊
       .bottomleft-inner-bottom
-          .box-title 시계열 온도 데이터
+          .box-title.chart-title 시계열 온도 데이터
           .chart-container
             v-chart(:options="chartOption" autoresize ref="trendChart" class="trend-chart")
   .cell.cell-bottomright
@@ -512,6 +523,29 @@
           @cameraStatus="cameraStatus"
         )
         .no-camera(v-else) No visible camera available
+
+  // 경보 알림 팝업 레이어 (화면 가운데)
+  .alert-popup-container(v-if="showAlertPopup && unclosedAlerts.length > 0")
+    .alert-popup-header
+      .alert-popup-title 경보 알림
+      v-btn.close-popup-btn(
+        icon
+        small
+        @click="closeAlertPopup"
+      )
+        v-icon(:icon="ptzIcons.close")
+    .alert-popup-content
+      .alert-list
+        .alert-item(v-for="alert in unclosedAlerts" :key="alert.id")
+          .alert-level 경보단계: {{ alert.levelText }}
+          .alert-zone 경보영역: {{ alert.zoneName }}
+          .alert-time 경보시간: {{ alert.time }}
+    .alert-popup-footer
+      v-btn(
+        color="secondary"
+        block
+        @click="closeAlertPopup"
+      ) 닫기
 </template>
   
 <script>
@@ -521,13 +555,13 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
 import VideoCard from '@/components/camera-card.vue';
 import { getCameras, getCameraSettings } from '@/api/cameras.api';
-import { getRoiDataList } from '@/api/statistic.api';
+import { getRoiDataList, getRoiTemperatureTimeSeries } from '@/api/statistic.api';
 import VChart from 'vue-echarts';
 import VueAspectRatio from 'vue-aspect-ratio';
 import socket from '@/mixins/socket';
 import * as XLSX from 'xlsx';
 import * as echarts from 'echarts';
-import { getAlerts} from '@/api/alerts.api';
+import { getAlerts, updatePopupClose, getAlertSettings} from '@/api/alerts.api';
 import { getEventSetting } from '@/api/eventSetting.api.js';
 import { ptzMove, ptzStop, ptzZoom, ptzFocus, ptzWiper, pntTourStart, pntTourStop, pntTourSetup } from '@/api/ptz.api';
 import { getPanoramaData } from '@/api/panorama.api';
@@ -606,6 +640,10 @@ data() {
       location: '서울'
     },
     timeInterval: null,
+    alertHistoryInterval: null, // 실시간 누수감지상태 정보 갱신용 인터벌
+    damDataInterval: null, // 실시간 댐 데이터 갱신용 인터벌
+    showChartInterval: null, // 차트 자동 갱신용 인터벌 (1분마다)
+    visibleCameraReloadInterval: null, // 실화상 영상 리로드용 인터벌 (1시간마다)
     zones: [],
     selectedZoneIdx: null,
     selectedZone: null,
@@ -616,8 +654,16 @@ data() {
     location_info: '',
     address: '',
     mapImagePreview: null,
-    selectedStatusButton: null,
+    selectedStatusButton: 'safe', // 초기값을 안전으로 설정
+    damData: {
+      rwl: null,
+      dambasrf: null,
+      dqty: null
+    },
     latestAlertInfo: null,
+    showAlertPopup: false,
+    unclosedAlerts: [],
+    popupNotificationEnabled: true, // 팝업 알림 설정 (기본값: true)
     // PTZ 제어 관련 데이터
     ptzDialog: false,
     ptzConfig: {
@@ -668,7 +714,9 @@ data() {
     panoramaDataList: [],
     currentPanoramaIndex: 0,
     currentPanoramaImage: null,
-    currentPanoramaData: null
+    currentPanoramaData: null,
+    // 클릭 효과를 위한 데이터
+    clickingZoneIdx: null
   };
 },
 computed: {
@@ -692,10 +740,12 @@ computed: {
 
     const times = temps.map(t => {
       const date = new Date(t.time);
+      // UTC 시간을 그대로 표시 (DB 시간과 동일)
       return date.toLocaleTimeString('ko-KR', { 
         hour: '2-digit', 
         minute: '2-digit',
-        hour12: false 
+        hour12: false,
+        timeZone: 'UTC'
       });
     });
     const minTemps = temps.map(t => Number(t.min));
@@ -711,6 +761,15 @@ computed: {
       sampleMax: maxTemps[0],
       sampleAvg: avgTemps[0]
     });
+
+    // Y축 범위 계산 (음수값 허용)
+    const allTemps = [...minTemps, ...maxTemps, ...avgTemps].filter(temp => !isNaN(temp) && temp !== null && temp !== undefined);
+    const minTemp = allTemps.length > 0 ? Math.min(...allTemps) : 0;
+    const maxTemp = allTemps.length > 0 ? Math.max(...allTemps) : 100;
+    const tempRange = maxTemp - minTemp;
+    const padding = tempRange > 0 ? tempRange * 0.1 : 5; // 10% 여유 공간 또는 최소 5도
+    const yAxisMin = minTemp - padding; // 음수값 허용
+    const yAxisMax = maxTemp + padding;
 
     const options = {
       tooltip: { 
@@ -744,11 +803,19 @@ computed: {
       yAxis: {
         type: 'value',
         name: '온도(°C)',
-        min: Math.min(...minTemps) - 5,
-        max: Math.max(...maxTemps) + 5,
+        min: yAxisMin,
+        max: yAxisMax,
         axisLabel: {
           color: '#fff',
-          formatter: '{value}°C'
+          formatter: function (value) {
+            return Math.round(value) + '°C';
+          }
+        },
+        splitLine: {
+          show: true,
+          lineStyle: {
+            color: 'rgba(255, 255, 255, 0.1)'
+          }
         }
       },
       series: [
@@ -793,10 +860,10 @@ computed: {
         }
       ],
       grid: { 
-        left: 40, 
-        right: 20, 
-        top: 60, 
-        bottom: 60,
+        left: 35, 
+        right: 15, 
+        top: 30, 
+        bottom: 30,
         containLabel: true
       }
     };
@@ -819,13 +886,59 @@ mounted() {
     this.$socket.client.connect();
   }
   this.initializeData();
+  this.loadPopupNotificationSetting(); // 팝업 알림 설정 로드
   this.loadAlertHistory();
+  // 실시간 누수감지상태 정보를 10초마다 갱신
+  this.alertHistoryInterval = setInterval(() => {
+    this.loadAlertHistory();
+  }, 10000); // 10초 (10000ms)
   this.loadSiteName();
   this.loadMapImage();
+  // 실시간 댐 데이터를 1분마다 갱신
+  this.damDataInterval = setInterval(() => {
+    this.loadSiteName();
+  }, 60000); // 1분 (60000ms)
+  
+  // 현재 선택된 항목에 대한 차트를 1분마다 자동 갱신 (클릭 효과 포함)
+  this.showChartInterval = setInterval(() => {
+    if (this.selectedZoneIdx !== null && this.selectedZoneIdx !== undefined && this.zones.length > 0) {
+      const selectedZone = this.zones[this.selectedZoneIdx];
+      if (selectedZone) {
+        // 클릭 효과를 위한 시각적 피드백
+        this.clickingZoneIdx = this.selectedZoneIdx;
+        this.showChart(selectedZone, this.selectedZoneIdx);
+        // 클릭 효과 제거 (300ms 후)
+        setTimeout(() => {
+          this.clickingZoneIdx = null;
+        }, 300);
+      }
+    }
+  }, 60000); // 1분 (60000ms)
+  
+  // 실화상 영상을 1시간마다 리로드
+  this.visibleCameraReloadInterval = setInterval(() => {
+    if (this.visibleCamera) {
+      // videoKeyVisible을 업데이트하여 VideoCard 컴포넌트 리마운트
+      this.videoKeyVisible = this.visibleCamera.name + '_' + Date.now();
+      console.log('실화상 영상 리로드:', this.videoKeyVisible);
+    }
+  }, 3600000); // 1시간 (3600000ms)
 },
 beforeDestroy() {
   if (this.timeInterval) {
     clearInterval(this.timeInterval);
+  }
+  if (this.alertHistoryInterval) {
+    clearInterval(this.alertHistoryInterval);
+  }
+  if (this.damDataInterval) {
+    clearInterval(this.damDataInterval);
+  }
+  if (this.showChartInterval) {
+    clearInterval(this.showChartInterval);
+  }
+  if (this.visibleCameraReloadInterval) {
+    clearInterval(this.visibleCameraReloadInterval);
   }
   // 소켓 이벤트 리스너 제거
   this.$socket.client.off('connect', this.handleSocketConnect);
@@ -864,6 +977,52 @@ methods: {
     const seconds = String(now.getSeconds()).padStart(2, '0');
     
     this.currentTime = `${year}년 ${month}월 ${day}일 ${hours}:${minutes}:${seconds}`;
+  },
+  // zone.minTemp와 zone.maxTemp 중 작은 값을 최소온도로 반환
+  getMinTemp(zone) {
+    // getRoiDataList API는 문자열('--' 또는 숫자 문자열)을 반환할 수 있음
+    const minTemp = zone.minTemp;
+    const maxTemp = zone.maxTemp;
+    
+    if (minTemp === '--' || minTemp == null) {
+      if (maxTemp === '--' || maxTemp == null) {
+        return '--';
+      }
+      return maxTemp;
+    }
+    if (maxTemp === '--' || maxTemp == null) {
+      return minTemp;
+    }
+    // 둘 다 숫자인 경우 작은 값 반환
+    const minNum = typeof minTemp === 'string' ? parseFloat(minTemp) : minTemp;
+    const maxNum = typeof maxTemp === 'string' ? parseFloat(maxTemp) : maxTemp;
+    if (isNaN(minNum) || isNaN(maxNum)) {
+      return '--';
+    }
+    return Math.min(minNum, maxNum).toFixed(1);
+  },
+  // zone.minTemp와 zone.maxTemp 중 큰 값을 최대온도로 반환
+  getMaxTemp(zone) {
+    // getRoiDataList API는 문자열('--' 또는 숫자 문자열)을 반환할 수 있음
+    const minTemp = zone.minTemp;
+    const maxTemp = zone.maxTemp;
+    
+    if (minTemp === '--' || minTemp == null) {
+      if (maxTemp === '--' || maxTemp == null) {
+        return '--';
+      }
+      return maxTemp;
+    }
+    if (maxTemp === '--' || maxTemp == null) {
+      return minTemp;
+    }
+    // 둘 다 숫자인 경우 큰 값 반환
+    const minNum = typeof minTemp === 'string' ? parseFloat(minTemp) : minTemp;
+    const maxNum = typeof maxTemp === 'string' ? parseFloat(maxTemp) : maxTemp;
+    if (isNaN(minNum) || isNaN(maxNum)) {
+      return '--';
+    }
+    return Math.max(minNum, maxNum).toFixed(1);
   },
   async fetchWeather() {
     try {
@@ -915,6 +1074,8 @@ methods: {
       if (this.zones.length > 0) {
         this.selectedZoneIdx = 0;
         this.selectedZone = this.zones[0];
+        // 첫 번째 항목의 차트 데이터도 로드
+        await this.showChart(this.zones[0]);
       }
     } catch (e) {
       console.error('영역 통계 정보를 불러오지 못했습니다:', e);
@@ -1042,9 +1203,16 @@ methods: {
       return;
     }
     
+    // 속도 값 유효성 검사 및 변환
+    let speed = parseInt(this.ptzConfig.speed);
+    if (isNaN(speed) || speed < 1 || speed > 63) {
+      console.warn(`유효하지 않은 속도 값: ${this.ptzConfig.speed}, 기본값 32 사용`);
+      speed = 32;
+    }
+    
     try {
-      await ptzMove(direction, this.ptzConfig.speed, this.ptzConfig.ip, this.ptzConfig.port);
-      console.log(`PTZ Move: ${direction} with speed ${this.ptzConfig.speed}`);
+      await ptzMove(direction, speed, this.ptzConfig.ip, this.ptzConfig.port);
+      console.log(`PTZ Move: ${direction} with speed ${speed}`);
     } catch (error) {
       console.error('PTZ Move Error:', error);
       this.$toast.error('PTZ 제어 명령 전송 실패');
@@ -1818,25 +1986,75 @@ methods: {
       this.camStates.push(data);
     }
   },
-  downloadExcel(zone) {
+  async downloadExcel(zone) {
     try {
+      // ROI 번호 추출 (zone_type 또는 zone_desc에서)
+      let roiNumber = null;
+      // zone_type이 0이어도 유효한 값이므로 명시적으로 체크
+      if (zone.zone_type !== null && zone.zone_type !== undefined && zone.zone_type !== '') {
+        if (typeof zone.zone_type === 'string' && zone.zone_type.startsWith('Z')) {
+          roiNumber = parseInt(zone.zone_type.replace('Z', ''));
+        } else if (typeof zone.zone_type === 'string') {
+          roiNumber = parseInt(zone.zone_type);
+        } else if (typeof zone.zone_type === 'number') {
+          roiNumber = zone.zone_type;
+        }
+      }
+      
+      // zone_type에서 추출 실패한 경우 zone_desc에서 시도
+      if (roiNumber === null && zone.zone_desc) {
+        const match = zone.zone_desc.match(/\d+/);
+        if (match) {
+          roiNumber = parseInt(match[0]);
+        }
+      }
+      
+      
+      // 해당 ROI의 30일치 시계열 온도 데이터 가져오기
+      this.$toast.info('데이터를 불러오는 중...');
+      const response = await getRoiTemperatureTimeSeries({ 
+        roiNumber: roiNumber,
+        days: 30  // 30일치 데이터 조회
+      });
+      
+      if (!response.data || !response.data.success || !response.data.result) {
+        this.$toast.error('시계열 데이터를 가져올 수 없습니다.');
+        return;
+      }
+      
+      const timeSeriesData = response.data.result.timeSeriesData || [];
+      
+      if (timeSeriesData.length === 0) {
+        this.$toast.warning('다운로드할 데이터가 없습니다.');
+        return;
+      }
+      
       // Create worksheet data
       const worksheetData = [];
       
       // Add headers
       worksheetData.push(['시간', '최소온도 (°C)', '최대온도 (°C)', '평균온도 (°C)']);
       
-      // Add data rows
-      if (zone.temps && Array.isArray(zone.temps)) {
-        zone.temps.forEach(temp => {
-          worksheetData.push([
-            new Date(temp.time).toLocaleString('ko-KR'),
-            temp.min,
-            temp.max,
-            temp.avg
-          ]);
+      // Add data rows - UTC 시간으로 표시
+      timeSeriesData.forEach(temp => {
+        const date = new Date(temp.time);
+        const timeStr = date.toLocaleString('ko-KR', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          timeZone: 'UTC'
         });
-      }
+        
+        worksheetData.push([
+          timeStr,
+          typeof temp.min === 'string' ? temp.min : (temp.min ? parseFloat(temp.min).toFixed(1) : '--'),
+          typeof temp.max === 'string' ? temp.max : (temp.max ? parseFloat(temp.max).toFixed(1) : '--'),
+          typeof temp.avg === 'string' ? temp.avg : (temp.avg ? parseFloat(temp.avg).toFixed(1) : '--')
+        ]);
+      });
 
       // Create workbook and worksheet
       const wb = XLSX.utils.book_new();
@@ -1864,18 +2082,110 @@ methods: {
       link.download = `${zone.zone_desc}_temperature_data.xlsx`;
       link.click();
       URL.revokeObjectURL(link.href);
+      
+      this.$toast.success('Excel 파일 다운로드가 완료되었습니다.');
     } catch (error) {
       console.error('Error downloading Excel:', error);
       this.$toast.error('Excel 다운로드 중 오류가 발생했습니다.');
     }
   },
-  showChart(zone) {
-    console.log('Selected Zone Data:', zone);
-    this.selectedZone = zone;
-    const index = this.zones.findIndex(z => z.zone_desc === zone.zone_desc);
+  async showChart(zone, idx = null) {
+    // 수동 클릭인 경우 클릭 효과 추가
+    if (idx !== null && idx !== undefined) {
+      this.clickingZoneIdx = idx;
+      setTimeout(() => {
+        this.clickingZoneIdx = null;
+      }, 300);
+    }
+    
+    console.log('=== showChart called ===');
+    console.log('zone:', zone);
+    console.log('idx:', idx);
+    console.log('current selectedZoneIdx:', this.selectedZoneIdx);
+    
+    // 선택된 인덱스 업데이트
+    let index = idx;
+    if (index === null || index === undefined) {
+      index = this.zones.findIndex(z => z.zone_desc === zone.zone_desc);
+    }
+    
     if (index !== -1) {
       this.selectedZoneIdx = index;
+      console.log('Updated selectedZoneIdx to:', index);
+    } else {
+      console.warn('Could not find zone index');
     }
+    
+    // ROI 번호 추출 (zone_type 또는 zone_desc에서)
+    let roiNumber = null;
+    console.log('Zone object for ROI extraction:', zone);
+    
+    // zone_type이 0이어도 유효한 값이므로 명시적으로 체크
+    if (zone.zone_type !== null && zone.zone_type !== undefined && zone.zone_type !== '') {
+      // zone_type이 "Z1", "Z2" 형식인 경우
+      if (typeof zone.zone_type === 'string' && zone.zone_type.startsWith('Z')) {
+        roiNumber = parseInt(zone.zone_type.replace('Z', ''));
+        console.log('Extracted ROI number from zone_type (Z format):', roiNumber);
+      } else if (typeof zone.zone_type === 'string') {
+        // 숫자 문자열인 경우 (예: "1", "2", "0")
+        roiNumber = parseInt(zone.zone_type);
+        console.log('Extracted ROI number from zone_type (number format):', roiNumber);
+      } else if (typeof zone.zone_type === 'number') {
+        // 숫자인 경우 (0 포함)
+        roiNumber = zone.zone_type;
+        console.log('Extracted ROI number from zone_type (number):', roiNumber);
+      }
+    }
+    
+    // zone_type에서 추출 실패한 경우 zone_desc에서 시도
+    if (roiNumber === null && zone.zone_desc) {
+      // zone_desc에서 숫자 추출 (예: "ROI 1" -> 1)
+      const match = zone.zone_desc.match(/\d+/);
+      if (match) {
+        roiNumber = parseInt(match[0]);
+        console.log('Extracted ROI number from zone_desc:', roiNumber);
+      }
+    }
+    
+    // ROI 온도 시계열 데이터 가져오기
+    // roiNumber가 0일 수도 있으므로 !== null && !== undefined로 체크
+    if (roiNumber !== null && roiNumber !== undefined && !isNaN(roiNumber)) {
+      try {
+        console.log('Calling API for ROI:', roiNumber);
+        const response = await getRoiTemperatureTimeSeries({ 
+          roiNumber: roiNumber,
+          days: 30  // 차트는 30일치 데이터 조회
+        });
+        
+        if (response.data && response.data.success && response.data.result) {
+          // 가져온 데이터를 selectedZone.temps 형식으로 변환
+          this.selectedZone = {
+            ...zone,
+            temps: response.data.result.timeSeriesData || []
+          };
+          console.log('Loaded temperature time series data:', this.selectedZone.temps);
+        } else {
+          console.warn('No temperature data found for ROI:', roiNumber);
+          this.selectedZone = {
+            ...zone,
+            temps: zone.temps || []
+          };
+        }
+      } catch (error) {
+        console.error('Error loading temperature time series data:', error);
+        this.selectedZone = {
+          ...zone,
+          temps: zone.temps || []
+        };
+      }
+    } else {
+      console.warn('Could not extract ROI number from zone:', zone, 'roiNumber:', roiNumber);
+      this.selectedZone = {
+        ...zone,
+        temps: zone.temps || []
+      };
+    }
+    
     console.log('Updated selectedZone:', this.selectedZone);
   },
   onChartReady(chartInstance) {
@@ -1969,14 +2279,80 @@ methods: {
     },
     async loadAlertHistory() {
       try {
-        const response = await getAlerts('');
-        this.alertHistory = response.data.result.map(alert => {
+        // 최근 10분간의 데이터만 조회 (popup_close 값 무관)
+        const now = new Date();
+        const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+        
+        // 로컬 시간대 형식으로 변환 (YYYY-MM-DDTHH:mm:ss 형식)
+        // 서버가 로컬 시간대를 기대하므로 UTC가 아닌 로컬 시간 사용
+        const formatLocalDateTime = (date) => {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          const hours = String(date.getHours()).padStart(2, '0');
+          const minutes = String(date.getMinutes()).padStart(2, '0');
+          const seconds = String(date.getSeconds()).padStart(2, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+        };
+        
+        const startDate = formatLocalDateTime(tenMinutesAgo);
+        const endDate = formatLocalDateTime(now);
+        
+        console.log(`[누수감지상태] 조회 시간 범위: ${startDate} ~ ${endDate} (로컬 시간)`);
+        
+        // API 호출 시 최근 10분간의 데이터만 요청, 최대 20개까지 조회
+        const parameters = `?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&includeClosed=true&limit=20`;
+        const response = await getAlerts(parameters);
+        
+        // 경보 데이터가 없거나 빈 배열인 경우 안전 상태로 설정
+        if (!response.data.result || response.data.result.length === 0) {
+          this.alertHistory = [];
+          // zones는 loadZones에서 ROI API로 관리하므로 여기서는 설정하지 않음
+          this.alertCount = 0;
+          this.selectedStatusButton = 'safe';
+          this.latestAlertInfo = null;
+          this.unclosedAlerts = [];
+          this.showAlertPopup = false;
+          
+          if (this.gaugeChart) {
+            this.gaugeChart.setOption({
+              series: [{
+                data: [{
+                  value: 0
+                }],
+                detail: {
+                  formatter: () => '안전',
+                  color: '#fff',
+                  fontSize: 24,
+                  offsetCenter: [0, '40%']
+                }
+              }]
+            });
+          }
+          return;
+        }
+        
+        // API에서 이미 최근 10분간의 데이터만 조회했으므로 추가 필터링 불필요
+        // 하지만 서버가 정확히 10분을 필터링하지 않을 수 있으므로 클라이언트 측에서도 확인
+        const recentAlerts = response.data.result.filter(alert => {
+          const alertTime = new Date(alert.alert_accur_time);
+          return alertTime >= tenMinutesAgo;
+        });
+        
+        console.log(`[누수감지상태] API 조회 결과: ${response.data.result.length}개, 10분 이내 경보: ${recentAlerts.length}개`);
+        
+        // 10분 이내 경보를 alertHistory에 저장 (popup_close와 상관없이)
+        this.alertHistory = recentAlerts.map(alert => {
           let minTemp = '-';
           let maxTemp = '-';
+          let avgTemp = '-';
           try {
             const info = alert.alert_info_json ? JSON.parse(alert.alert_info_json) : {};
             minTemp = (typeof info.min_roi_value === 'number') ? info.min_roi_value.toFixed(1) : '-';
             maxTemp = (typeof info.max_roi_value === 'number') ? info.max_roi_value.toFixed(1) : '-';
+            if (typeof info.min_roi_value === 'number' && typeof info.max_roi_value === 'number') {
+              avgTemp = ((info.min_roi_value + info.max_roi_value) / 2).toFixed(1);
+            }
           } catch (e) {
             // no-op
           }
@@ -1986,22 +2362,146 @@ methods: {
             type: alert.alert_type,
             level: alert.alert_level,
             maxTemp,
-            minTemp
+            minTemp,
+            avgTemp,
+            popup_close: alert.popup_close || 0,
+            fk_detect_zone_id: alert.fk_detect_zone_id
           }
         });
 
+        // alert API는 경보 정보만 처리하고, zones는 loadZones에서 ROI API로 관리
+
+        // 팝업은 popup_close가 0인 경우만 표시 (10분 이내 경보 중에서), 최대 20개까지
+        const unclosedAlertsData = recentAlerts
+          .filter(alert => (alert.popup_close || 0) === 0)
+          .slice(0, 20) // 최대 20개까지 제한
+          .map(alert => {
+            // alert_type에서 ROI 번호 추출 (S001 -> ROI 0, S002 -> ROI 1, ...)
+            let roiNumber = '미지정';
+            if (alert.alert_type) {
+              // alert_type에서 숫자 추출 (예: "S001" -> "001" -> 1 -> ROI 0)
+              const match = alert.alert_type.match(/\d+/);
+              if (match) {
+                const number = parseInt(match[0]);
+                roiNumber = `ROI ${number - 1}`;
+              }
+            }
+            
+            return {
+              id: alert.id,
+              levelText: this.getLevelText(alert.alert_level),
+              zoneName: roiNumber,
+              time: this.formatDate(alert.alert_accur_time)
+            };
+          });
+        
+        this.unclosedAlerts = unclosedAlertsData;
+        // 팝업 알림 설정이 활성화된 경우에만 팝업 표시
+        this.showAlertPopup = unclosedAlertsData.length > 0 && this.popupNotificationEnabled;
+
         // 최신 경보단계로 gaugeChart 값 반영 (한글 문구로)
+        // 경고 데이터 중 가장 위험한 값으로 감지상태 표시
         if (this.alertHistory.length > 0) {
-          this.alertCount = Number(this.alertHistory[0].level) || 0;
-          const levelLabel = this.getLevelText(this.alertHistory[0].level);
+          // alert_level이 가장 높은 경보 찾기 (가장 위험한 값)
+          let highestAlert = this.alertHistory[0];
+          let highestLevel = Number(highestAlert.level) || 0;
+          
+          console.log(`[누수감지상태] 경보 이력 ${this.alertHistory.length}개 조회, 첫 번째 경보 레벨: ${highestLevel}`);
+          
+          for (let i = 1; i < this.alertHistory.length; i++) {
+            const currentLevel = Number(this.alertHistory[i].level) || 0;
+            if (currentLevel > highestLevel) {
+              console.log(`[누수감지상태] 더 높은 레벨 발견: ${currentLevel} > ${highestLevel} (이전 최고 레벨)`);
+              highestLevel = currentLevel;
+              highestAlert = this.alertHistory[i];
+            }
+          }
+          
+          console.log(`[누수감지상태] 최종 최고 레벨: ${highestLevel}, 경보 ID: ${highestAlert.id}`);
+          
+          // highestLevel을 사용하여 일관성 유지
+          const alertLevel = highestLevel;
+          
+          // alert_level이 없거나, 0이거나, 유효하지 않은 경우 안전 상태로 설정
+          if (alertLevel === 0 || alertLevel === null || alertLevel === undefined || isNaN(alertLevel)) {
+            this.alertCount = 0;
+            this.selectedStatusButton = 'safe';
+            this.latestAlertInfo = null;
+            
+            if (this.gaugeChart) {
+              this.gaugeChart.setOption({
+                series: [{
+                  data: [{
+                    value: 0
+                  }],
+                  detail: {
+                    formatter: () => '안전',
+                    color: '#fff',
+                    fontSize: 24,
+                    offsetCenter: [0, '40%']
+                  }
+                }]
+              });
+            }
+          } else {
+            // 유효한 경보 레벨이 있는 경우
+            this.alertCount = alertLevel;
+            const levelLabel = this.getLevelText(alertLevel.toString());
+            console.log(`[누수감지상태] 경보 레벨 설정: ${alertLevel} (${levelLabel}), alertCount: ${this.alertCount}`);
+            if (this.gaugeChart) {
+              this.gaugeChart.setOption({
+                series: [{
+                  data: [{
+                    value: this.alertCount
+                  }],
+                  detail: {
+                    formatter: () => levelLabel,
+                    color: '#fff',
+                    fontSize: 24,
+                    offsetCenter: [0, '40%']
+                  }
+                }]
+              });
+            }
+            
+            // alert_level에 따른 버튼 매핑
+            // alert_level 0 -> 안전, 1 -> 관심, 2 -> 주의, 3 -> 점검, 4 -> 대비
+            const alertLevelNum = alertLevel; // 이미 숫자로 변환됨
+            const buttonMapping = {
+              0: 'safe',      // 안전
+              1: 'attention', // 관심
+              2: 'caution',   // 주의
+              3: 'check',     // 점검
+              4: 'prepare'    // 대비
+            };
+            
+            const defaultButton = buttonMapping[alertLevelNum] || 'safe'; // 기본값을 safe로 변경
+            this.selectedStatusButton = defaultButton; // 버튼 타입 설정
+            console.log(`[누수감지상태] 버튼 상태 설정: ${defaultButton} (레벨 ${alertLevelNum})`);
+            
+            // 최신 경보 정보 설정 (가장 높은 레벨의 경보 정보 사용)
+            this.latestAlertInfo = {
+              level: this.getLevelText(alertLevel.toString()),
+              maxTemp: highestAlert.maxTemp,
+              minTemp: highestAlert.minTemp,
+              time: highestAlert.time
+            };
+            console.log(`[누수감지상태] 최신 경보 정보 설정: 레벨=${this.latestAlertInfo.level}, 최대온도=${highestAlert.maxTemp}, 최소온도=${highestAlert.minTemp}`);
+          }
+        } else {
+          // 경보 데이터가 없는 경우 안전 상태로 설정
+          this.alertCount = 0;
+          this.selectedStatusButton = 'safe';
+          this.latestAlertInfo = null;
+          
           if (this.gaugeChart) {
             this.gaugeChart.setOption({
               series: [{
                 data: [{
-                  value: this.alertCount
+                  value: 0
                 }],
                 detail: {
-                  formatter: () => levelLabel,
+                  formatter: () => '안전',
                   color: '#fff',
                   fontSize: 24,
                   offsetCenter: [0, '40%']
@@ -2009,75 +2509,85 @@ methods: {
               }]
             });
           }
-          
-          // 기본적으로 최신 경보 레벨에 해당하는 버튼 선택 (level에 1을 더함)
-          const latestLevel = Number(this.alertHistory[0].level) + 1;
-          const buttonMapping = {
-            1: 'safe',
-            2: 'attention', 
-            3: 'caution',
-            4: 'check',
-            5: 'prepare'
-          };
-          
-          const defaultButton = buttonMapping[latestLevel] || 'prepare';
-          this.selectedStatusButton = defaultButton; // 버튼 타입 설정
-          
-          // 최신 경보 정보 설정
-          this.latestAlertInfo = {
-            level: this.getLevelText(this.alertHistory[0].level),
-            maxTemp: this.alertHistory[0].maxTemp,
-            minTemp: this.alertHistory[0].minTemp,
-            time: this.alertHistory[0].time
-          };
         }
       } catch (error) {
         console.error('알림 이력 조회 실패:', error);
         this.$toast?.error('알림 이력을 불러오는 중 오류가 발생했습니다.');
       }
     },
-    formatDate(dateStr) {
-      const date = new Date(dateStr);
-      const now = new Date();
-      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+    formatDate(time) {
+      if (!time) return '';
       
-      // 오늘인 경우
-      if (diffDays === 0) {
-        return date.toLocaleTimeString('ko-KR', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          hour12: false 
-        });
+      try {
+        let dateStr = String(time).trim();
+        
+        // ISO 형식에서 T를 공백으로 변환
+        if (dateStr.includes('T')) {
+          dateStr = dateStr.replace('T', ' ');
+        }
+        
+        // .000Z, .0000Z 같은 밀리초 및 Z 제거
+        dateStr = dateStr.replace(/\.\d+[Zz]?$/i, '').replace(/[Zz]$/i, '');
+        
+        // MySQL DATETIME 형식: "YYYY-MM-DD HH:mm:ss" 또는 "YYYY-MM-DD HH:mm"
+        // 시간대 변환 없이 직접 파싱하여 포맷팅
+        const dateTimeMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+        if (dateTimeMatch) {
+          const year = dateTimeMatch[1];
+          const month = dateTimeMatch[2];
+          const day = dateTimeMatch[3];
+          const hours = dateTimeMatch[4];
+          const minutes = dateTimeMatch[5];
+          const seconds = dateTimeMatch[6] || '00';
+          
+          // 시간대 변환 없이 그대로 포맷팅 (DB에 저장된 로컬 시간 그대로 사용)
+          return `${year}. ${month}. ${day}. ${hours}:${minutes}:${seconds}`;
+        }
+        
+        // 시간만 있는 경우: "14:30:00" 또는 "14:30"
+        if (dateStr.includes(':') && !dateStr.includes('-')) {
+          const [hours, minutes] = dateStr.split(':');
+          return `${hours}:${minutes}`;
+        }
+        
+        // 파싱 실패 시 원본 반환
+        return dateStr;
+      } catch (error) {
+        console.error('[formatDate] Date formatting error:', error, time);
+        return String(time); // 에러 발생 시 원본 반환
       }
+    },
+    formatPanoramaDate(dateStr) {
+      if (!dateStr) return '-';
       
-      // 어제인 경우
-      if (diffDays === 1) {
-        return '어제 ' + date.toLocaleTimeString('ko-KR', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          hour12: false 
-        });
+      try {
+        // DB에서 조회한 문자열을 그대로 사용
+        let dateStrTrimmed = String(dateStr).trim();
+        
+        // .0000Z, .000Z, .00Z, .0Z, Z 같은 표현 제거
+        dateStrTrimmed = dateStrTrimmed.replace(/\.\d+[Zz]?$/i, '').replace(/[Zz]$/i, '');
+        
+        // MySQL DATETIME 형식: "YYYY-MM-DD HH:mm:ss"
+        // 날짜와 시간 부분을 직접 추출 (Date 객체 생성으로 인한 시간대 문제 방지)
+        const dateTimeMatch = dateStrTrimmed.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (dateTimeMatch) {
+          const year = dateTimeMatch[1];
+          const month = dateTimeMatch[2];
+          const day = dateTimeMatch[3];
+          const hours = dateTimeMatch[4];
+          const minutes = dateTimeMatch[5];
+          const seconds = dateTimeMatch[6];
+          
+          // 년월일과 시간을 포함한 형식으로 포맷팅 (YYYY-MM-DD HH:mm:ss)
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        
+        // 시간 형식을 찾을 수 없으면 그대로 반환
+        return dateStrTrimmed;
+      } catch (error) {
+        console.error('[formatPanoramaDate] 날짜 포맷팅 오류:', error, dateStr);
+        return String(dateStr);
       }
-      
-      // 이번 주인 경우
-      if (diffDays < 7) {
-        const days = ['일', '월', '화', '수', '목', '금', '토'];
-        return days[date.getDay()] + ' ' + date.toLocaleTimeString('ko-KR', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          hour12: false 
-        });
-      }
-      
-      // 그 외의 경우
-      return date.toLocaleDateString('ko-KR', { 
-        month: '2-digit', 
-        day: '2-digit' 
-      }) + ' ' + date.toLocaleTimeString('ko-KR', { 
-        hour: '2-digit', 
-        minute: '2-digit',
-        hour12: false 
-      });
     },
     getLevelText(level) {
       const adjustedLevel = Number(level) + 1;
@@ -2090,6 +2600,67 @@ methods: {
       };
       return levels[adjustedLevel] || adjustedLevel;
     },
+    async loadPopupNotificationSetting() {
+      try {
+        const response = await getAlertSettings();
+        if (response && response.result && response.result.alert_setting_json) {
+          try {
+            const alertSettingJson = JSON.parse(response.result.alert_setting_json);
+            if (alertSettingJson.notification && alertSettingJson.notification.popupEnabled !== undefined) {
+              this.popupNotificationEnabled = alertSettingJson.notification.popupEnabled;
+              console.log('[팝업알림설정] 팝업 알림 설정: ' + this.popupNotificationEnabled);
+            } else {
+              // 설정이 없으면 기본값 true 사용
+              this.popupNotificationEnabled = true;
+              console.log('[팝업알림설정] 팝업 알림 설정이 없어 기본값(true) 사용');
+            }
+          } catch (e) {
+            console.error('팝업 알림 설정 파싱 오류:', e);
+            this.popupNotificationEnabled = true; // 기본값
+          }
+        } else {
+          // 설정이 없으면 기본값 true 사용
+          this.popupNotificationEnabled = true;
+          console.log('[팝업알림설정] 팝업 알림 설정이 없어 기본값(true) 사용');
+        }
+      } catch (error) {
+        console.error('팝업 알림 설정 로딩 오류:', error);
+        this.popupNotificationEnabled = true; // 기본값
+      }
+    },
+    async closeAlertPopup() {
+      try {
+        // 팝업에 표시된 경보들의 ID 목록
+        const popupAlertIds = this.unclosedAlerts.map(alert => alert.id);
+        
+        // 1. 팝업에 표시된 경보들의 popup_close를 1로 업데이트
+        const popupUpdatePromises = this.unclosedAlerts.map(alert => 
+          updatePopupClose(alert.id)
+        );
+        
+        // 2. 팝업 리스트 외의 DB상에 popup_close가 0인 경보들을 찾아서 모두 1로 업데이트
+        const otherAlertsToUpdate = this.alertHistory.filter(alert => 
+          !popupAlertIds.includes(alert.id) && (alert.popup_close || 0) === 0
+        );
+        
+        const otherUpdatePromises = otherAlertsToUpdate.map(alert => 
+          updatePopupClose(alert.id)
+        );
+        
+        // 모든 업데이트를 병렬로 실행
+        await Promise.all([...popupUpdatePromises, ...otherUpdatePromises]);
+        
+        // 팝업 닫기
+        this.showAlertPopup = false;
+        this.unclosedAlerts = [];
+        
+        // 경보 이력 다시 로드하여 팝업 상태 업데이트
+        await this.loadAlertHistory();
+      } catch (error) {
+        console.error('팝업 닫기 실패:', error);
+        this.$toast?.error('팝업을 닫는 중 오류가 발생했습니다.');
+      }
+    },
     async loadSiteName() {
       try {
         const data = await getEventSetting();
@@ -2098,10 +2669,22 @@ methods: {
           this.location_info = system.location_info || '';
           this.address = system.address || '';
           this.weather.location = system.address || '';
+          
+          // 실시간 댐 데이터 로드
+          this.damData = {
+            rwl: system.rwl || null,
+            dambasrf: system.dambasrf || null,
+            dqty: system.dqty || null
+          };
         }
       } catch (e) {
         this.location_info = '';
         this.address = '';
+        this.damData = {
+          rwl: null,
+          dambasrf: null,
+          dqty: null
+        };
       }
     },
 
@@ -2273,6 +2856,19 @@ methods: {
   overflow: auto;
   display: flex;
   flex-direction: column;
+  
+  .box-title {
+    background: #666;
+    color: #fff;
+    font-weight: bold;
+    padding: 4px 12px;
+    border-bottom: 1px solid #555;
+    border-radius: 8px 8px 0 0;
+    flex-shrink: 0;
+    font-size: 14px;
+    line-height: 1.2;
+    display: block; // flex가 아닌 block으로 설정
+  }
 }
 
 .bottomleft-inner-bottom {
@@ -2289,10 +2885,18 @@ methods: {
   background: #666;
   color: #fff;
   font-weight: bold;
-  padding: 8px 16px;
-  border-bottom: 2px solid #555;
+  padding: 4px 12px;
+  border-bottom: 1px solid #555;
   border-radius: 8px 8px 0 0;
   flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.2;
+  
+  // 시계열 온도 데이터 제목은 더 작게
+  &.chart-title {
+    padding: 2px 8px;
+    font-size: 12px;
+  }
 }
 
 .video-container {
@@ -2683,7 +3287,7 @@ methods: {
   color: white;
   padding: 0px;
   border-top: 1px solid #2a3042;
-  height: 50%;
+  height: 25%;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -2709,6 +3313,61 @@ methods: {
       text-align: center;
       line-height: 1.3;
       word-break: break-all;
+    }
+  }
+}
+
+.dam-data-layer {
+  background: #2a3042;
+  color: white;
+  padding: 0px;
+  border-top: 1px solid #2a3042;
+  height: 25%;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  margin: 5px 0;
+  
+  .layer-title {
+    background: #666;
+    color: white;
+    font-weight: bold;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    text-align: left;
+  }
+  
+  .dam-data-content {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-around;
+    align-items: center;
+    padding: 0 10px;
+    gap: 10px;
+    
+    .dam-data-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 4px;
+      
+      .dam-data-label {
+        font-size: 14px;
+        color: #ccc;
+        font-weight: normal;
+        margin-bottom: 8px;
+        text-align: center;
+      }
+      
+      .dam-data-value {
+        font-size: 18px;
+        color: #fff;
+        font-weight: bold;
+        text-align: center;
+      }
     }
   }
 }
@@ -2868,12 +3527,16 @@ methods: {
   th {
     background: #444;
     color: #fff;
-    display: none;
+    font-weight: bold;
+    position: sticky;
+    top: 0;
+    z-index: 10;
   }
 
   tr {
     cursor: pointer;
-    transition: background-color 0.3s;
+    transition: background-color 0.3s, transform 0.2s, box-shadow 0.2s;
+    user-select: none;
 
     &:hover {
       background-color: #444d67;
@@ -2881,6 +3544,12 @@ methods: {
 
     &.selected {
       background-color: #444d67;
+    }
+    
+    &.clicking {
+      background-color: #5a6578;
+      transform: scale(0.98);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 
     td:first-child {
@@ -2903,18 +3572,21 @@ methods: {
 .chart-container {
   flex: 1;
   min-height: 0;
-  padding: 2vw 1vw 1vw 1vw;
+  padding: 5px;
   background: #2a3042;
   border-radius: 0 0 8px 8px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
   margin-top: 0;
   height: 100%;
+  overflow: hidden;
 
   .trend-chart {
     width: 100%;
-    height:215px;
+    height: 100%;
+    min-height: 150px;
     background: #2a3042;
   }
 
@@ -3172,6 +3844,103 @@ methods: {
           }
         }
       }
+    }
+  }
+}
+
+// 경보 알림 팝업 레이어 스타일 (화면 가운데)
+.alert-popup-container {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 500px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  background: #2a3042;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  border: 2px solid #ff4d4f;
+  
+  .alert-popup-header {
+    padding: 16px 20px;
+    border-bottom: 2px solid #444;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #1e2130;
+    border-radius: 8px 8px 0 0;
+    
+    .alert-popup-title {
+      font-size: 18px;
+      font-weight: bold;
+      color: #ff4d4f;
+    }
+    
+    .close-popup-btn {
+      min-width: 32px;
+      width: 32px;
+      height: 32px;
+      color: #fff;
+      
+      &:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+    }
+  }
+  
+  .alert-popup-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    max-height: calc(100vh - 200px);
+    
+    .alert-list {
+      .alert-item {
+        padding: 12px;
+        margin-bottom: 10px;
+        background: #1e2130;
+        border-radius: 4px;
+        border-left: 4px solid #ff4d4f;
+        
+        &:last-child {
+          margin-bottom: 0;
+        }
+        
+        .alert-level {
+          font-size: 15px;
+          font-weight: bold;
+          color: #ff4d4f;
+          margin-bottom: 6px;
+        }
+        
+        .alert-zone {
+          font-size: 13px;
+          color: #ccc;
+          margin-bottom: 4px;
+        }
+        
+        .alert-time {
+          font-size: 12px;
+          color: #999;
+        }
+      }
+    }
+  }
+  
+  .alert-popup-footer {
+    padding: 16px 20px;
+    border-top: 2px solid #444;
+    background: #1e2130;
+    border-radius: 0 0 8px 8px;
+    
+    .v-btn {
+      height: 40px;
+      font-size: 14px;
+      font-weight: bold;
     }
   }
 }

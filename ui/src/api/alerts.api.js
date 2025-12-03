@@ -134,4 +134,10 @@ export const getDefaultAlertSettings = async () => {
 
 export const getWeeklyAlertStats = async () => await api.get('/alerts/weekly-stats');
 
-export const getRecentAlertCounts = async () => await api.get('/alerts/recent_alert'); 
+export const getRecentAlertCounts = async () => await api.get('/alerts/recent_alert');
+
+export const updatePopupClose = async (alertId) => {
+  return await api.patch(`${resource}/${alertId}`, {
+    popup_close: 1
+  });
+}; 

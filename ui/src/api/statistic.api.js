@@ -11,3 +11,5 @@ export const getDailyRoiMinChange = async (params) => await api.get(`${resource}
 export const getRoiDataList = async (params) => await api.get(`${resource}/roi-data-list`, { params });
 
 export const getRoiTimeSeriesData = async (params) => await api.get(`${resource}/roi-time-series`, { params });
+
+export const getRoiTemperatureTimeSeries = async (params) => await api.get(`${resource}/roi-temperature-time-series`, { params });
